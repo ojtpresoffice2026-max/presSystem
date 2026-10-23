@@ -32,6 +32,30 @@ type ReceivingRecord = {
   remarks: string | null
   created_at: string | null
   created_by: string | null
+
+  office_designation: string | null
+  date_of_letter: string | null
+  other_notes_remarks: string | null
+
+  origin_office: string | null
+  payee: string | null
+  document_type: string | null
+
+  amount_peso: number | string | null
+  document_code: string | null
+  ors_burs_amount: number | string | null
+  dv_amount: number | string | null
+  check_amount: number | string | null
+
+  campus: string | null
+  document_date: string | null
+  batch_no: string | null
+  total_amount: number | string | null
+
+  norsa_type: string | null
+  serial_number: string | null
+  amount_to_adjust: number | string | null
+  adjusted_amount: number | string | null
 }
 
 type EditableRecord = {
@@ -68,10 +92,24 @@ const DESTINATION_FOLDERS = [
   'CIT',
   'COL',
   'GS',
+  'BAIS',
+  'SIATION',
+  'MABINAY',
+  'GUIHULNGAN',
+  'BAYAWAN',
+  'LDDAP',
+  'ORS/BURS',
+  'DV MAIN',
+  'DV BAIS',
+  'DV BAYAWAN',
+  'DV GUIHULNGAN',
+  'DV MABINAY',
+  'DV SIATION',
+  'PACSVAL',
+  'NORSA/NBURSA',
 ]
 
-const columns =
-  'id, reference_number, record_type, subject, sender, description, system_code, bearer, content, destination_folder, receiving_staff, date_received, received_at, status, current_office, remarks, created_at, created_by'
+const columns = '*'
 
 const tableColumns: { label: string; field: SortField }[] = [
   { label: 'PresOffice No.', field: 'reference_number' },
@@ -86,6 +124,41 @@ const tableColumns: { label: string; field: SortField }[] = [
 
 const inputClass =
   'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
+
+const SPECIAL_DESTINATIONS = [
+  'BAIS',
+  'SIATION',
+  'MABINAY',
+  'GUIHULNGAN',
+  'BAYAWAN',
+]
+
+function money(value: number | string | null | undefined) {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const amount = Number(value)
+
+  if (!Number.isFinite(amount)) return String(value)
+
+  return `₱${amount.toLocaleString('en-PH', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+function valueOrDash(value: unknown): string {
+  if (value === null || value === undefined || value === '') {
+    return '—'
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No'
+  }
+
+  return String(value)
+}
 
 export default function ReceivingRecords() {
   const navigate = useNavigate()
@@ -102,8 +175,6 @@ export default function ReceivingRecords() {
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [success, setSuccess] = useState('')
-
-  // Account name of the user who created the selected record.
   const [creatorName, setCreatorName] = useState('')
   const [creatorLoading, setCreatorLoading] = useState(false)
 
@@ -122,18 +193,16 @@ export default function ReceivingRecords() {
         .select(columns)
         .order('created_at', { ascending: false })
 
-      if (queryError) {
-        setError(queryError.message)
-        setRecords([])
-      } else {
-        setRecords((data ?? []) as ReceivingRecord[])
-      }
+      if (queryError) throw queryError
+
+      setRecords((data ?? []) as ReceivingRecord[])
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : 'Unable to load receiving records.'
+          : 'Unable to load receiving records.',
       )
+      setRecords([])
     } finally {
       setLoading(false)
     }
@@ -143,17 +212,12 @@ export default function ReceivingRecords() {
     void loadRecords()
   }, [])
 
-  // Assumes profiles.id matches receiving_records.created_by
-  // and profiles.full_name contains the user's full name.
   async function loadCreatorName(record: ReceivingRecord) {
     setCreatorName('')
     setCreatorLoading(true)
 
     try {
-      if (!record.created_by) {
-        setCreatorName('')
-        return
-      }
+      if (!record.created_by) return
 
       const { data, error: profileError } = await supabase
         .from('profiles')
@@ -163,26 +227,15 @@ export default function ReceivingRecords() {
 
       if (profileError) {
         console.error('Unable to load creator profile:', profileError)
-        setCreatorName('')
         return
       }
 
       setCreatorName(data?.full_name?.trim() || '')
     } catch (err) {
       console.error('Unable to load creator name:', err)
-      setCreatorName('')
     } finally {
       setCreatorLoading(false)
     }
-  }
-
-  function openRecord(record: ReceivingRecord) {
-    setSelected(record)
-    setDraft(createDraft(record))
-    setEditMode(false)
-    setSaveError('')
-    setSuccess('')
-    void loadCreatorName(record)
   }
 
   function createDraft(record: ReceivingRecord): EditableRecord {
@@ -200,6 +253,15 @@ export default function ReceivingRecords() {
     }
   }
 
+  function openRecord(record: ReceivingRecord) {
+    setSelected(record)
+    setDraft(createDraft(record))
+    setEditMode(false)
+    setSaveError('')
+    setSuccess('')
+    void loadCreatorName(record)
+  }
+
   function startEditing() {
     if (!selected) return
 
@@ -210,9 +272,7 @@ export default function ReceivingRecords() {
   }
 
   function cancelEditing() {
-    if (selected) {
-      setDraft(createDraft(selected))
-    }
+    if (selected) setDraft(createDraft(selected))
 
     setEditMode(false)
     setSaveError('')
@@ -232,10 +292,10 @@ export default function ReceivingRecords() {
 
   function updateDraft<K extends keyof EditableRecord>(
     field: K,
-    value: EditableRecord[K]
+    value: EditableRecord[K],
   ) {
     setDraft(current =>
-      current ? { ...current, [field]: value } : current
+      current ? { ...current, [field]: value } : current,
     )
 
     setSaveError('')
@@ -298,27 +358,17 @@ export default function ReceivingRecords() {
           updated_at: new Date().toISOString(),
         })
         .eq('id', selected.id)
-        .select(columns)
+        .select('*')
         .single()
 
-      if (updateError) {
-        setSaveError(updateError.message)
-        return
-      }
-
-      if (!data) {
-        setSaveError(
-          'No record was returned. Check your Supabase update permissions.'
-        )
-        return
-      }
+      if (updateError) throw updateError
 
       const updatedRecord = data as ReceivingRecord
 
       setRecords(current =>
         current.map(record =>
-          record.id === updatedRecord.id ? updatedRecord : record
-        )
+          record.id === updatedRecord.id ? updatedRecord : record,
+        ),
       )
 
       setSelected(updatedRecord)
@@ -329,7 +379,7 @@ export default function ReceivingRecords() {
       setSaveError(
         err instanceof Error
           ? err.message
-          : 'Unable to save changes.'
+          : 'Unable to save changes.',
       )
     } finally {
       setSaving(false)
@@ -339,7 +389,7 @@ export default function ReceivingRecords() {
   function handleSort(field: SortField) {
     if (sortField === field) {
       setSortDirection(current =>
-        current === 'asc' ? 'desc' : 'asc'
+        current === 'asc' ? 'desc' : 'asc',
       )
     } else {
       setSortField(field)
@@ -349,7 +399,7 @@ export default function ReceivingRecords() {
 
   function getSortValue(
     record: ReceivingRecord,
-    field: SortField
+    field: SortField,
   ): string {
     switch (field) {
       case 'content':
@@ -359,7 +409,7 @@ export default function ReceivingRecords() {
       case 'destination_folder':
         return record.destination_folder || record.current_office || ''
       default:
-        return record[field] || ''
+        return String(record[field] ?? '')
     }
   }
 
@@ -371,7 +421,9 @@ export default function ReceivingRecords() {
         record.destination_folder ||
         record.current_office ||
         ''
-      ).trim().toUpperCase()
+      )
+        .trim()
+        .toUpperCase()
 
       if (
         selectedFolder !== 'ALL' &&
@@ -396,8 +448,16 @@ export default function ReceivingRecords() {
         record.status,
         record.current_office,
         record.remarks,
+        record.origin_office,
+        record.payee,
+        record.document_code,
+        record.batch_no,
+        record.serial_number,
+        record.norsa_type,
+        record.office_designation,
+        record.other_notes_remarks,
       ].some(value =>
-        (value ?? '').toLowerCase().includes(term)
+        String(value ?? '').toLowerCase().includes(term),
       )
     })
 
@@ -408,12 +468,10 @@ export default function ReceivingRecords() {
       const comparison = first.localeCompare(
         second,
         undefined,
-        { numeric: true, sensitivity: 'base' }
+        { numeric: true, sensitivity: 'base' },
       )
 
-      return sortDirection === 'asc'
-        ? comparison
-        : -comparison
+      return sortDirection === 'asc' ? comparison : -comparison
     })
   }, [
     records,
@@ -423,17 +481,17 @@ export default function ReceivingRecords() {
     sortDirection,
   ])
 
-  function formatDate(value: string | null) {
+  function formatDate(value: string | null | undefined) {
     if (!value) return '—'
 
-    const date = new Date(value)
+    const date = new Date(`${value}T00:00:00`)
 
     return Number.isNaN(date.getTime())
       ? value
       : date.toLocaleDateString()
   }
 
-  function formatDateTime(value: string | null) {
+  function formatDateTime(value: string | null | undefined) {
     if (!value) return '—'
 
     const date = new Date(value)
@@ -457,6 +515,115 @@ export default function ReceivingRecords() {
     setSelectedFolder('ALL')
   }
 
+  function detail(
+    label: string,
+    value: unknown,
+    formatter?: (value: any) => string,
+  ) {
+    const displayValue =
+      value === null || value === undefined || value === ''
+        ? '—'
+        : formatter
+          ? formatter(value)
+          : valueOrDash(value)
+
+    return (
+      <div
+        key={label}
+        className="min-w-0 rounded-lg border border-slate-100 bg-slate-50 p-3.5"
+      >
+        <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          {label}
+        </dt>
+        <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800">
+          {displayValue}
+        </dd>
+      </div>
+    )
+  }
+
+  function renderRecordDetails(record: ReceivingRecord) {
+    const destination = (
+      record.destination_folder ||
+      record.current_office ||
+      ''
+    ).toUpperCase()
+
+    const details: React.ReactNode[] = []
+
+    details.push(
+      detail('PresOffice Number', record.reference_number),
+      detail('System Code', record.system_code),
+      detail('Record Type', record.record_type),
+      detail('Content / Subject', record.content || record.subject),
+      detail('Bearer / Sender', record.bearer || record.sender),
+      detail('Origin of Document / Office', record.origin_office),
+      detail('Payee', record.payee),
+      detail('Receiving Staff', record.receiving_staff),
+      detail('Destination Folder', record.destination_folder),
+      detail('Date Received', record.date_received, formatDate),
+      detail('Received At', record.received_at, formatDateTime),
+      detail('Status', displayStatus(record.status)),
+      detail('Current Office', record.current_office),
+      detail('Description', record.description),
+    )
+
+    if (destination === 'LDDAP') {
+      details.push(
+        detail('Amount (₱)', record.amount_peso, money),
+      )
+    }
+
+    if (destination === 'ORS/BURS') {
+      details.push(
+        detail('ORS / BURS Type', record.document_type),
+        detail('ORS / BURS Amount', record.ors_burs_amount, money),
+      )
+    }
+
+    if (destination.startsWith('DV')) {
+      details.push(
+        detail('Document Codes', record.document_code),
+        detail('ORS / BURS Amount', record.ors_burs_amount, money),
+        detail('DV Amount', record.dv_amount, money),
+        detail('Check Amount', record.check_amount, money),
+      )
+    }
+
+    if (destination === 'PACSVAL') {
+      details.push(
+        detail('Campus', record.campus),
+        detail('Document Date', record.document_date, formatDate),
+        detail('Batch No.', record.batch_no),
+        detail('Total Amount', record.total_amount, money),
+      )
+    }
+
+    if (destination === 'NORSA/NBURSA') {
+      details.push(
+        detail('NORSA / NBURSA Type', record.norsa_type),
+        detail('Serial Number', record.serial_number),
+        detail('Amount to Adjust', record.amount_to_adjust, money),
+        detail('Adjusted Amount', record.adjusted_amount, money),
+      )
+    }
+
+    if (SPECIAL_DESTINATIONS.includes(destination)) {
+      details.push(
+        detail('Office / Designation', record.office_designation),
+        detail('Date of Letter', record.date_of_letter, formatDate),
+        detail('Other Notes / Remarks', record.other_notes_remarks),
+      )
+    }
+
+    details.push(
+      detail('Remarks', record.remarks),
+      detail('Created At', record.created_at, formatDateTime),
+    )
+
+    return details
+  }
+
   return (
     <div className="min-w-0 space-y-6">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
@@ -464,11 +631,9 @@ export default function ReceivingRecords() {
           <p className="text-xs font-medium text-slate-500">
             Workspace / Document Management
           </p>
-
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Receiving Records
           </h2>
-
           <p className="mt-1 text-sm text-slate-500">
             Manage and review all incoming documents.
           </p>
@@ -495,7 +660,6 @@ export default function ReceivingRecords() {
               <h3 className="text-sm font-semibold text-slate-900">
                 Incoming Documents
               </h3>
-
               <p className="mt-0.5 text-xs text-slate-500">
                 {loading
                   ? 'Loading records...'
@@ -512,7 +676,6 @@ export default function ReceivingRecords() {
               className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 lg:w-48"
             >
               <option value="ALL">All Folders</option>
-
               {DESTINATION_FOLDERS.map(folder => (
                 <option key={folder} value={folder}>
                   {folder}
@@ -525,7 +688,6 @@ export default function ReceivingRecords() {
                 size={15}
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
-
               <input
                 value={searchInput}
                 onChange={event => setSearchInput(event.target.value)}
@@ -576,7 +738,6 @@ export default function ReceivingRecords() {
             className="m-4 flex flex-col gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 sm:flex-row sm:items-center sm:justify-between"
           >
             <span>Failed to load records: {error}</span>
-
             <button
               type="button"
               onClick={() => void loadRecords()}
@@ -612,7 +773,6 @@ export default function ReceivingRecords() {
                     </button>
                   </th>
                 ))}
-
                 <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Details
                 </th>
@@ -622,64 +782,73 @@ export default function ReceivingRecords() {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-14 text-center text-sm text-slate-500">
+                  <td
+                    colSpan={9}
+                    className="px-4 py-14 text-center text-sm text-slate-500"
+                  >
                     Loading incoming documents...
                   </td>
                 </tr>
               ) : error && records.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-14 text-center text-sm text-slate-500">
+                  <td
+                    colSpan={9}
+                    className="px-4 py-14 text-center text-sm text-slate-500"
+                  >
                     Records could not be loaded. Check the error above.
                   </td>
                 </tr>
               ) : filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-14 text-center text-sm text-slate-500">
+                  <td
+                    colSpan={9}
+                    className="px-4 py-14 text-center text-sm text-slate-500"
+                  >
                     {appliedSearch || selectedFolder !== 'ALL'
-                      ? 'No matching records found for the selected folder and search criteria.'
+                      ? 'No matching records found.'
                       : 'No incoming documents yet.'}
                   </td>
                 </tr>
               ) : (
                 filteredRecords.map(record => (
-                  <tr key={record.id} className="transition-colors hover:bg-slate-50">
+                  <tr
+                    key={record.id}
+                    className="transition-colors hover:bg-slate-50"
+                  >
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                       {record.reference_number || '—'}
                     </td>
-
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
                       {record.system_code || '—'}
                     </td>
-
                     <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
-                      <span className="block truncate" title={record.content || record.subject || ''}>
+                      <span
+                        className="block truncate"
+                        title={record.content || record.subject || ''}
+                      >
                         {record.content || record.subject || '—'}
                       </span>
                     </td>
-
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.bearer || record.sender || '—'}
                     </td>
-
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.receiving_staff || '—'}
                     </td>
-
                     <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.destination_folder || record.current_office || '—'}
+                      {record.destination_folder ||
+                        record.current_office ||
+                        '—'}
                     </td>
-
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
                       {formatDate(record.date_received)}
                     </td>
-
                     <td className="px-4 py-3.5">
                       <span className="inline-flex items-center whitespace-nowrap rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[10px] font-semibold capitalize text-blue-700">
                         <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-blue-500" />
                         {displayStatus(record.status)}
                       </span>
                     </td>
-
                     <td className="px-4 py-3.5">
                       <button
                         type="button"
@@ -716,7 +885,7 @@ export default function ReceivingRecords() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="receiving-detail-title"
-            className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl"
+            className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl"
             onClick={event => event.stopPropagation()}
           >
             <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
@@ -724,11 +893,12 @@ export default function ReceivingRecords() {
                 <p className="text-xs font-medium text-slate-500">
                   Incoming Document
                 </p>
-
-                <h3 id="receiving-detail-title" className="mt-1 text-xl font-bold text-slate-900">
+                <h3
+                  id="receiving-detail-title"
+                  className="mt-1 text-xl font-bold text-slate-900"
+                >
                   {selected.reference_number}
                 </h3>
-
                 <p className="mt-1 text-xs text-slate-500">
                   {editMode
                     ? 'Edit the fields below and save your changes.'
@@ -749,13 +919,19 @@ export default function ReceivingRecords() {
 
             <div className="p-6">
               {saveError && (
-                <div role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                <div
+                  role="alert"
+                  className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+                >
                   {saveError}
                 </div>
               )}
 
               {success && !editMode && (
-                <div role="status" className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+                <div
+                  role="status"
+                  className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700"
+                >
                   {success}
                 </div>
               )}
@@ -767,7 +943,9 @@ export default function ReceivingRecords() {
                     <input
                       required
                       value={draft.reference_number}
-                      onChange={event => updateDraft('reference_number', event.target.value)}
+                      onChange={event =>
+                        updateDraft('reference_number', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -776,7 +954,9 @@ export default function ReceivingRecords() {
                     System Code
                     <input
                       value={draft.system_code}
-                      onChange={event => updateDraft('system_code', event.target.value)}
+                      onChange={event =>
+                        updateDraft('system_code', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -787,7 +967,9 @@ export default function ReceivingRecords() {
                       required
                       rows={3}
                       value={draft.content}
-                      onChange={event => updateDraft('content', event.target.value)}
+                      onChange={event =>
+                        updateDraft('content', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -797,7 +979,9 @@ export default function ReceivingRecords() {
                     <input
                       required
                       value={draft.bearer}
-                      onChange={event => updateDraft('bearer', event.target.value)}
+                      onChange={event =>
+                        updateDraft('bearer', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -807,7 +991,9 @@ export default function ReceivingRecords() {
                     <input
                       required
                       value={draft.receiving_staff}
-                      onChange={event => updateDraft('receiving_staff', event.target.value)}
+                      onChange={event =>
+                        updateDraft('receiving_staff', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -817,12 +1003,16 @@ export default function ReceivingRecords() {
                     <select
                       required
                       value={draft.destination_folder}
-                      onChange={event => updateDraft('destination_folder', event.target.value)}
+                      onChange={event =>
+                        updateDraft('destination_folder', event.target.value)
+                      }
                       className={inputClass}
                     >
                       <option value="">Select destination folder</option>
                       {DESTINATION_FOLDERS.map(folder => (
-                        <option key={folder} value={folder}>{folder}</option>
+                        <option key={folder} value={folder}>
+                          {folder}
+                        </option>
                       ))}
                     </select>
                   </label>
@@ -833,7 +1023,9 @@ export default function ReceivingRecords() {
                       type="date"
                       required
                       value={draft.date_received}
-                      onChange={event => updateDraft('date_received', event.target.value)}
+                      onChange={event =>
+                        updateDraft('date_received', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -842,7 +1034,9 @@ export default function ReceivingRecords() {
                     Status
                     <select
                       value={draft.status}
-                      onChange={event => updateDraft('status', event.target.value)}
+                      onChange={event =>
+                        updateDraft('status', event.target.value)
+                      }
                       className={inputClass}
                     >
                       <option value="received">Received</option>
@@ -858,38 +1052,16 @@ export default function ReceivingRecords() {
                     <textarea
                       rows={3}
                       value={draft.remarks}
-                      onChange={event => updateDraft('remarks', event.target.value)}
+                      onChange={event =>
+                        updateDraft('remarks', event.target.value)
+                      }
                       className={inputClass}
                     />
                   </label>
                 </div>
               ) : (
                 <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {[
-                    ['PresOffice Number', selected.reference_number],
-                    ['System Code', selected.system_code],
-                    ['Record Type', selected.record_type],
-                    ['Content / Subject', selected.content || selected.subject],
-                    ['Bearer / Sender', selected.bearer || selected.sender],
-                    ['Receiving Staff', selected.receiving_staff],
-                    ['Destination Folder', selected.destination_folder],
-                    ['Date Received', formatDate(selected.date_received)],
-                    ['Received At', formatDateTime(selected.received_at)],
-                    ['Status', displayStatus(selected.status)],
-                    ['Current Office', selected.current_office],
-                    ['Description', selected.description],
-                    ['Remarks', selected.remarks],
-                    ['Created At', formatDateTime(selected.created_at)],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-lg border border-slate-100 bg-slate-50 p-3.5">
-                      <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        {label}
-                      </dt>
-                      <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800">
-                        {value || '—'}
-                      </dd>
-                    </div>
-                  ))}
+                  {renderRecordDetails(selected)}
                 </dl>
               )}
             </div>

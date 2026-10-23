@@ -8,6 +8,8 @@ import {
   AlertCircle,
   Copy,
   X,
+  ChevronDown,
+  Search,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -199,6 +201,7 @@ function AmountInput({
     </label>
   )
 }
+
 export default function Receiving() {
   const [folders, setFolders] = useState<OfficeFolder[]>([])
   const [loading, setLoading] = useState(true)
@@ -209,6 +212,29 @@ export default function Receiving() {
   const [generatedCode, setGeneratedCode] = useState('')
   const [showSuccessModal, setShowSuccessModal] = useState(false)
   const [copyMessage, setCopyMessage] = useState('')
+
+  // Searchable Destination Folder dropdown
+  const [destinationDropdownOpen, setDestinationDropdownOpen] =
+    useState(false)
+  const [destinationSearch, setDestinationSearch] = useState('')
+
+  const filteredDestinationFolders = DESTINATION_FOLDERS.filter(code => {
+    const matchingFolder = folders.find(
+      item =>
+        item.code.trim().toUpperCase() === code ||
+        item.name.trim().toUpperCase() === code,
+    )
+
+    const label =
+      matchingFolder &&
+      matchingFolder.name.trim().toUpperCase() !== code
+        ? `${code} — ${matchingFolder.name}`
+        : code
+
+    return label
+      .toLowerCase()
+      .includes(destinationSearch.trim().toLowerCase())
+  })
 
   const selectedDestination =
     form.destinationFolder.trim().toUpperCase()
@@ -243,7 +269,10 @@ export default function Receiving() {
       } = await supabase.auth.getUser()
 
       if (authError) throw authError
-      if (!user) throw new Error('Please sign in again.')
+
+      if (!user) {
+        throw new Error('Please sign in again.')
+      }
 
       const { data, error: folderError } = await supabase
         .from('office_folders')
@@ -280,6 +309,12 @@ export default function Receiving() {
     }))
 
     setError('')
+  }
+
+  function selectDestination(code: string) {
+    updateField('destinationFolder', code)
+    setDestinationSearch('')
+    setDestinationDropdownOpen(false)
   }
 
   function toggleCode(code: string) {
@@ -451,6 +486,7 @@ export default function Receiving() {
           .maybeSingle()
 
         if (checkError) throw checkError
+
         if (existing) continue
 
         const record: Record<string, unknown> = {
@@ -554,6 +590,8 @@ export default function Receiving() {
       setCopyMessage('')
       setShowSuccessModal(true)
       setForm({ ...initialForm, selectedCodes: [] })
+      setDestinationSearch('')
+      setDestinationDropdownOpen(false)
       setReceiptDate(new Date())
     } catch (err) {
       console.error('Receiving form error:', err)
@@ -588,17 +626,23 @@ export default function Receiving() {
   function clearForm() {
     setForm({ ...initialForm, selectedCodes: [] })
     setError('')
+    setDestinationSearch('')
+    setDestinationDropdownOpen(false)
   }
-    return (
+
+  return (
     <main className="min-w-0 flex-1 space-y-6 bg-slate-50 p-4 text-slate-800 sm:p-6 lg:p-8">
+      {/* Page heading */}
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm text-slate-500">
             Workspace / Records / Receiving
           </p>
+
           <h1 className="mt-1 text-3xl font-bold text-blue-950">
             Receiving
           </h1>
+
           <p className="mt-2 text-sm text-slate-500">
             Register incoming documents and assign their destination office.
           </p>
@@ -613,35 +657,155 @@ export default function Receiving() {
               Destination Folder
             </label>
 
-            <select
-              id="destination-search"
-              value={form.destinationFolder}
-              onChange={event =>
-                updateField('destinationFolder', event.target.value)
-              }
-              className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
-              required
-            >
-              <option value="">Select destination folder</option>
+            {/* Searchable destination folder dropdown */}
+            <div className="relative">
+              <div className="relative">
+                <Search
+                  size={15}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
 
-              {DESTINATION_FOLDERS.map(code => {
-                const matchingFolder = folders.find(
-                  item =>
-                    item.code.toUpperCase() === code ||
-                    item.name.toUpperCase() === code,
-                )
+                <input
+                  id="destination-search"
+                  type="text"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded={destinationDropdownOpen}
+                  aria-controls="destination-folder-options"
+                  autoComplete="off"
+                  value={
+                    destinationDropdownOpen
+                      ? destinationSearch
+                      : form.destinationFolder
+                  }
+                  onFocus={() => {
+                    setDestinationSearch('')
+                    setDestinationDropdownOpen(true)
+                  }}
+                  onChange={event => {
+                    setDestinationSearch(event.target.value)
+                    setDestinationDropdownOpen(true)
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Escape') {
+                      setDestinationDropdownOpen(false)
+                      setDestinationSearch('')
+                    }
 
-                return (
-                  <option key={code} value={code}>
-                    {code}
-                    {matchingFolder &&
-                    matchingFolder.name.toUpperCase() !== code
-                      ? ` — ${matchingFolder.name}`
-                      : ''}
-                  </option>
-                )
-              })}
-            </select>
+                    if (
+                      event.key === 'Enter' &&
+                      destinationDropdownOpen
+                    ) {
+                      event.preventDefault()
+
+                      if (filteredDestinationFolders.length > 0) {
+                        selectDestination(
+                          filteredDestinationFolders[0],
+                        )
+                      }
+                    }
+
+                    if (event.key === 'ArrowDown') {
+                      setDestinationDropdownOpen(true)
+                    }
+                  }}
+                  placeholder="Search destination folder..."
+                  className="w-full rounded-xl border border-blue-200 bg-white py-2.5 pl-9 pr-10 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                  required={!form.destinationFolder}
+                />
+
+                <button
+                  type="button"
+                  aria-label="Toggle destination folder options"
+                  onClick={() => {
+                    if (destinationDropdownOpen) {
+                      setDestinationDropdownOpen(false)
+                      setDestinationSearch('')
+                    } else {
+                      setDestinationSearch('')
+                      setDestinationDropdownOpen(true)
+                    }
+                  }}
+                  className="absolute inset-y-0 right-0 z-10 flex items-center px-3 text-slate-500 hover:text-blue-700"
+                >
+                  <ChevronDown
+                    size={16}
+                    className={`transition-transform ${
+                      destinationDropdownOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {destinationDropdownOpen && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Close destination folder options"
+                    className="fixed inset-0 z-20 cursor-default"
+                    onClick={() => {
+                      setDestinationDropdownOpen(false)
+                      setDestinationSearch('')
+                    }}
+                  />
+
+                  <div
+                    id="destination-folder-options"
+                    role="listbox"
+                    className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
+                  >
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={!form.destinationFolder}
+                      onClick={() => selectDestination('')}
+                      className="w-full px-3 py-2 text-left text-sm text-slate-500 transition hover:bg-blue-50"
+                    >
+                      Select destination folder
+                    </button>
+
+                    {filteredDestinationFolders.length > 0 ? (
+                      filteredDestinationFolders.map(code => {
+                        const matchingFolder = folders.find(
+                          item =>
+                            item.code.trim().toUpperCase() === code ||
+                            item.name.trim().toUpperCase() === code,
+                        )
+
+                        const label =
+                          matchingFolder &&
+                          matchingFolder.name.trim().toUpperCase() !== code
+                            ? `${code} — ${matchingFolder.name}`
+                            : code
+
+                        return (
+                          <button
+                            key={code}
+                            type="button"
+                            role="option"
+                            aria-selected={
+                              form.destinationFolder === code
+                            }
+                            onClick={() => selectDestination(code)}
+                            className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${
+                              form.destinationFolder === code
+                                ? 'bg-blue-50 font-semibold text-blue-700'
+                                : 'text-slate-700'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <p className="px-3 py-3 text-sm text-slate-500">
+                        No matching destination folders found.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           <button
@@ -659,6 +823,7 @@ export default function Receiving() {
         </div>
       </header>
 
+      {/* Incoming documents banner */}
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-950 via-blue-800 to-blue-600 px-5 py-4 text-white shadow-sm sm:px-6">
         <div className="absolute -right-8 -top-10 h-32 w-32 rounded-full border-[16px] border-white/10" />
 
@@ -671,9 +836,11 @@ export default function Receiving() {
             <p className="text-[10px] font-semibold tracking-widest text-blue-200">
               INCOMING DOCUMENTS
             </p>
+
             <h2 className="mt-1 text-lg font-bold sm:text-xl">
               Receive a new record
             </h2>
+
             <p className="mt-1 text-xs leading-5 text-blue-100 sm:text-sm">
               Register incoming documents, record receipt details, and assign a destination folder.
             </p>
@@ -681,6 +848,7 @@ export default function Receiving() {
         </div>
       </section>
 
+      {/* Error message */}
       {error && (
         <div
           role="alert"
@@ -692,16 +860,19 @@ export default function Receiving() {
             <p className="font-semibold">
               Unable to process the record
             </p>
+
             <p className="mt-1 break-words">{error}</p>
           </div>
         </div>
       )}
 
+      {/* Receiving form */}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-100 p-5 sm:p-6">
           <h2 className="text-lg font-bold text-blue-950">
             Document Information
           </h2>
+
           <p className="mt-1 text-sm text-slate-500">
             Fields marked with * are required. Additional fields appear according to the selected destination.
           </p>
@@ -714,9 +885,11 @@ export default function Receiving() {
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
             <label className="text-sm font-semibold">
               System Code
+
               <span className="ml-2 font-normal text-slate-400">
                 Optional
               </span>
+
               <input
                 value={form.systemCode}
                 onChange={event =>
@@ -725,6 +898,7 @@ export default function Receiving() {
                 placeholder="Enter system code"
                 className={inputClass}
               />
+
               <span className="mt-1 block text-xs font-normal text-slate-500">
                 Enter the existing system code, if applicable.
               </span>
@@ -732,12 +906,14 @@ export default function Receiving() {
 
             <label className="text-sm font-semibold">
               PresOffice No.
+
               <input
                 value="Generated automatically when saved"
                 readOnly
                 aria-readonly="true"
                 className={`${inputClass} cursor-not-allowed bg-slate-50 text-slate-500`}
               />
+
               <span className="mt-1 block text-xs font-normal text-slate-500">
                 A unique 5-character alphanumeric code is generated when you save.
               </span>
@@ -745,6 +921,7 @@ export default function Receiving() {
 
             <label className="text-sm font-semibold">
               Bearer *
+
               <input
                 required
                 value={form.bearer}
@@ -758,6 +935,7 @@ export default function Receiving() {
 
             <label className="text-sm font-semibold">
               Date Received
+
               <input
                 readOnly
                 value={receiptDate.toLocaleDateString('en-PH', {
@@ -767,6 +945,7 @@ export default function Receiving() {
                 })}
                 className={`${inputClass} bg-slate-50 text-slate-600`}
               />
+
               <span className="mt-1 block text-xs font-normal text-slate-500">
                 Today's date.
               </span>
@@ -774,11 +953,13 @@ export default function Receiving() {
 
             <label className="text-sm font-semibold">
               Time Received *
+
               <div className="relative">
                 <Clock3
                   size={17}
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-700"
                 />
+
                 <input
                   type="time"
                   required
@@ -789,6 +970,7 @@ export default function Receiving() {
                   className={`${inputClass} pl-10`}
                 />
               </div>
+
               <span className="mt-1 block text-xs font-normal text-slate-500">
                 Enter the actual time the document was received.
               </span>
@@ -796,6 +978,7 @@ export default function Receiving() {
 
             <label className="text-sm font-semibold">
               Receiving Staff *
+
               <input
                 required
                 value={form.receivingStaff}
@@ -811,6 +994,7 @@ export default function Receiving() {
               <>
                 <label className="text-sm font-semibold">
                   Origin of Document / Office
+
                   <input
                     value={form.originOffice}
                     onChange={event =>
@@ -823,6 +1007,7 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold">
                   Payee
+
                   <input
                     value={form.payee}
                     onChange={event =>
@@ -835,6 +1020,7 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold">
                   Document Type
+
                   <input
                     value={form.documentType}
                     onChange={event =>
@@ -863,6 +1049,7 @@ export default function Receiving() {
 
           <label className="block text-sm font-semibold">
             Content / Document Description *
+
             <textarea
               required
               rows={4}
@@ -875,6 +1062,7 @@ export default function Receiving() {
             />
           </label>
 
+          {/* Document codes and amounts */}
           {showDvFields && (
             <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -882,6 +1070,7 @@ export default function Receiving() {
                   <h3 className="text-base font-bold text-blue-950">
                     Document Codes
                   </h3>
+
                   <p className="mt-1 text-sm text-slate-600">
                     Select one or more codes that apply to this record.
                   </p>
@@ -914,6 +1103,7 @@ export default function Receiving() {
                       onChange={() => toggleCode(code)}
                       className="h-4 w-4 accent-blue-700"
                     />
+
                     {code}
                   </label>
                 ))}
@@ -934,6 +1124,7 @@ export default function Receiving() {
                     updateField('orsBursAmount', value)
                   }
                 />
+
                 <AmountInput
                   label="DV Amount"
                   value={form.dvAmount}
@@ -941,6 +1132,7 @@ export default function Receiving() {
                     updateField('dvAmount', value)
                   }
                 />
+
                 <AmountInput
                   label="Check Amount"
                   value={form.checkAmount}
@@ -952,12 +1144,14 @@ export default function Receiving() {
             </section>
           )}
 
+          {/* PACSVAL fields */}
           {showPacsvalFields && (
             <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
               <div>
                 <h3 className="text-base font-bold text-blue-950">
                   PACSVAL Information
                 </h3>
+
                 <p className="mt-1 text-sm text-slate-600">
                   Enter the campus, document date, batch number, and total amount.
                 </p>
@@ -966,6 +1160,7 @@ export default function Receiving() {
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <label className="text-sm font-semibold">
                   Campus
+
                   <select
                     value={form.campus}
                     onChange={event =>
@@ -974,6 +1169,7 @@ export default function Receiving() {
                     className={inputClass}
                   >
                     <option value="">Select campus</option>
+
                     {CAMPUSES.map(campus => (
                       <option key={campus} value={campus}>
                         {campus}
@@ -984,6 +1180,7 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold">
                   Document Date
+
                   <input
                     type="date"
                     value={form.documentDate}
@@ -996,6 +1193,7 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold">
                   Batch No.
+
                   <input
                     value={form.batchNo}
                     onChange={event =>
@@ -1016,12 +1214,15 @@ export default function Receiving() {
               </div>
             </section>
           )}
-                    {showNorsaFields && (
+
+          {/* NORSA / NBURSA fields */}
+          {showNorsaFields && (
             <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
               <div>
                 <h3 className="text-base font-bold text-blue-950">
                   NORSA / NBURSA Information
                 </h3>
+
                 <p className="mt-1 text-sm text-slate-600">
                   Enter the document classification, serial number, and adjustment amounts.
                 </p>
@@ -1030,6 +1231,7 @@ export default function Receiving() {
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <label className="text-sm font-semibold">
                   Document Classification
+
                   <select
                     value={form.norsaType}
                     onChange={event =>
@@ -1045,6 +1247,7 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold">
                   Serial Number
+
                   <input
                     value={form.serialNumber}
                     onChange={event =>
@@ -1074,12 +1277,14 @@ export default function Receiving() {
             </section>
           )}
 
+          {/* Additional document information */}
           {showAdditionalFields && (
             <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
               <div>
                 <h3 className="text-base font-bold text-blue-950">
                   Additional Document Information
                 </h3>
+
                 <p className="mt-1 text-sm text-slate-600">
                   Additional details for {selectedDestination}. All fields in this section are optional.
                 </p>
@@ -1088,9 +1293,11 @@ export default function Receiving() {
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <label className="text-sm font-semibold">
                   Office / Designation
+
                   <span className="ml-2 font-normal text-slate-400">
                     Optional
                   </span>
+
                   <input
                     value={form.officeDesignation}
                     onChange={event =>
@@ -1106,9 +1313,11 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold">
                   Date of Letter
+
                   <span className="ml-2 font-normal text-slate-400">
                     Optional
                   </span>
+
                   <input
                     type="date"
                     value={form.dateOfLetter}
@@ -1121,9 +1330,11 @@ export default function Receiving() {
 
                 <label className="text-sm font-semibold md:col-span-2">
                   Other Notes / Remarks
+
                   <span className="ml-2 font-normal text-slate-400">
                     Optional
                   </span>
+
                   <textarea
                     rows={3}
                     value={form.otherNotesRemarks}
@@ -1141,6 +1352,7 @@ export default function Receiving() {
             </section>
           )}
 
+          {/* Form actions */}
           <div className="flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-5">
             <button
               type="button"
@@ -1163,6 +1375,7 @@ export default function Receiving() {
         </form>
       </section>
 
+      {/* Save confirmation modal */}
       {showSuccessModal && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
@@ -1183,6 +1396,7 @@ export default function Receiving() {
                     className="text-emerald-600"
                   />
                 </div>
+
                 <span className="text-sm font-semibold text-slate-800">
                   Save Confirmation
                 </span>

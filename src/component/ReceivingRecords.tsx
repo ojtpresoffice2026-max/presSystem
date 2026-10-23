@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -32,6 +31,7 @@ type ReceivingRecord = {
   current_office: string | null
   remarks: string | null
   created_at: string | null
+  created_by: string | null
 }
 
 type EditableRecord = {
@@ -71,7 +71,7 @@ const DESTINATION_FOLDERS = [
 ]
 
 const columns =
-  'id, reference_number, record_type, subject, sender, description, system_code, bearer, content, destination_folder, receiving_staff, date_received, received_at, status, current_office, remarks, created_at'
+  'id, reference_number, record_type, subject, sender, description, system_code, bearer, content, destination_folder, receiving_staff, date_received, received_at, status, current_office, remarks, created_at, created_by'
 
 const tableColumns: { label: string; field: SortField }[] = [
   { label: 'PresOffice No.', field: 'reference_number' },
@@ -102,6 +102,10 @@ export default function ReceivingRecords() {
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [success, setSuccess] = useState('')
+
+  // Account name of the user who created the selected record.
+  const [creatorName, setCreatorName] = useState('')
+  const [creatorLoading, setCreatorLoading] = useState(false)
 
   const [sortField, setSortField] =
     useState<SortField>('date_received')
@@ -139,12 +143,46 @@ export default function ReceivingRecords() {
     void loadRecords()
   }, [])
 
+  // Assumes profiles.id matches receiving_records.created_by
+  // and profiles.full_name contains the user's full name.
+  async function loadCreatorName(record: ReceivingRecord) {
+    setCreatorName('')
+    setCreatorLoading(true)
+
+    try {
+      if (!record.created_by) {
+        setCreatorName('')
+        return
+      }
+
+      const { data, error: profileError } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', record.created_by)
+        .maybeSingle()
+
+      if (profileError) {
+        console.error('Unable to load creator profile:', profileError)
+        setCreatorName('')
+        return
+      }
+
+      setCreatorName(data?.full_name?.trim() || '')
+    } catch (err) {
+      console.error('Unable to load creator name:', err)
+      setCreatorName('')
+    } finally {
+      setCreatorLoading(false)
+    }
+  }
+
   function openRecord(record: ReceivingRecord) {
     setSelected(record)
     setDraft(createDraft(record))
     setEditMode(false)
     setSaveError('')
     setSuccess('')
+    void loadCreatorName(record)
   }
 
   function createDraft(record: ReceivingRecord): EditableRecord {
@@ -188,6 +226,8 @@ export default function ReceivingRecords() {
     setEditMode(false)
     setSaveError('')
     setSuccess('')
+    setCreatorName('')
+    setCreatorLoading(false)
   }
 
   function updateDraft<K extends keyof EditableRecord>(
@@ -323,7 +363,6 @@ export default function ReceivingRecords() {
     }
   }
 
-  // Folder filtering is immediate; text search is applied by the Search button.
   const filteredRecords = useMemo(() => {
     const term = appliedSearch.trim().toLowerCase()
 
@@ -491,9 +530,7 @@ export default function ReceivingRecords() {
                 value={searchInput}
                 onChange={event => setSearchInput(event.target.value)}
                 onKeyDown={event => {
-                  if (event.key === 'Enter') {
-                    handleSearch()
-                  }
+                  if (event.key === 'Enter') handleSearch()
                 }}
                 placeholder="Search by number, subject, sender..."
                 aria-label="Search receiving records"
@@ -565,7 +602,6 @@ export default function ReceivingRecords() {
                       className="inline-flex items-center gap-1.5 transition hover:text-blue-700"
                     >
                       {column.label}
-
                       <span className="font-bold text-slate-400">
                         {sortField === column.field
                           ? sortDirection === 'asc'
@@ -586,28 +622,19 @@ export default function ReceivingRecords() {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td
-                    colSpan={9}
-                    className="px-4 py-14 text-center text-sm text-slate-500"
-                  >
+                  <td colSpan={9} className="px-4 py-14 text-center text-sm text-slate-500">
                     Loading incoming documents...
                   </td>
                 </tr>
               ) : error && records.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={9}
-                    className="px-4 py-14 text-center text-sm text-slate-500"
-                  >
+                  <td colSpan={9} className="px-4 py-14 text-center text-sm text-slate-500">
                     Records could not be loaded. Check the error above.
                   </td>
                 </tr>
               ) : filteredRecords.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={9}
-                    className="px-4 py-14 text-center text-sm text-slate-500"
-                  >
+                  <td colSpan={9} className="px-4 py-14 text-center text-sm text-slate-500">
                     {appliedSearch || selectedFolder !== 'ALL'
                       ? 'No matching records found for the selected folder and search criteria.'
                       : 'No incoming documents yet.'}
@@ -615,10 +642,7 @@ export default function ReceivingRecords() {
                 </tr>
               ) : (
                 filteredRecords.map(record => (
-                  <tr
-                    key={record.id}
-                    className="transition-colors hover:bg-slate-50"
-                  >
+                  <tr key={record.id} className="transition-colors hover:bg-slate-50">
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                       {record.reference_number || '—'}
                     </td>
@@ -628,10 +652,7 @@ export default function ReceivingRecords() {
                     </td>
 
                     <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
-                      <span
-                        className="block truncate"
-                        title={record.content || record.subject || ''}
-                      >
+                      <span className="block truncate" title={record.content || record.subject || ''}>
                         {record.content || record.subject || '—'}
                       </span>
                     </td>
@@ -645,9 +666,7 @@ export default function ReceivingRecords() {
                     </td>
 
                     <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.destination_folder ||
-                        record.current_office ||
-                        '—'}
+                      {record.destination_folder || record.current_office || '—'}
                     </td>
 
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
@@ -682,7 +701,6 @@ export default function ReceivingRecords() {
           <p className="text-[11px] text-slate-500">
             Showing {filteredRecords.length} record(s)
           </p>
-
           <p className="text-[11px] text-slate-400">
             Select a column heading to sort.
           </p>
@@ -707,10 +725,7 @@ export default function ReceivingRecords() {
                   Incoming Document
                 </p>
 
-                <h3
-                  id="receiving-detail-title"
-                  className="mt-1 text-xl font-bold text-slate-900"
-                >
+                <h3 id="receiving-detail-title" className="mt-1 text-xl font-bold text-slate-900">
                   {selected.reference_number}
                 </h3>
 
@@ -734,19 +749,13 @@ export default function ReceivingRecords() {
 
             <div className="p-6">
               {saveError && (
-                <div
-                  role="alert"
-                  className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-                >
+                <div role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                   {saveError}
                 </div>
               )}
 
               {success && !editMode && (
-                <div
-                  role="status"
-                  className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700"
-                >
+                <div role="status" className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
                   {success}
                 </div>
               )}
@@ -758,9 +767,7 @@ export default function ReceivingRecords() {
                     <input
                       required
                       value={draft.reference_number}
-                      onChange={event =>
-                        updateDraft('reference_number', event.target.value)
-                      }
+                      onChange={event => updateDraft('reference_number', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -769,9 +776,7 @@ export default function ReceivingRecords() {
                     System Code
                     <input
                       value={draft.system_code}
-                      onChange={event =>
-                        updateDraft('system_code', event.target.value)
-                      }
+                      onChange={event => updateDraft('system_code', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -782,9 +787,7 @@ export default function ReceivingRecords() {
                       required
                       rows={3}
                       value={draft.content}
-                      onChange={event =>
-                        updateDraft('content', event.target.value)
-                      }
+                      onChange={event => updateDraft('content', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -794,9 +797,7 @@ export default function ReceivingRecords() {
                     <input
                       required
                       value={draft.bearer}
-                      onChange={event =>
-                        updateDraft('bearer', event.target.value)
-                      }
+                      onChange={event => updateDraft('bearer', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -806,9 +807,7 @@ export default function ReceivingRecords() {
                     <input
                       required
                       value={draft.receiving_staff}
-                      onChange={event =>
-                        updateDraft('receiving_staff', event.target.value)
-                      }
+                      onChange={event => updateDraft('receiving_staff', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -818,17 +817,12 @@ export default function ReceivingRecords() {
                     <select
                       required
                       value={draft.destination_folder}
-                      onChange={event =>
-                        updateDraft('destination_folder', event.target.value)
-                      }
+                      onChange={event => updateDraft('destination_folder', event.target.value)}
                       className={inputClass}
                     >
                       <option value="">Select destination folder</option>
-
                       {DESTINATION_FOLDERS.map(folder => (
-                        <option key={folder} value={folder}>
-                          {folder}
-                        </option>
+                        <option key={folder} value={folder}>{folder}</option>
                       ))}
                     </select>
                   </label>
@@ -839,9 +833,7 @@ export default function ReceivingRecords() {
                       type="date"
                       required
                       value={draft.date_received}
-                      onChange={event =>
-                        updateDraft('date_received', event.target.value)
-                      }
+                      onChange={event => updateDraft('date_received', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -850,9 +842,7 @@ export default function ReceivingRecords() {
                     Status
                     <select
                       value={draft.status}
-                      onChange={event =>
-                        updateDraft('status', event.target.value)
-                      }
+                      onChange={event => updateDraft('status', event.target.value)}
                       className={inputClass}
                     >
                       <option value="received">Received</option>
@@ -868,9 +858,7 @@ export default function ReceivingRecords() {
                     <textarea
                       rows={3}
                       value={draft.remarks}
-                      onChange={event =>
-                        updateDraft('remarks', event.target.value)
-                      }
+                      onChange={event => updateDraft('remarks', event.target.value)}
                       className={inputClass}
                     />
                   </label>
@@ -893,14 +881,10 @@ export default function ReceivingRecords() {
                     ['Remarks', selected.remarks],
                     ['Created At', formatDateTime(selected.created_at)],
                   ].map(([label, value]) => (
-                    <div
-                      key={label}
-                      className="rounded-lg border border-slate-100 bg-slate-50 p-3.5"
-                    >
+                    <div key={label} className="rounded-lg border border-slate-100 bg-slate-50 p-3.5">
                       <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                         {label}
                       </dt>
-
                       <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800">
                         {value || '—'}
                       </dd>
@@ -913,9 +897,16 @@ export default function ReceivingRecords() {
             <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50/70 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 {!editMode && (
-                  <p className="text-[11px] text-slate-400">
-                    Record ID: {selected.id}
-                  </p>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Created By
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-800">
+                      {creatorLoading
+                        ? 'Loading account name...'
+                        : creatorName || 'Account name unavailable'}
+                    </p>
+                  </div>
                 )}
               </div>
 

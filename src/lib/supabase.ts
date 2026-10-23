@@ -1,11 +1,16 @@
 
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL
-const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-if (!url || !key) {
-  throw new Error('Supabase URL or publishable key is missing.')
+console.log('Supabase URL exists:', Boolean(supabaseUrl))
+console.log('Supabase key exists:', Boolean(supabaseKey))
+
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error(
+    `Supabase configuration missing: URL=${Boolean(supabaseUrl)}, KEY=${Boolean(supabaseKey)}`
+  )
 }
 
-export const supabase = createClient(url, key)
+export const supabase = createClient(supabaseUrl, supabaseKey)

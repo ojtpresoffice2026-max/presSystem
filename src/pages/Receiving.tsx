@@ -56,16 +56,20 @@ const SPECIAL_DESTINATIONS = [
   'BAYAWAN',
 ]
 
-const DV_DESTINATIONS = [
+const NEW_DESTINATIONS = [
+  'LDDAP',
+  'ORS/BURS',
   'DV MAIN',
   'DV BAIS',
   'DV BAYAWAN',
   'DV GUIHULNGAN',
   'DV MABINAY',
   'DV SIATION',
+  'PACSVAL',
+  'NORSA/NBURSA',
 ]
 
-const CODE_OPTIONS = ['BURS', 'DV', 'ORS', 'Payroll', 'Check']
+const DOCUMENT_CODES = ['BURS', 'DV', 'ORS', 'Payroll', 'Check']
 
 const CAMPUSES = [
   'Main Campus',
@@ -81,96 +85,152 @@ const inputClass =
 
 const initialForm = {
   systemCode: '',
-  referenceNumber: '',
   bearer: '',
   content: '',
   destinationFolder: '',
   receivingStaff: '',
   receiveTime: '',
-
   originOffice: '',
   payee: '',
   amountPeso: '',
-  otherRemarks: '',
-
+  documentType: '',
   selectedCodes: [] as string[],
   orsBursAmount: '',
   dvAmount: '',
   checkAmount: '',
-
   campus: '',
   documentDate: '',
-  batchNumber: '',
+  batchNo: '',
   totalAmount: '',
-
+  norsaType: '',
   serialNumber: '',
-  norsaNbursaType: '',
   amountToAdjust: '',
   adjustedAmount: '',
-  otherNotesRemarks: '',
-
   officeDesignation: '',
   dateOfLetter: '',
+  otherNotesRemarks: '',
 }
 
-type FormState = typeof initialForm
+const PRESOFFICE_CHARACTERS =
+  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
+function generatePresOfficeNumber(): string {
+  const values = new Uint32Array(5)
+
+  crypto.getRandomValues(values)
+
+  return Array.from(
+    values,
+    value =>
+      PRESOFFICE_CHARACTERS[
+        value % PRESOFFICE_CHARACTERS.length
+      ],
+  ).join('')
+}
+
+/**
+ * Converts currency-formatted text to a numeric value.
+ *
+ * Accepted examples:
+ * ₱1,500.00
+ * PHP 1,500.00
+ * $1,500.00
+ * 1500
+ *
+ * Empty fields return null.
+ */
 function toAmount(value: string): number | null {
-  const cleaned = value
+  if (!value.trim()) return null
+
+  const normalized = value
     .trim()
-    .replace(/₱|PHP|\$|€|£|¥/gi, '')
+    .replace(/₱|[$€£¥]/g, '')
+    .replace(/\bPHP\b/gi, '')
     .replace(/,/g, '')
-    .replace(/\s/g, '')
+    .replace(/\s+/g, '')
 
-  if (!cleaned) return null
-
-  if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) {
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
     throw new Error(
-      `Invalid amount "${value}". Enter an amount such as ₱1,500.00.`
+      `Invalid amount: "${value}". Enter a valid amount, such as ₱1,500.00.`,
     )
   }
 
-  const amount = Number(cleaned)
+  const amount = Number(normalized)
 
-  if (!Number.isFinite(amount) || amount < 0) {
-    throw new Error('Amounts must be valid non-negative numbers.')
+  if (!Number.isFinite(amount)) {
+    throw new Error('Please enter a valid amount.')
   }
 
   return amount
 }
 
-function isFinancialFolder(folder: string) {
-  return [
-    'LDDAP',
-    'ORS/BURS',
-    ...DV_DESTINATIONS,
-    'PACSVAL',
-    'NORSA/NBURSA',
-  ].includes(folder)
-}
+function AmountInput({
+  label,
+  value,
+  onChange,
+  required = false,
+  helpText,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  required?: boolean
+  helpText?: string
+}) {
+  return (
+    <label className="block text-sm font-semibold">
+      {label}
 
-function isDvFolder(folder: string) {
-  return DV_DESTINATIONS.includes(folder)
-}
+      <input
+        type="text"
+        inputMode="decimal"
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        placeholder="₱0.00"
+        required={required}
+        className={inputClass}
+      />
 
+      {helpText && (
+        <span className="mt-1 block text-xs font-normal text-slate-500">
+          {helpText}
+        </span>
+      )}
+    </label>
+  )
+}
 export default function Receiving() {
   const [folders, setFolders] = useState<OfficeFolder[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const [savedReference, setSavedReference] = useState('')
   const [receiptDate, setReceiptDate] = useState(new Date())
-  const [form, setForm] = useState<FormState>({ ...initialForm })
+  const [form, setForm] = useState(initialForm)
+  const [generatedCode, setGeneratedCode] = useState('')
+  const [showSuccessModal, setShowSuccessModal] = useState(false)
+  const [copyMessage, setCopyMessage] = useState('')
 
-  const selectedFolder = form.destinationFolder.trim().toUpperCase()
-  const isLddap = selectedFolder === 'LDDAP'
-  const isOrsBurs = selectedFolder === 'ORS/BURS'
-  const isDv = isDvFolder(selectedFolder)
-  const isPacsval = selectedFolder === 'PACSVAL'
-  const isNorsaNbursa = selectedFolder === 'NORSA/NBURSA'
-  const isSpecialDestination =
-    SPECIAL_DESTINATIONS.includes(selectedFolder)
+  const selectedDestination =
+    form.destinationFolder.trim().toUpperCase()
+
+  const showAdditionalFields =
+    SPECIAL_DESTINATIONS.includes(selectedDestination)
+
+  const showDvFields =
+    selectedDestination.startsWith('DV') ||
+    selectedDestination === 'ORS/BURS'
+
+  const showPacsvalFields =
+    selectedDestination === 'PACSVAL'
+
+  const showNorsaFields =
+    selectedDestination === 'NORSA/NBURSA'
+
+  const isNewDestination =
+    NEW_DESTINATIONS.includes(selectedDestination)
+
+  const showLddapFields =
+    selectedDestination === 'LDDAP'
 
   async function loadData() {
     setLoading(true)
@@ -199,7 +259,7 @@ export default function Receiving() {
       setError(
         err instanceof Error
           ? err.message
-          : 'Unable to load receiving data.'
+          : 'Unable to load receiving data.',
       )
     } finally {
       setLoading(false)
@@ -210,40 +270,53 @@ export default function Receiving() {
     void loadData()
   }, [])
 
-  function updateField<K extends keyof FormState>(
-    field: K,
-    value: FormState[K]
+  function updateField(
+    field: keyof typeof initialForm,
+    value: string | string[],
   ) {
-    setForm(previous => ({ ...previous, [field]: value }))
+    setForm(previous => ({
+      ...previous,
+      [field]: value,
+    }))
+
     setError('')
-    setSuccess('')
   }
 
   function toggleCode(code: string) {
+    setForm(previous => {
+      const selected = previous.selectedCodes.includes(code)
+
+      return {
+        ...previous,
+        selectedCodes: selected
+          ? previous.selectedCodes.filter(item => item !== code)
+          : [...previous.selectedCodes, code],
+      }
+    })
+
+    setError('')
+  }
+
+  function toggleAllCodes() {
     setForm(previous => ({
       ...previous,
-      selectedCodes: previous.selectedCodes.includes(code)
-        ? previous.selectedCodes.filter(item => item !== code)
-        : [...previous.selectedCodes, code],
+      selectedCodes:
+        previous.selectedCodes.length === DOCUMENT_CODES.length
+          ? []
+          : [...DOCUMENT_CODES],
     }))
+
     setError('')
   }
 
-  function clearForm() {
-    setForm({ ...initialForm })
-    setError('')
-    setSuccess('')
-    setSavedReference('')
-    setReceiptDate(new Date())
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(
+    event: FormEvent<HTMLFormElement>,
+  ) {
     event.preventDefault()
-    setError('')
-    setSuccess('')
 
     if (saving) return
 
+    setError('')
     setSaving(true)
 
     try {
@@ -253,22 +326,24 @@ export default function Receiving() {
       } = await supabase.auth.getUser()
 
       if (authError) throw authError
+
       if (!user) {
         throw new Error(
-          'Your session has expired. Please sign in again.'
+          'Your session has expired. Please sign in again.',
         )
       }
 
-      const referenceNumber = form.referenceNumber.trim()
       const bearer = form.bearer.trim()
       const content = form.content.trim()
       const receivingStaff = form.receivingStaff.trim()
-      const originOffice = form.originOffice.trim()
+
+      const selectedFolder =
+        form.destinationFolder.trim().toUpperCase()
 
       const folder = folders.find(
         item =>
           item.code.trim().toUpperCase() === selectedFolder ||
-          item.name.trim().toUpperCase() === selectedFolder
+          item.name.trim().toUpperCase() === selectedFolder,
       )
 
       const destinationCode =
@@ -278,7 +353,6 @@ export default function Receiving() {
           : '')
 
       if (
-        !referenceNumber ||
         !bearer ||
         !content ||
         !receivingStaff ||
@@ -286,45 +360,21 @@ export default function Receiving() {
         !destinationCode
       ) {
         throw new Error(
-          'Please complete all required fields and select a destination folder.'
+          'Please complete all required fields and select a valid destination folder.',
         )
       }
 
-      if (isFinancialFolder(selectedFolder) && !originOffice) {
+      if (
+        showDvFields &&
+        form.selectedCodes.length === 0
+      ) {
         throw new Error(
-          'Please enter the Origin of the Document (Office).'
+          'Please select at least one document code: BURS, DV, ORS, Payroll, or Check.',
         )
-      }
-
-      if (isOrsBurs && !form.norsaNbursaType && false) {
-        // Intentionally unused; ORS/BURS has its own selection below.
-      }
-
-      if (isLddap && !form.payee.trim()) {
-        throw new Error('Please enter the LDDAP payee.')
-      }
-
-      if (isOrsBurs && !form.norsaNbursaType && false) {
-        throw new Error('Please select ORS or BURS.')
-      }
-
-      if (isOrsBurs && !form.payee.trim()) {
-        throw new Error('Please enter the payee.')
-      }
-
-      if (isDv && !form.payee.trim()) {
-        throw new Error('Please enter the payee.')
-      }
-
-      if (isPacsval && !form.campus) {
-        throw new Error('Please select a campus for PACSVAL.')
-      }
-
-      if (isNorsaNbursa && !form.norsaNbursaType) {
-        throw new Error('Please select NORSA or NBURSA.')
       }
 
       const now = new Date()
+
       const localDate = [
         now.getFullYear(),
         String(now.getMonth() + 1).padStart(2, '0'),
@@ -332,118 +382,178 @@ export default function Receiving() {
       ].join('-')
 
       const receivedAt = new Date(
-        `${localDate}T${form.receiveTime}:00`
+        `${localDate}T${form.receiveTime}:00`,
       )
 
       if (Number.isNaN(receivedAt.getTime())) {
         throw new Error('Please enter a valid receiving time.')
       }
 
-      // Common fields used for all destinations.
-      const record: Record<string, unknown> = {
-        reference_number: referenceNumber,
-        record_type: 'Other',
-        subject: content,
-        sender: bearer,
-        description: content,
-        system_code: isLddap
-          ? 'LDDAP'
-          : form.systemCode.trim() || null,
-        bearer,
-        content,
-        destination_folder: destinationCode,
-        date_received: localDate,
-        received_at: receivedAt.toISOString(),
-        receiving_staff: receivingStaff,
-        created_by: user.id,
-        status: 'received',
-        current_office: destinationCode,
-      }
+      const amountPeso = showLddapFields
+        ? toAmount(form.amountPeso)
+        : null
 
-      // Financial-folder origin office.
-      if (isFinancialFolder(selectedFolder)) {
-        record.origin_office = originOffice
-      }
+      const orsBursAmount = showDvFields
+        ? toAmount(form.orsBursAmount)
+        : null
 
-      // LDDAP fields.
-      if (isLddap) {
-        record.system_code = 'LDDAP'
-        record.amount_peso = toAmount(form.amountPeso)
-        record.payee = form.payee.trim()
-        record.other_remarks = form.otherRemarks.trim() || null
-      }
+      const dvAmount = showDvFields
+        ? toAmount(form.dvAmount)
+        : null
 
-      // ORS/BURS fields.
-      if (isOrsBurs) {
-        record.document_code = form.systemCode.trim() || null
-        record.ors_burs_type = form.systemCode.trim() || null
-        record.payee = form.payee.trim()
-        record.amount_peso = toAmount(form.amountPeso)
-        record.other_remarks = form.otherRemarks.trim() || null
-      }
+      const checkAmount = showDvFields
+        ? toAmount(form.checkAmount)
+        : null
 
-      // DV folder fields.
-      if (isDv) {
-        record.document_codes = form.selectedCodes
-        record.payee = form.payee.trim()
-        record.ors_burs_amount = toAmount(form.orsBursAmount)
-        record.dv_amount = toAmount(form.dvAmount)
-        record.check_amount = toAmount(form.checkAmount)
-        record.other_remarks = form.otherRemarks.trim() || null
-      }
+      const totalAmount = showPacsvalFields
+        ? toAmount(form.totalAmount)
+        : null
 
-      // PACSVAL fields.
-      if (isPacsval) {
-        record.campus = form.campus
-        record.document_date = form.documentDate || null
-        record.batch_number = form.batchNumber.trim() || null
-        record.total_amount = toAmount(form.totalAmount)
-        record.other_remarks = form.otherRemarks.trim() || null
-      }
+      const amountToAdjust = showNorsaFields
+        ? toAmount(form.amountToAdjust)
+        : null
 
-      // NORSA/NBURSA fields.
-      if (isNorsaNbursa) {
-        record.serial_number = form.serialNumber.trim() || null
-        record.norsa_nbursa_type = form.norsaNbursaType
-        record.amount_to_adjust = toAmount(form.amountToAdjust)
-        record.adjusted_amount = toAmount(form.adjustedAmount)
-        record.other_notes_remarks =
-          form.otherNotesRemarks.trim() || null
-      }
+      const adjustedAmount = showNorsaFields
+        ? toAmount(form.adjustedAmount)
+        : null
 
-      // Preserve the existing special destination fields.
-      if (isSpecialDestination) {
-        record.office_designation =
-          form.officeDesignation.trim() || null
-        record.date_of_letter = form.dateOfLetter || null
-        record.other_notes_remarks =
-          form.otherNotesRemarks.trim() || null
-      }
+      const documentCode =
+        form.selectedCodes.length > 0
+          ? form.selectedCodes.join(', ')
+          : null
 
-      const { error: insertError } = await supabase
-        .from('receiving_records')
-        .insert(record)
+      const officeDesignation = showAdditionalFields
+        ? form.officeDesignation.trim() || null
+        : null
 
-      if (insertError) {
-        console.error('Failed to save receiving record:', insertError)
+      const dateOfLetter = showAdditionalFields
+        ? form.dateOfLetter || null
+        : null
+
+      const otherNotesRemarks = showAdditionalFields
+        ? form.otherNotesRemarks.trim() || null
+        : null
+
+      let savedCode = ''
+      let saved = false
+
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const candidate = generatePresOfficeNumber()
+
+        const {
+          data: existing,
+          error: checkError,
+        } = await supabase
+          .from('receiving_records')
+          .select('id')
+          .eq('reference_number', candidate)
+          .limit(1)
+          .maybeSingle()
+
+        if (checkError) throw checkError
+        if (existing) continue
+
+        const record: Record<string, unknown> = {
+          reference_number: candidate,
+          record_type: 'Other',
+          subject: content,
+          sender: bearer,
+          description: content,
+          system_code: form.systemCode.trim() || null,
+          bearer,
+          content,
+          destination_folder: destinationCode,
+          date_received: localDate,
+          received_at: receivedAt.toISOString(),
+          receiving_staff: receivingStaff,
+          created_by: user.id,
+          status: 'received',
+          current_office: destinationCode,
+        }
+
+        if (showAdditionalFields) {
+          record.office_designation = officeDesignation
+          record.date_of_letter = dateOfLetter
+          record.other_notes_remarks = otherNotesRemarks
+        }
+
+        if (isNewDestination) {
+          record.origin_office =
+            form.originOffice.trim() || null
+          record.payee = form.payee.trim() || null
+          record.document_type =
+            form.documentType.trim() || null
+        }
+
+        if (showLddapFields) {
+          record.amount_peso = amountPeso
+        }
+
+        if (showDvFields) {
+          record.document_code = documentCode
+          record.ors_burs_amount = orsBursAmount
+          record.dv_amount = dvAmount
+          record.check_amount = checkAmount
+        }
+
+        if (showPacsvalFields) {
+          record.campus = form.campus || null
+          record.document_date = form.documentDate || null
+          record.batch_no = form.batchNo.trim() || null
+          record.total_amount = totalAmount
+        }
+
+        if (showNorsaFields) {
+          record.norsa_type = form.norsaType || null
+          record.serial_number =
+            form.serialNumber.trim() || null
+          record.amount_to_adjust = amountToAdjust
+          record.adjusted_amount = adjustedAmount
+        }
+
+        const { error: insertError } = await supabase
+          .from('receiving_records')
+          .insert(record as any)
+
+        if (!insertError) {
+          savedCode = candidate
+          saved = true
+          break
+        }
+
+        if (insertError.code === '23505') {
+          continue
+        }
+
+        console.error(
+          'Failed to save receiving record:',
+          insertError,
+        )
 
         throw new Error(
           [
             insertError.message,
             insertError.details,
             insertError.hint,
-            insertError.code ? `Code: ${insertError.code}` : '',
+            insertError.code
+              ? `Code: ${insertError.code}`
+              : '',
           ]
             .filter(Boolean)
-            .join(' — ')
+            .join(' — '),
         )
       }
 
-      setSavedReference(referenceNumber)
-      setSuccess(
-        `Record ${referenceNumber} was received successfully.`
-      )
-      setForm({ ...initialForm })
+      if (!saved) {
+        throw new Error(
+          'Unable to generate a unique PresOffice No. after several attempts. Please try again.',
+        )
+      }
+
+      setGeneratedCode(savedCode)
+      setCopyMessage('')
+      setShowSuccessModal(true)
+      setForm({ ...initialForm, selectedCodes: [] })
       setReceiptDate(new Date())
     } catch (err) {
       console.error('Receiving form error:', err)
@@ -451,36 +561,44 @@ export default function Receiving() {
       setError(
         err instanceof Error
           ? err.message
-          : 'Unable to save the record.'
+          : 'Unable to save the record.',
       )
     } finally {
       setSaving(false)
     }
   }
 
-  async function copyReference() {
-    if (!savedReference) return
-
+  async function copyGeneratedCode() {
     try {
-      await navigator.clipboard.writeText(savedReference)
-      setSuccess(`Reference number ${savedReference} copied.`)
+      await navigator.clipboard.writeText(generatedCode)
+      setCopyMessage('PresOffice No. copied successfully.')
     } catch {
-      setError('Unable to copy the reference number.')
+      setCopyMessage(
+        'Copy failed. Please select and copy the code manually.',
+      )
     }
   }
 
-  return (
+  function closeSuccessModal() {
+    setShowSuccessModal(false)
+    setGeneratedCode('')
+    setCopyMessage('')
+  }
+
+  function clearForm() {
+    setForm({ ...initialForm, selectedCodes: [] })
+    setError('')
+  }
+    return (
     <main className="min-w-0 flex-1 space-y-6 bg-slate-50 p-4 text-slate-800 sm:p-6 lg:p-8">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm text-slate-500">
             Workspace / Records / Receiving
           </p>
-
           <h1 className="mt-1 text-3xl font-bold text-blue-950">
             Receiving
           </h1>
-
           <p className="mt-2 text-sm text-slate-500">
             Register incoming documents and assign their destination office.
           </p>
@@ -489,28 +607,18 @@ export default function Receiving() {
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
           <div className="w-full sm:w-72">
             <label
-              htmlFor="destination-folder"
+              htmlFor="destination-search"
               className="mb-1 block text-xs font-semibold text-slate-600"
             >
               Destination Folder
             </label>
 
             <select
-              id="destination-folder"
+              id="destination-search"
               value={form.destinationFolder}
-              onChange={event => {
-                const value = event.target.value
-                setForm(previous => ({
-                  ...previous,
-                  destinationFolder: value,
-                  systemCode:
-                    value.toUpperCase() === 'LDDAP'
-                      ? 'LDDAP'
-                      : '',
-                }))
-                setError('')
-                setSuccess('')
-              }}
+              onChange={event =>
+                updateField('destinationFolder', event.target.value)
+              }
               className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
               required
             >
@@ -518,9 +626,9 @@ export default function Receiving() {
 
               {DESTINATION_FOLDERS.map(code => {
                 const matchingFolder = folders.find(
-                  folder =>
-                    folder.code.toUpperCase() === code ||
-                    folder.name.toUpperCase() === code
+                  item =>
+                    item.code.toUpperCase() === code ||
+                    item.name.toUpperCase() === code,
                 )
 
                 return (
@@ -563,14 +671,11 @@ export default function Receiving() {
             <p className="text-[10px] font-semibold tracking-widest text-blue-200">
               INCOMING DOCUMENTS
             </p>
-
             <h2 className="mt-1 text-lg font-bold sm:text-xl">
               Receive a new record
             </h2>
-
             <p className="mt-1 text-xs leading-5 text-blue-100 sm:text-sm">
-              Complete the receiving information and the fields required
-              for the selected destination folder.
+              Register incoming documents, record receipt details, and assign a destination folder.
             </p>
           </div>
         </div>
@@ -582,52 +687,13 @@ export default function Receiving() {
           className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
         >
           <AlertCircle size={20} className="mt-0.5 shrink-0" />
+
           <div>
-            <p className="font-semibold">Unable to process the record</p>
+            <p className="font-semibold">
+              Unable to process the record
+            </p>
             <p className="mt-1 break-words">{error}</p>
           </div>
-        </div>
-      )}
-
-      {success && (
-        <div
-          role="status"
-          className="flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800"
-        >
-          <CheckCircle2 size={20} className="mt-0.5 shrink-0" />
-
-          <div className="min-w-0 flex-1">
-            <p>{success}</p>
-
-            {savedReference && (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="rounded-md border border-green-200 bg-white px-3 py-1.5 font-semibold">
-                  {savedReference}
-                </span>
-
-                <button
-                  type="button"
-                  onClick={() => void copyReference()}
-                  className="inline-flex items-center gap-2 rounded-lg border border-green-300 bg-white px-3 py-1.5 font-semibold hover:bg-green-100"
-                >
-                  <Copy size={15} />
-                  Copy reference
-                </button>
-              </div>
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSuccess('')
-              setSavedReference('')
-            }}
-            aria-label="Dismiss success message"
-            className="rounded-lg p-1 hover:bg-green-100"
-          >
-            <X size={17} />
-          </button>
         </div>
       )}
 
@@ -636,9 +702,8 @@ export default function Receiving() {
           <h2 className="text-lg font-bold text-blue-950">
             Document Information
           </h2>
-
           <p className="mt-1 text-sm text-slate-500">
-            Fields marked with * are required.
+            Fields marked with * are required. Additional fields appear according to the selected destination.
           </p>
         </div>
 
@@ -646,48 +711,36 @@ export default function Receiving() {
           onSubmit={handleSubmit}
           className="space-y-6 p-5 sm:p-6"
         >
-          {/* Common fields */}
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {isLddap ? (
-              <label className="text-sm font-semibold">
-                System Code
-                <input
-                  value="LDDAP"
-                  readOnly
-                  className={`${inputClass} cursor-not-allowed bg-slate-100 font-semibold text-slate-600`}
-                />
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Fixed system code for LDDAP.
-                </span>
-              </label>
-            ) : (
-              <label className="text-sm font-semibold">
-                System Code
-                <span className="ml-2 font-normal text-slate-400">
-                  Optional
-                </span>
-                <input
-                  value={form.systemCode}
-                  onChange={event =>
-                    updateField('systemCode', event.target.value)
-                  }
-                  placeholder="Enter system code"
-                  className={inputClass}
-                />
-              </label>
-            )}
-
             <label className="text-sm font-semibold">
-              PresOffice No. *
+              System Code
+              <span className="ml-2 font-normal text-slate-400">
+                Optional
+              </span>
               <input
-                required
-                value={form.referenceNumber}
+                value={form.systemCode}
                 onChange={event =>
-                  updateField('referenceNumber', event.target.value)
+                  updateField('systemCode', event.target.value)
                 }
-                placeholder="Enter PresOffice number"
+                placeholder="Enter system code"
                 className={inputClass}
               />
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Enter the existing system code, if applicable.
+              </span>
+            </label>
+
+            <label className="text-sm font-semibold">
+              PresOffice No.
+              <input
+                value="Generated automatically when saved"
+                readOnly
+                aria-readonly="true"
+                className={`${inputClass} cursor-not-allowed bg-slate-50 text-slate-500`}
+              />
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                A unique 5-character alphanumeric code is generated when you save.
+              </span>
             </label>
 
             <label className="text-sm font-semibold">
@@ -714,6 +767,9 @@ export default function Receiving() {
                 })}
                 className={`${inputClass} bg-slate-50 text-slate-600`}
               />
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Today's date.
+              </span>
             </label>
 
             <label className="text-sm font-semibold">
@@ -733,6 +789,9 @@ export default function Receiving() {
                   className={`${inputClass} pl-10`}
                 />
               </div>
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Enter the actual time the document was received.
+              </span>
             </label>
 
             <label className="text-sm font-semibold">
@@ -748,19 +807,57 @@ export default function Receiving() {
               />
             </label>
 
-            {isFinancialFolder(selectedFolder) && (
-              <label className="text-sm font-semibold">
-                Origin of the Document (Office) *
-                <input
-                  required
-                  value={form.originOffice}
-                  onChange={event =>
-                    updateField('originOffice', event.target.value)
+            {isNewDestination && (
+              <>
+                <label className="text-sm font-semibold">
+                  Origin of Document / Office
+                  <input
+                    value={form.originOffice}
+                    onChange={event =>
+                      updateField('originOffice', event.target.value)
+                    }
+                    placeholder="Enter originating office"
+                    className={inputClass}
+                  />
+                </label>
+
+                <label className="text-sm font-semibold">
+                  Payee
+                  <input
+                    value={form.payee}
+                    onChange={event =>
+                      updateField('payee', event.target.value)
+                    }
+                    placeholder="Enter payee name"
+                    className={inputClass}
+                  />
+                </label>
+
+                <label className="text-sm font-semibold">
+                  Document Type
+                  <input
+                    value={form.documentType}
+                    onChange={event =>
+                      updateField('documentType', event.target.value)
+                    }
+                    placeholder="Enter document type"
+                    className={inputClass}
+                  />
+                </label>
+              </>
+            )}
+
+            {showLddapFields && (
+              <div className="md:col-span-2 xl:col-span-3">
+                <AmountInput
+                  label="Amount (₱)"
+                  value={form.amountPeso}
+                  onChange={value =>
+                    updateField('amountPeso', value)
                   }
-                  placeholder="Enter originating office"
-                  className={inputClass}
+                  helpText="Currency symbols and comma separators are accepted."
                 />
-              </label>
+              </div>
             )}
           </div>
 
@@ -778,234 +875,98 @@ export default function Receiving() {
             />
           </label>
 
-          {/* LDDAP-specific fields */}
-          {isLddap && (
-            <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/50 p-5">
-              <h3 className="font-bold text-blue-950">
-                LDDAP Information
-              </h3>
-
-              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                <label className="text-sm font-semibold">
-                  Amount in Peso
-                  <input
-                    value={form.amountPeso}
-                    onChange={event =>
-                      updateField('amountPeso', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold">
-                  Payee *
-                  <input
-                    required
-                    value={form.payee}
-                    onChange={event =>
-                      updateField('payee', event.target.value)
-                    }
-                    placeholder="Enter payee name"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold md:col-span-2">
-                  Other Remarks
-                  <textarea
-                    rows={3}
-                    value={form.otherRemarks}
-                    onChange={event =>
-                      updateField('otherRemarks', event.target.value)
-                    }
-                    placeholder="Enter other remarks (optional)"
-                    className={inputClass}
-                  />
-                </label>
-              </div>
-            </div>
-          )}
-
-          {/* ORS/BURS-specific fields */}
-          {isOrsBurs && (
-            <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/50 p-5">
-              <h3 className="font-bold text-blue-950">
-                ORS/BURS Information
-              </h3>
-
-              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                <label className="text-sm font-semibold">
-                  ORS/BURS Selection *
-                  <select
-                    required
-                    value={form.systemCode}
-                    onChange={event =>
-                      updateField('systemCode', event.target.value)
-                    }
-                    className={inputClass}
-                  >
-                    <option value="">Select ORS or BURS</option>
-                    <option value="ORS">ORS</option>
-                    <option value="BURS">BURS</option>
-                  </select>
-                </label>
-
-                <label className="text-sm font-semibold">
-                  Payee *
-                  <input
-                    required
-                    value={form.payee}
-                    onChange={event =>
-                      updateField('payee', event.target.value)
-                    }
-                    placeholder="Enter payee name"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold">
-                  Amount in Peso
-                  <input
-                    value={form.amountPeso}
-                    onChange={event =>
-                      updateField('amountPeso', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold md:col-span-2">
-                  Other Remarks
-                  <textarea
-                    rows={3}
-                    value={form.otherRemarks}
-                    onChange={event =>
-                      updateField('otherRemarks', event.target.value)
-                    }
-                    placeholder="Enter other remarks (optional)"
-                    className={inputClass}
-                  />
-                </label>
-              </div>
-            </div>
-          )}
-
-          {/* DV-specific fields */}
-          {isDv && (
-            <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/50 p-5">
-              <h3 className="font-bold text-blue-950">
-                DV Information
-              </h3>
-
-              <div>
-                <p className="text-sm font-semibold">Code</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Select one or more codes if needed.
-                </p>
-
-                <div className="mt-3 flex flex-wrap gap-3">
-                  {CODE_OPTIONS.map(code => (
-                    <label
-                      key={code}
-                      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={form.selectedCodes.includes(code)}
-                        onChange={() => toggleCode(code)}
-                        className="h-4 w-4 rounded border-slate-300 text-blue-700"
-                      />
-                      {code}
-                    </label>
-                  ))}
+          {showDvFields && (
+            <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-blue-950">
+                    Document Codes
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Select one or more codes that apply to this record.
+                  </p>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={toggleAllCodes}
+                  className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
+                >
+                  {form.selectedCodes.length === DOCUMENT_CODES.length
+                    ? 'Deselect All'
+                    : 'Select All'}
+                </button>
               </div>
 
-              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                <label className="text-sm font-semibold">
-                  Payee *
-                  <input
-                    required
-                    value={form.payee}
-                    onChange={event =>
-                      updateField('payee', event.target.value)
-                    }
-                    placeholder="Enter payee name"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold">
-                  ORS/BURS Amount in Peso (Optional)
-                  <input
-                    value={form.orsBursAmount}
-                    onChange={event =>
-                      updateField('orsBursAmount', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold">
-                  DV Amount (Optional)
-                  <input
-                    value={form.dvAmount}
-                    onChange={event =>
-                      updateField('dvAmount', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold">
-                  Check Amount (Optional)
-                  <input
-                    value={form.checkAmount}
-                    onChange={event =>
-                      updateField('checkAmount', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold md:col-span-2">
-                  Other Remarks
-                  <textarea
-                    rows={3}
-                    value={form.otherRemarks}
-                    onChange={event =>
-                      updateField('otherRemarks', event.target.value)
-                    }
-                    placeholder="Enter other remarks (optional)"
-                    className={inputClass}
-                  />
-                </label>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                {DOCUMENT_CODES.map(code => (
+                  <label
+                    key={code}
+                    className={`flex cursor-pointer items-center gap-2 rounded-xl border p-3 text-sm font-semibold transition ${
+                      form.selectedCodes.includes(code)
+                        ? 'border-blue-600 bg-blue-100 text-blue-950'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.selectedCodes.includes(code)}
+                      onChange={() => toggleCode(code)}
+                      className="h-4 w-4 accent-blue-700"
+                    />
+                    {code}
+                  </label>
+                ))}
               </div>
-            </div>
+
+              <p className="text-xs text-slate-500">
+                Selected:{' '}
+                {form.selectedCodes.length > 0
+                  ? form.selectedCodes.join(', ')
+                  : 'None'}
+              </p>
+
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                <AmountInput
+                  label="ORS / BURS Amount"
+                  value={form.orsBursAmount}
+                  onChange={value =>
+                    updateField('orsBursAmount', value)
+                  }
+                />
+                <AmountInput
+                  label="DV Amount"
+                  value={form.dvAmount}
+                  onChange={value =>
+                    updateField('dvAmount', value)
+                  }
+                />
+                <AmountInput
+                  label="Check Amount"
+                  value={form.checkAmount}
+                  onChange={value =>
+                    updateField('checkAmount', value)
+                  }
+                />
+              </div>
+            </section>
           )}
 
-          {/* PACSVAL-specific fields */}
-          {isPacsval && (
-            <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/50 p-5">
-              <h3 className="font-bold text-blue-950">
-                PACSVAL Information
-              </h3>
+          {showPacsvalFields && (
+            <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
+              <div>
+                <h3 className="text-base font-bold text-blue-950">
+                  PACSVAL Information
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Enter the campus, document date, batch number, and total amount.
+                </p>
+              </div>
 
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <label className="text-sm font-semibold">
-                  Campus *
+                  Campus
                   <select
-                    required
                     value={form.campus}
                     onChange={event =>
                       updateField('campus', event.target.value)
@@ -1022,7 +983,7 @@ export default function Receiving() {
                 </label>
 
                 <label className="text-sm font-semibold">
-                  Date of the Document
+                  Document Date
                   <input
                     type="date"
                     value={form.documentDate}
@@ -1036,52 +997,52 @@ export default function Receiving() {
                 <label className="text-sm font-semibold">
                   Batch No.
                   <input
-                    value={form.batchNumber}
+                    value={form.batchNo}
                     onChange={event =>
-                      updateField('batchNumber', event.target.value)
+                      updateField('batchNo', event.target.value)
                     }
                     placeholder="Enter batch number"
                     className={inputClass}
                   />
                 </label>
 
-                <label className="text-sm font-semibold">
-                  Total Amount
-                  <input
-                    value={form.totalAmount}
-                    onChange={event =>
-                      updateField('totalAmount', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold md:col-span-2">
-                  Other Remarks
-                  <textarea
-                    rows={3}
-                    value={form.otherRemarks}
-                    onChange={event =>
-                      updateField('otherRemarks', event.target.value)
-                    }
-                    placeholder="Enter other remarks (optional)"
-                    className={inputClass}
-                  />
-                </label>
+                <AmountInput
+                  label="Total Amount (₱)"
+                  value={form.totalAmount}
+                  onChange={value =>
+                    updateField('totalAmount', value)
+                  }
+                />
               </div>
-            </div>
+            </section>
           )}
-
-          {/* NORSA/NBURSA-specific fields */}
-          {isNorsaNbursa && (
-            <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/50 p-5">
-              <h3 className="font-bold text-blue-950">
-                NORSA/NBURSA Information
-              </h3>
+                    {showNorsaFields && (
+            <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
+              <div>
+                <h3 className="text-base font-bold text-blue-950">
+                  NORSA / NBURSA Information
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Enter the document classification, serial number, and adjustment amounts.
+                </p>
+              </div>
 
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                <label className="text-sm font-semibold">
+                  Document Classification
+                  <select
+                    value={form.norsaType}
+                    onChange={event =>
+                      updateField('norsaType', event.target.value)
+                    }
+                    className={inputClass}
+                  >
+                    <option value="">Select classification</option>
+                    <option value="NORSA">NORSA</option>
+                    <option value="NBURSA">NBURSA</option>
+                  </select>
+                </label>
+
                 <label className="text-sm font-semibold">
                   Serial Number
                   <input
@@ -1094,86 +1055,60 @@ export default function Receiving() {
                   />
                 </label>
 
-                <label className="text-sm font-semibold">
-                  Document Type *
-                  <select
-                    required
-                    value={form.norsaNbursaType}
-                    onChange={event =>
-                      updateField('norsaNbursaType', event.target.value)
-                    }
-                    className={inputClass}
-                  >
-                    <option value="">Select document type</option>
-                    <option value="NORSA">NORSA</option>
-                    <option value="NBURSA">NBURSA</option>
-                  </select>
-                </label>
+                <AmountInput
+                  label="Amount to Adjust"
+                  value={form.amountToAdjust}
+                  onChange={value =>
+                    updateField('amountToAdjust', value)
+                  }
+                />
 
-                <label className="text-sm font-semibold">
-                  Amount to Adjust
-                  <input
-                    value={form.amountToAdjust}
-                    onChange={event =>
-                      updateField('amountToAdjust', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold">
-                  Adjusted Amount
-                  <input
-                    value={form.adjustedAmount}
-                    onChange={event =>
-                      updateField('adjustedAmount', event.target.value)
-                    }
-                    placeholder="₱1,500.00"
-                    inputMode="decimal"
-                    className={inputClass}
-                  />
-                </label>
-
-                <label className="text-sm font-semibold md:col-span-2">
-                  Other Notes/Remarks
-                  <textarea
-                    rows={3}
-                    value={form.otherNotesRemarks}
-                    onChange={event =>
-                      updateField('otherNotesRemarks', event.target.value)
-                    }
-                    placeholder="Enter other notes or remarks"
-                    className={inputClass}
-                  />
-                </label>
+                <AmountInput
+                  label="Adjusted Amount"
+                  value={form.adjustedAmount}
+                  onChange={value =>
+                    updateField('adjustedAmount', value)
+                  }
+                />
               </div>
-            </div>
+            </section>
           )}
 
-          {/* Existing special destination fields */}
-          {isSpecialDestination && (
-            <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-5">
-              <h3 className="font-bold text-blue-950">
-                Additional Office Information
-              </h3>
+          {showAdditionalFields && (
+            <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
+              <div>
+                <h3 className="text-base font-bold text-blue-950">
+                  Additional Document Information
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Additional details for {selectedDestination}. All fields in this section are optional.
+                </p>
+              </div>
 
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <label className="text-sm font-semibold">
-                  Office Designation
+                  Office / Designation
+                  <span className="ml-2 font-normal text-slate-400">
+                    Optional
+                  </span>
                   <input
                     value={form.officeDesignation}
                     onChange={event =>
-                      updateField('officeDesignation', event.target.value)
+                      updateField(
+                        'officeDesignation',
+                        event.target.value,
+                      )
                     }
-                    placeholder="Enter office designation"
+                    placeholder="Enter office or designation"
                     className={inputClass}
                   />
                 </label>
 
                 <label className="text-sm font-semibold">
                   Date of Letter
+                  <span className="ml-2 font-normal text-slate-400">
+                    Optional
+                  </span>
                   <input
                     type="date"
                     value={form.dateOfLetter}
@@ -1185,19 +1120,25 @@ export default function Receiving() {
                 </label>
 
                 <label className="text-sm font-semibold md:col-span-2">
-                  Other Notes/Remarks
+                  Other Notes / Remarks
+                  <span className="ml-2 font-normal text-slate-400">
+                    Optional
+                  </span>
                   <textarea
                     rows={3}
                     value={form.otherNotesRemarks}
                     onChange={event =>
-                      updateField('otherNotesRemarks', event.target.value)
+                      updateField(
+                        'otherNotesRemarks',
+                        event.target.value,
+                      )
                     }
-                    placeholder="Enter other notes or remarks"
+                    placeholder="Enter any additional notes or remarks..."
                     className={inputClass}
                   />
                 </label>
               </div>
-            </div>
+            </section>
           )}
 
           <div className="flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-5">
@@ -1221,6 +1162,104 @@ export default function Receiving() {
           </div>
         </form>
       </section>
+
+      {showSuccessModal && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          onClick={closeSuccessModal}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="success-modal-title"
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-2xl"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-100">
+                  <CheckCircle2
+                    size={21}
+                    className="text-emerald-600"
+                  />
+                </div>
+                <span className="text-sm font-semibold text-slate-800">
+                  Save Confirmation
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeSuccessModal}
+                aria-label="Close confirmation"
+                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="px-6 pb-6 pt-7 text-center">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 ring-8 ring-emerald-50/60">
+                <CheckCircle2
+                  size={34}
+                  className="text-emerald-600"
+                />
+              </div>
+
+              <h2
+                id="success-modal-title"
+                className="mt-5 text-xl font-bold tracking-tight text-slate-900"
+              >
+                Record Received Successfully
+              </h2>
+
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                The incoming document has been saved. Use this PresOffice No. to identify and track the record.
+              </p>
+
+              <div className="mt-6 rounded-xl border border-blue-100 bg-blue-50/80 p-5">
+                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-blue-700">
+                  Generated PresOffice No.
+                </p>
+
+                <p className="mt-3 break-all font-mono text-3xl font-bold tracking-[0.18em] text-blue-950">
+                  {generatedCode}
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => void copyGeneratedCode()}
+                  className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-4 py-2.5 text-sm font-semibold text-blue-700 transition hover:bg-blue-100"
+                >
+                  <Copy size={15} />
+                  Copy PresOffice No.
+                </button>
+
+                {copyMessage && (
+                  <p
+                    role="status"
+                    className="mt-3 text-xs text-slate-600"
+                  >
+                    {copyMessage}
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={closeSuccessModal}
+                className="mt-6 w-full rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-200"
+              >
+                Done
+              </button>
+
+              <p className="mt-3 text-xs text-slate-400">
+                Please keep this number for future reference.
+              </p>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   )
 }

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import SeasonalAnimationSettings from '../component/SeasonalAnimationSettings'
 
 type Profile = {
   id: string
@@ -32,6 +33,7 @@ export default function SettingsPage() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
+  // Load the current user's profile.
   useEffect(() => {
     let active = true
 
@@ -85,6 +87,7 @@ export default function SettingsPage() {
     }
   }, [])
 
+  // Create and clean up the selected image preview.
   useEffect(() => {
     if (!selectedFile) {
       setPreviewUrl('')
@@ -122,6 +125,7 @@ export default function SettingsPage() {
     setSelectedFile(file)
   }
 
+  // Upload a new profile picture and update the profile.
   async function saveProfilePicture() {
     if (!profile || !selectedFile) return
 
@@ -147,6 +151,11 @@ export default function SettingsPage() {
       }
 
       const extension = extensionByType[selectedFile.type]
+
+      if (!extension) {
+        throw new Error('Unsupported image format.')
+      }
+
       uploadedPath = `${user.id}/${crypto.randomUUID()}.${extension}`
 
       const { error: uploadError } = await supabase.storage
@@ -175,18 +184,21 @@ export default function SettingsPage() {
       window.dispatchEvent(new Event('profile-avatar-updated'))
       setMessage('Profile picture updated successfully.')
 
-      // The new profile path has been saved before the old file is removed.
+      // Remove the old image after the new path has been saved.
       if (oldPath && oldPath !== uploadedPath) {
         const { error: deleteError } = await supabase.storage
           .from('avatars')
           .remove([oldPath])
 
         if (deleteError) {
-          console.error('Could not delete the previous avatar:', deleteError)
+          console.error(
+            'Could not delete the previous avatar:',
+            deleteError,
+          )
         }
       }
     } catch (err) {
-      // Remove the new upload only when saving the profile failed.
+      // Remove the uploaded file only if the profile was not updated to use it.
       if (uploadedPath) {
         const { data: currentUser } = await supabase.auth.getUser()
 
@@ -198,7 +210,9 @@ export default function SettingsPage() {
             .maybeSingle()
 
           if (currentProfile?.avatar_path !== uploadedPath) {
-            await supabase.storage.from('avatars').remove([uploadedPath])
+            await supabase.storage
+              .from('avatars')
+              .remove([uploadedPath])
           }
         }
       }
@@ -213,6 +227,7 @@ export default function SettingsPage() {
     }
   }
 
+  // Remove the profile picture.
   async function removeProfilePicture() {
     if (!profile) return
 
@@ -255,6 +270,7 @@ export default function SettingsPage() {
 
         if (deleteError) {
           console.error('Could not delete the old avatar:', deleteError)
+
           setMessage(
             'Picture removed from your profile, but the old file could not be deleted.',
           )
@@ -278,7 +294,10 @@ export default function SettingsPage() {
     setSelectedFile(null)
     setError('')
     setMessage('')
-    if (fileInputRef.current) fileInputRef.current.value = ''
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
   }
 
   const displayedAvatar = previewUrl || avatarUrl
@@ -288,6 +307,7 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
+      {/* Page header */}
       <header>
         <button
           type="button"
@@ -299,19 +319,23 @@ export default function SettingsPage() {
         </button>
 
         <p className="text-sm text-slate-500">Workspace / Settings</p>
+
         <h1 className="mt-1 text-3xl font-bold text-blue-950">
           Profile Settings
         </h1>
+
         <p className="mt-2 text-sm text-slate-500">
           Manage your profile picture and account appearance.
         </p>
       </header>
 
+      {/* Profile picture settings */}
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mb-6 border-b border-slate-100 pb-5">
           <h2 className="text-lg font-bold text-slate-900">
             Profile Picture
           </h2>
+
           <p className="mt-1 text-sm text-slate-500">
             Upload a JPG, PNG, or WebP image up to 2 MB.
           </p>
@@ -324,6 +348,7 @@ export default function SettingsPage() {
         ) : (
           <>
             <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start">
+              {/* Avatar preview */}
               <div className="flex h-32 w-32 shrink-0 items-center justify-center overflow-hidden rounded-full border-4 border-white bg-blue-100 text-blue-800 shadow-md ring-1 ring-slate-200">
                 {displayedAvatar ? (
                   <img
@@ -369,6 +394,7 @@ export default function SettingsPage() {
                     ) : (
                       <Camera size={17} />
                     )}
+
                     {selectedFile ? 'Choose Another' : 'Choose Picture'}
                   </button>
 
@@ -434,6 +460,9 @@ export default function SettingsPage() {
           </>
         )}
       </section>
+
+      {/* Seasonal animation controls */}
+      <SeasonalAnimationSettings />
     </div>
   )
 }

@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
-type UserRole = 'admin' | 'receiving_staff' | 'releasing_staff'
+type UserRole = 'admin' | 'staff'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -46,6 +46,7 @@ export default function Login() {
 
       if (profileError) {
         console.error('Profile lookup failed:', profileError)
+
         throw new Error(
           'Unable to verify your account role. Please contact your administrator.',
         )
@@ -53,10 +54,7 @@ export default function Login() {
 
       const role = profile?.role as UserRole | undefined
 
-      if (
-        !role ||
-        !['admin', 'receiving_staff', 'releasing_staff'].includes(role)
-      ) {
+      if (role !== 'admin' && role !== 'staff') {
         await supabase.auth.signOut()
 
         throw new Error(
@@ -64,19 +62,8 @@ export default function Login() {
         )
       }
 
-      switch (role) {
-        case 'admin':
-          navigate('/dashboard', { replace: true })
-          break
-
-        case 'receiving_staff':
-          navigate('/receiving', { replace: true })
-          break
-
-        case 'releasing_staff':
-          navigate('/releasing', { replace: true })
-          break
-      }
+      // Both administrators and staff use the shared dashboard.
+      navigate('/dashboard', { replace: true })
     } catch (err) {
       console.error('Login failed:', err)
 
@@ -93,19 +80,20 @@ export default function Login() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
       <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl md:grid-cols-2">
-        {/* Left branding panel */}
+        {/* Branding panel */}
         <section className="relative flex min-h-64 flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-950 via-blue-800 to-blue-600 p-8 text-white md:p-12">
-          {/* Decorative circles */}
-          <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full border-[35px] border-white/10" />
-          <div className="absolute -bottom-20 -left-12 h-64 w-64 rounded-full border-[35px] border-red-500/40" />
+          {/* Decorative background circles */}
+          <div className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full border-[35px] border-white/10" />
+
+          <div className="pointer-events-none absolute -bottom-20 -left-12 h-64 w-64 rounded-full border-[35px] border-red-500/30" />
 
           {/* Logo and application name */}
-          <div className="relative flex items-center gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white">
+          <div className="relative z-10 flex items-center gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/30 bg-white p-1">
               <img
                 src="/logo.jpg"
-                alt="presSystem Logo"
-                className="h-full w-full object-contain"
+                alt="presSystem logo"
+                className="h-full w-full rounded-xl object-contain"
               />
             </div>
 
@@ -118,7 +106,7 @@ export default function Login() {
           </div>
 
           {/* Branding message */}
-          <div className="relative mt-12">
+          <div className="relative z-10 mt-12">
             <p className="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-red-200">
               Receiving &amp; Tracking
             </p>
@@ -137,12 +125,12 @@ export default function Login() {
             </p>
           </div>
 
-          <p className="relative mt-12 text-xs text-blue-200">
+          <p className="relative z-10 mt-12 text-xs text-blue-200">
             Secure access for authorized personnel only.
           </p>
         </section>
 
-        {/* Right login panel */}
+        {/* Login form */}
         <section className="flex items-center p-6 sm:p-10 md:p-12">
           <div className="w-full">
             <div className="mb-8">
@@ -170,13 +158,14 @@ export default function Login() {
             )}
 
             <form onSubmit={handleLogin} className="space-y-5">
-              {/* Email address */}
+              {/* Email */}
               <label className="block text-sm font-semibold text-slate-700">
                 Email address
 
                 <div className="relative mt-2">
                   <Mail
                     size={18}
+                    aria-hidden="true"
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                   />
 
@@ -199,6 +188,7 @@ export default function Login() {
                 <div className="relative mt-2">
                   <LockKeyhole
                     size={18}
+                    aria-hidden="true"
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                   />
 
@@ -218,7 +208,7 @@ export default function Login() {
                     aria-label={
                       showPassword ? 'Hide password' : 'Show password'
                     }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 transition hover:text-slate-700"
                   >
                     {showPassword ? (
                       <EyeOff size={18} />
@@ -229,7 +219,7 @@ export default function Login() {
                 </div>
               </label>
 
-              {/* Submit button */}
+              {/* Submit */}
               <button
                 type="submit"
                 disabled={loading}

@@ -10,12 +10,7 @@ import {
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 
-export type UserRole =
-  | 'admin'
-  | 'receiving_staff'
-  | 'forwarding_staff'
-  | 'board_room_staff'
-  | 'releasing_staff'
+export type UserRole = 'admin' | 'staff'
 
 type AuthContextType = {
   session: Session | null
@@ -23,19 +18,19 @@ type AuthContextType = {
   loading: boolean
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined)
+const AuthContext = createContext<AuthContextType | undefined>(
+  undefined,
+)
 
 function isValidRole(role: unknown): role is UserRole {
-  return (
-    role === 'admin' ||
-    role === 'receiving_staff' ||
-    role === 'forwarding_staff' ||
-    role === 'board_room_staff' ||
-    role === 'releasing_staff'
-  )
+  return role === 'admin' || role === 'staff'
 }
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider({
+  children,
+}: {
+  children: ReactNode
+}) {
   const [session, setSession] = useState<Session | null>(null)
   const [role, setRole] = useState<UserRole | null>(null)
   const [loading, setLoading] = useState(true)
@@ -53,7 +48,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const currentUserId = currentSession?.user?.id ?? null
         const newUserId = newSession?.user?.id ?? null
 
-        // Clear the role when the authenticated account changes.
         if (currentUserId !== newUserId) {
           setRole(null)
         }
@@ -74,7 +68,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!active) return
 
         if (error) {
-          console.error('Unable to get session:', error.message)
+          console.error(
+            'Unable to get session:',
+            error.message,
+          )
           setSession(null)
           setRole(null)
           setLoading(false)
@@ -100,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Load the user's role whenever the authenticated account changes.
+  // Load the authenticated user's role from the profiles table.
   useEffect(() => {
     let active = true
 
@@ -132,9 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setRole(data.role)
         } else {
           console.error(
-            'User has no valid role in the profiles table. ' +
-              'Allowed roles: admin, receiving_staff, forwarding_staff, ' +
-              'board_room_staff, releasing_staff.',
+            'Invalid or missing user role. Allowed roles: admin, staff.',
           )
           setRole(null)
         }
@@ -158,7 +153,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [session?.user?.id])
 
   return (
-    <AuthContext.Provider value={{ session, role, loading }}>
+    <AuthContext.Provider
+      value={{ session, role, loading }}
+    >
       {children}
     </AuthContext.Provider>
   )
@@ -168,7 +165,9 @@ export function useAuth() {
   const context = useContext(AuthContext)
 
   if (!context) {
-    throw new Error('useAuth must be used inside AuthProvider')
+    throw new Error(
+      'useAuth must be used inside AuthProvider',
+    )
   }
 
   return context

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Clock, RefreshCw, History } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 

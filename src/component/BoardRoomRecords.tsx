@@ -10,8 +10,8 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  ClipboardCheck,
   FileText,
-  Eye,
   LoaderCircle,
   RefreshCw,
   Search,
@@ -19,11 +19,8 @@ import {
   ShoppingCart,
   Trash2,
   X,
-  Clock,
-  AlertTriangle,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import AuditHistory from './AuditHistory'
 
 type WorkflowStatus =
   | 'forwarded'
@@ -133,7 +130,7 @@ function formatDate(value: string | null | undefined) {
 function formatDateOnly(value: string | null | undefined) {
   if (!value) return '—'
 
-  const date = new Date(`${value.slice(0, 10)}T00:00:00`)
+  const date = new Date(`${value}T00:00:00`)
   if (Number.isNaN(date.getTime())) return value
 
   return date.toLocaleDateString('en-PH', {
@@ -199,32 +196,38 @@ function getStorageLabel(workflow: WorkflowRecord) {
     : `Box — ${workflow.box_number || 'Not specified'}`
 }
 
-function StorageBadge({ workflow }: { workflow: WorkflowRecord }) {
+function StorageUrgency({
+  workflow,
+}: {
+  workflow: WorkflowRecord
+}) {
   return (
-    <span className="inline-flex whitespace-nowrap rounded-md bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700">
-      {getStorageLabel(workflow)}
-    </span>
-  )
-}
+    <div className="mt-3 flex flex-wrap gap-2">
+      <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
+        Brought by: {workflow.transaction_person || 'Not specified'}
+      </span>
 
-function UrgencyBadge({ urgency }: { urgency: WorkflowRecord['urgency'] }) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold ${
-        urgency === 'urgent'
-          ? 'bg-red-100 text-red-700'
-          : 'bg-slate-100 text-slate-600'
-      }`}
-    >
-      {urgency === 'urgent' && <AlertTriangle size={11} />}
-      {urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
-    </span>
+      <span className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
+        {getStorageLabel(workflow)}
+      </span>
+
+      <span
+        className={`rounded-md px-2 py-1 text-xs font-semibold ${
+          workflow.urgency === 'urgent'
+            ? 'bg-red-100 text-red-700'
+            : 'bg-slate-100 text-slate-600'
+        }`}
+      >
+        {workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
+      </span>
+    </div>
   )
 }
 
 export default function BoardRoomRecords() {
   const [records, setRecords] = useState<DisplayRecord[]>([])
-  const [viewingRecord, setViewingRecord] = useState<DisplayRecord | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [viewDetailsOpen, setViewDetailsOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] =
     useState<'all' | WorkflowStatus>('all')
@@ -234,15 +237,23 @@ export default function BoardRoomRecords() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
+  // Return cart and document picker.
   const [cart, setCart] = useState<CartItem[]>([])
   const [cartOpen, setCartOpen] = useState(false)
   const [documentPickerOpen, setDocumentPickerOpen] = useState(false)
   const [pickerSearch, setPickerSearch] = useState('')
 
+  // Shared return checkout details.
   const [returnPerson, setReturnPerson] = useState('')
   const [sharedReturnRemarks, setSharedReturnRemarks] = useState('')
   const [returnDate, setReturnDate] = useState(getManilaDate)
-  const [returnTime, setReturnTime] = useState(getManilaTime)
+  const [returnTime, setReturnTime] = useState('')
+
+  // Shared storage and urgency settings applied to every document in the return cart.
+  const [returnStorageType, setReturnStorageType] = useState<'folder' | 'box'>('folder')
+  const [returnFolderColor, setReturnFolderColor] = useState('')
+  const [returnBoxNumber, setReturnBoxNumber] = useState('')
+  const [returnUrgency, setReturnUrgency] = useState<'urgent' | 'not_urgent'>('not_urgent')
 
   const loadRecords = useCallback(async () => {
     setLoading(true)
@@ -286,6 +297,15 @@ export default function BoardRoomRecords() {
 
       setRecords(combined)
 
+      setSelectedId(previous => {
+        if (previous && combined.some(row => row.workflow.id === previous)) {
+          return previous
+        }
+
+        return combined[0]?.workflow.id ?? null
+      })
+
+      // Keep only documents that are still eligible for return.
       const eligibleIds = new Set(
         combined
           .filter(row =>
@@ -326,15 +346,11 @@ export default function BoardRoomRecords() {
         document?.bearer,
         document?.origin_office,
         document?.current_office,
-        document?.destination_folder,
         document?.record_type,
         workflow.transaction_person,
         workflow.folder_color,
         workflow.box_number,
         workflow.urgency,
-        workflow.workflow_status,
-        workflow.returned_to_origin_person,
-        workflow.returned_to_origin_remarks,
       ]
         .filter(Boolean)
         .join(' ')
@@ -342,6 +358,9 @@ export default function BoardRoomRecords() {
         .includes(query)
     })
   }, [records, search, statusFilter])
+
+  const selected =
+    records.find(row => row.workflow.id === selectedId) ?? null
 
   const returnableRecords = useMemo(
     () =>
@@ -456,6 +475,8 @@ export default function BoardRoomRecords() {
 
       return [...current, { workflowId, remarks: '' }]
     })
+
+    setSuccess('')
   }
 
   function removeFromCart(workflowId: string) {
@@ -530,6 +551,16 @@ export default function BoardRoomRecords() {
       return
     }
 
+    if (returnStorageType === 'folder' && !returnFolderColor.trim()) {
+      setError('Select a folder color for the returned documents.')
+      return
+    }
+
+    if (returnStorageType === 'box' && !returnBoxNumber.trim()) {
+      setError('Enter a box number for the returned documents.')
+      return
+    }
+
     const items: ReturnCartItem[] = cartRecords.map(row => ({
       workflow_id: row.workflow.id,
       remarks: row.cartRemarks.trim(),
@@ -555,6 +586,10 @@ export default function BoardRoomRecords() {
           p_shared_remarks: sharedReturnRemarks.trim() || null,
           p_return_date: returnDate,
           p_return_time: returnTime,
+          p_storage_type: returnStorageType,
+          p_folder_color: returnStorageType === 'folder' ? returnFolderColor.trim() : null,
+          p_box_number: returnStorageType === 'box' ? returnBoxNumber.trim() : null,
+          p_urgency: returnUrgency,
         },
       )
 
@@ -569,7 +604,11 @@ export default function BoardRoomRecords() {
       setReturnPerson('')
       setSharedReturnRemarks('')
       setReturnDate(getManilaDate())
-      setReturnTime(getManilaTime())
+      setReturnTime('')
+      setReturnStorageType('folder')
+      setReturnFolderColor('')
+      setReturnBoxNumber('')
+      setReturnUrgency('not_urgent')
 
       setSuccess(
         `${returnedCount} document(s) returned to their originating offices successfully.`,
@@ -585,7 +624,8 @@ export default function BoardRoomRecords() {
 
   return (
     <div className="min-h-screen space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
-      <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+      {/* Page heading */}
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-semibold uppercase tracking-wider text-green-700">
             presSystem Management Portal
@@ -594,8 +634,7 @@ export default function BoardRoomRecords() {
             Board Room Documents
           </h1>
           <p className="mt-2 text-sm text-slate-500">
-            Confirm document receipt, track workflow progress, and return
-            documents to their originating offices.
+            Confirm document receipt and return documents to their originating offices.
           </p>
         </div>
 
@@ -626,8 +665,9 @@ export default function BoardRoomRecords() {
             Refresh
           </button>
         </div>
-      </header>
+      </div>
 
+      {/* Alerts */}
       {error && (
         <div
           role="alert"
@@ -662,6 +702,7 @@ export default function BoardRoomRecords() {
         </div>
       )}
 
+      {/* Summary cards */}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-6">
         {[
           { label: 'Total forwarded', value: counts.total },
@@ -685,390 +726,199 @@ export default function BoardRoomRecords() {
         ))}
       </div>
 
-      <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 p-4 sm:p-5">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900">
-                Forwarded Documents
-              </h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Review document information, workflow status, return details,
-                and available actions in one table.
-              </p>
-            </div>
-
-            <p className="text-xs text-slate-500">
-              {filteredRecords.length} of {records.length} records
+      {/* Document list */}
+      <div className="grid grid-cols-1 gap-6">
+        <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 p-4 sm:p-5">
+            <h2 className="text-lg font-bold text-slate-900">
+              Forwarded Documents
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Confirm Board Room receipt or add received documents to the return cart.
             </p>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_190px]">
+              <label className="relative block">
+                <Search
+                  size={17}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <input
+                  value={search}
+                  onChange={event => setSearch(event.target.value)}
+                  placeholder="Search reference, subject, office..."
+                  className="w-full rounded-lg border border-slate-200 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-green-600 focus:ring-2 focus:ring-green-100"
+                />
+              </label>
+
+              <select
+                value={statusFilter}
+                onChange={event =>
+                  setStatusFilter(event.target.value as 'all' | WorkflowStatus)
+                }
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-green-600"
+              >
+                <option value="all">All statuses</option>
+                <option value="forwarded">Awaiting receipt</option>
+                <option value="board_room_received">Received by Board Room</option>
+                <option value="action_in_progress">In progress</option>
+                <option value="action_completed">Ready to return</option>
+                <option value="returned_to_origin">Returned to origin</option>
+                <option value="completed">Workflow completed</option>
+              </select>
+            </div>
           </div>
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
-            <label className="relative block">
-              <Search
-                size={17}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={search}
-                onChange={event => setSearch(event.target.value)}
-                placeholder="Search reference, subject, sender, office, remarks..."
-                className="w-full rounded-lg border border-slate-200 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-green-600 focus:ring-2 focus:ring-green-100"
-              />
-            </label>
-
-            <select
-              aria-label="Filter by workflow status"
-              value={statusFilter}
-              onChange={event =>
-                setStatusFilter(event.target.value as 'all' | WorkflowStatus)
-              }
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-green-600"
-            >
-              <option value="all">All statuses</option>
-              <option value="forwarded">Awaiting receipt</option>
-              <option value="board_room_received">Received by Board Room</option>
-              <option value="action_in_progress">In progress</option>
-              <option value="action_completed">Ready to return</option>
-              <option value="returned_to_origin">Returned to origin</option>
-              <option value="completed">Workflow completed</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1750px] border-collapse text-left">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                {[
-                  'PresOffice No.',
-                  'Subject / Content',
-                  'Transaction',
-                  'Origin Office',
-                  'Person Who Brought It',
-                  'Storage Location',
-                  'Urgency',
-                  'Forwarding Date',
-                  'Forwarding Time',
-                  'Board Room Receipt',
-                  'Workflow Status',
-                  'Picked Up By',
-                  'Return Date',
-                  'Return Remarks',
-                  'Origin Office Receipt',
-                  'Actions',
-                ].map(label => (
-                  <th
-                    key={label}
-                    className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500"
-                  >
-                    {label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td
-                    colSpan={16}
-                    className="px-4 py-14 text-center text-sm text-slate-500"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <LoaderCircle size={18} className="animate-spin" />
-                      Loading Board Room records...
-                    </span>
-                  </td>
-                </tr>
-              ) : filteredRecords.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={16}
-                    className="px-4 py-14 text-center"
-                  >
-                    <FileText size={34} className="mx-auto text-slate-300" />
-                    <p className="mt-3 font-semibold text-slate-700">
-                      No documents found
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Try changing the search text or status filter.
-                    </p>
-                  </td>
-                </tr>
-              ) : (
-                filteredRecords.map(({ workflow, document }) => {
-                  const inCart = cart.some(
-                    item => item.workflowId === workflow.id,
-                  )
-
-                  const canReturn = returnableStatuses.includes(
-                    workflow.workflow_status,
-                  )
-
-                  return (
-                    <tr
-                      key={workflow.id}
-                      className="align-top transition-colors hover:bg-slate-50"
-                    >
-                      <td className="whitespace-nowrap px-4 py-4 text-xs font-bold text-slate-900">
-                        {document?.reference_number || '—'}
-                      </td>
-
-                      <td className="max-w-[260px] px-4 py-4">
-                        <p className="break-words text-xs font-medium text-slate-800">
-                          {document?.subject || document?.content || 'No subject'}
-                        </p>
-                        {document?.subject && document?.content && (
-                          <p className="mt-1 max-w-[250px] whitespace-pre-wrap break-words text-[11px] text-slate-500">
-                            {document.content}
-                          </p>
-                        )}
-                        {document?.destination_folder && (
-                          <p className="mt-2 text-[11px] text-slate-500">
-                            Destination: {document.destination_folder}
-                          </p>
-                        )}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        {document?.sender || '—'}
-                      </td>
-
-                      <td className="px-4 py-4 text-xs text-slate-600">
-                        {document?.origin_office ||
-                          document?.current_office ||
-                          'Not specified'}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        {workflow.transaction_person || '—'}
-                      </td>
-
-                      <td className="px-4 py-4">
-                        <StorageBadge workflow={workflow} />
-                      </td>
-
-                      <td className="px-4 py-4">
-                        <UrgencyBadge urgency={workflow.urgency} />
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        {formatDateOnly(workflow.forwarding_date)}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        <span className="inline-flex items-center gap-1">
-                          <Clock size={12} />
-                          {formatTime(workflow.forwarding_time)}
-                        </span>
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        {formatDate(workflow.board_room_received_at)}
-                      </td>
-
-                      <td className="px-4 py-4">
-                        <span
-                          className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1.5 text-[10px] font-semibold ${statusClasses[workflow.workflow_status]}`}
-                        >
-                          {statusLabels[workflow.workflow_status]}
-                        </span>
-                      </td>
-
-                      <td className="px-4 py-4 text-xs text-slate-600">
-                        {workflow.returned_to_origin_person || '—'}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        {formatDate(workflow.returned_to_origin_at)}
-                      </td>
-
-                      <td className="max-w-[260px] px-4 py-4 text-xs text-slate-600">
-                        <p className="whitespace-pre-wrap break-words">
-                          {workflow.returned_to_origin_remarks?.trim() ||
-                            (workflow.returned_to_origin_at
-                              ? 'No remarks provided.'
-                              : '—')}
-                        </p>
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-4 text-xs text-slate-600">
-                        {formatDate(workflow.origin_office_received_at)}
-                      </td>
-
-                      <td className="min-w-[170px] px-4 py-4">
-                        <div className="flex flex-col items-start gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setViewingRecord({ workflow, document })}
-                            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                          >
-                            <Eye size={14} />
-                            View Details
-                          </button>
-                          {workflow.workflow_status === 'forwarded' && (
-                            <button
-                              type="button"
-                              disabled={processing}
-                              onClick={() => void receiveDocument(workflow.id)}
-                              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {processing ? (
-                                <LoaderCircle
-                                  size={14}
-                                  className="animate-spin"
-                                />
-                              ) : (
-                                <CheckCircle2 size={14} />
-                              )}
-                              Confirm Receipt
-                            </button>
-                          )}
-
-                          {canReturn && (
-                            <button
-                              type="button"
-                              disabled={processing || inCart}
-                              onClick={() => addToCart(workflow.id)}
-                              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {inCart ? (
-                                <Check size={14} />
-                              ) : (
-                                <ShoppingCart size={14} />
-                              )}
-                              {inCart ? 'Added to Cart' : 'Add to Return Cart'}
-                            </button>
-                          )}
-
-                          {workflow.workflow_status === 'returned_to_origin' && (
-                            <span className="text-[11px] font-medium text-orange-700">
-                              Awaiting origin receipt
-                            </span>
-                          )}
-
-                          {workflow.workflow_status === 'completed' && (
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-green-700">
-                              <CheckCircle2 size={13} />
-                              Completed
-                            </span>
-                          )}
-
-                          {!canReturn &&
-                            workflow.workflow_status !== 'forwarded' &&
-                            workflow.workflow_status !== 'returned_to_origin' &&
-                            workflow.workflow_status !== 'completed' && (
-                              <span className="text-[11px] text-slate-400">
-                                No action available
-                              </span>
-                            )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="flex flex-col justify-between gap-2 border-t border-slate-200 px-4 py-3 text-xs text-slate-500 sm:flex-row sm:items-center">
-          <span>
-            Showing {filteredRecords.length} of {records.length} records
-          </span>
-          <span>Scroll horizontally to view all columns.</span>
-        </div>
-      </section>
-
-      {viewingRecord && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/60 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="board-room-details-title"
-            className="my-auto max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5 sm:p-6">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-wide text-green-700">Board Room / Document Details</p>
-                <h2 id="board-room-details-title" className="mt-1 break-words text-xl font-bold text-slate-900">
-                  {viewingRecord.document?.reference_number || 'Document Details'}
-                </h2>
-                <p className="mt-1 break-words text-sm text-slate-500">
-                  {viewingRecord.document?.subject || viewingRecord.document?.content || 'No subject provided'}
-                </p>
+          <div className="overflow-x-auto">
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 p-12 text-sm text-slate-500">
+                <LoaderCircle size={19} className="animate-spin" />
+                Loading Board Room records...
               </div>
-              <button
-                type="button"
-                onClick={() => setViewingRecord(null)}
-                aria-label="Close document details"
-                className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100"
-              >
-                <X size={19} />
-              </button>
-            </div>
+            ) : filteredRecords.length === 0 ? (
+              <div className="px-6 py-14 text-center">
+                <FileText size={34} className="mx-auto text-slate-300" />
+                <p className="mt-3 font-semibold text-slate-700">No documents found</p>
+                <p className="mt-1 text-sm text-slate-500">Try changing your search or status filter.</p>
+              </div>
+            ) : (
+              <table className="min-w-[1100px] w-full border-collapse text-left text-sm">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                  <tr className="border-b border-slate-200">
+                    <th className="px-5 py-3 font-semibold">Document</th>
+                    <th className="px-5 py-3 font-semibold">Transaction Person</th>
+                    <th className="px-5 py-3 font-semibold">Storage</th>
+                    <th className="px-5 py-3 font-semibold">Urgency</th>
+                    <th className="px-5 py-3 font-semibold">Forwarded</th>
+                    <th className="px-5 py-3 font-semibold">Status</th>
+                    <th className="px-5 py-3 font-semibold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredRecords.map(({ workflow, document }) => {
+                    const active = selectedId === workflow.id
+                    const inCart = cart.some(item => item.workflowId === workflow.id)
+                    const canReturn = returnableStatuses.includes(workflow.workflow_status)
+                    return (
+                      <tr
+                        key={workflow.id}
+                        onClick={() => setSelectedId(workflow.id)}
+                        className={`cursor-pointer transition-colors ${active ? 'bg-green-50/70' : 'bg-white hover:bg-slate-50'}`}
+                      >
+                        <td className="max-w-[300px] px-5 py-4">
+                          <div className="font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</div>
+                          <div className="mt-1 truncate text-xs text-slate-500" title={document?.subject || document?.content || ''}>
+                            {document?.subject || document?.content || 'No subject provided'}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-slate-700">{workflow.transaction_person || '—'}</td>
+                        <td className="px-5 py-4">
+                          <span className="inline-flex rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">{getStorageLabel(workflow)}</span>
+                        </td>
+                        <td className="px-5 py-4">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${workflow.urgency === 'urgent' ? 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-200' : 'bg-slate-100 text-slate-600'}`}>
+                            {workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-4 text-xs text-slate-600">
+                          <div>{formatDateOnly(workflow.forwarding_date)}</div>
+                          <div className="mt-1 text-slate-400">{formatTime(workflow.forwarding_time)}</div>
+                        </td>
+                        <td className="px-5 py-4">
+                          <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClasses[workflow.workflow_status]}`}>
+                            {statusLabels[workflow.workflow_status]}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4" onClick={event => event.stopPropagation()}>
+                          <div className="flex min-w-[170px] flex-wrap gap-2">
+                            <button type="button" onClick={() => { setSelectedId(workflow.id); setViewDetailsOpen(true) }} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700">
+                              <FileText size={14} /> View
+                            </button>
+                            {workflow.workflow_status === 'forwarded' && (
+                              <button type="button" disabled={processing} onClick={() => void receiveDocument(workflow.id)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-green-800 disabled:opacity-50">
+                                {processing ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                                Confirm Receipt
+                              </button>
+                            )}
+                            {canReturn && (
+                              <button type="button" disabled={inCart} onClick={() => addToCart(workflow.id)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50">
+                                {inCart ? <Check size={14} /> : <ShoppingCart size={14} />}
+                                {inCart ? 'Added to Cart' : 'Add to Cart'}
+                              </button>
+                            )}
+                            {workflow.workflow_status !== 'forwarded' && !canReturn && <span className="text-xs text-slate-400">No actions</span>}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
 
-            <div className="max-h-[calc(92vh-150px)] space-y-6 overflow-y-auto p-5 sm:p-6">
-              <section>
-                <h3 className="mb-3 text-sm font-bold text-slate-900">Document Information</h3>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {([
-                    ['Reference Number', viewingRecord.document?.reference_number],
-                    ['Record Type', viewingRecord.document?.record_type],
-                    ['Subject', viewingRecord.document?.subject],
-                    ['Content', viewingRecord.document?.content],
-                    ['Sender', viewingRecord.document?.sender],
-                    ['Bearer', viewingRecord.document?.bearer],
-                    ['Origin Office', viewingRecord.document?.origin_office],
-                    ['Current Office', viewingRecord.document?.current_office],
-                    ['Destination Folder', viewingRecord.document?.destination_folder],
-                    ['Date Received', viewingRecord.document?.date_received ? formatDateOnly(viewingRecord.document.date_received) : null],
-                    ['Transaction Person', viewingRecord.workflow.transaction_person],
-                    ['Storage Location', getStorageLabel(viewingRecord.workflow)],
-                    ['Urgency', viewingRecord.workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'],
-                    ['Forwarding Date', formatDateOnly(viewingRecord.workflow.forwarding_date)],
-                    ['Forwarding Time', formatTime(viewingRecord.workflow.forwarding_time)],
-                    ['Board Room Received', formatDate(viewingRecord.workflow.board_room_received_at)],
-                    ['President Action Status', viewingRecord.workflow.president_action_status],
-                    ['President Action Remarks', viewingRecord.workflow.president_action_remarks],
-                    ['Action Completed At', formatDate(viewingRecord.workflow.president_action_completed_at)],
-                    ['Returned To Origin', formatDate(viewingRecord.workflow.returned_to_origin_at)],
-                    ['Picked Up By', viewingRecord.workflow.returned_to_origin_person],
-                    ['Return Remarks', viewingRecord.workflow.returned_to_origin_remarks],
-                    ['Origin Office Receipt', formatDate(viewingRecord.workflow.origin_office_received_at)],
-                    ['Workflow Status', statusLabels[viewingRecord.workflow.workflow_status]],
-                  ] as Array<[string, string | null | undefined]>).map(([label, value]) => (
-                    <div key={label} className="min-w-0 rounded-lg border border-slate-200 p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || '—'}</p>
-                    </div>
-                  ))}
+          <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500">
+            Showing {filteredRecords.length} of {records.length} records
+          </div>
+        </section>
+
+
+      </div>
+
+      {/* Document details modal — opened only when View is clicked */}
+      {viewDetailsOpen && selected && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="document-details-title" className="my-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-blue-700">Document details</p>
+                <h2 id="document-details-title" className="mt-1 text-xl font-bold text-slate-900">{selected.document?.reference_number || 'No reference number'}</h2>
+                <p className="mt-1 text-sm text-slate-500">{selected.document?.subject || selected.document?.content || 'No subject provided'}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[selected.workflow.workflow_status]}`}>{statusLabels[selected.workflow.workflow_status]}</span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{getStorageLabel(selected.workflow)}</span>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${selected.workflow.urgency === 'urgent' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{selected.workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}</span>
                 </div>
-              </section>
-
-              {viewingRecord.document?.id ? (
-                <AuditHistory documentId={viewingRecord.document.id} />
-              ) : (
-                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                  Audit history is unavailable because this workflow has no linked receiving record.
-                </p>
-              )}
+              </div>
+              <button type="button" onClick={() => setViewDetailsOpen(false)} aria-label="Close document details" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={19} /></button>
             </div>
-
-            <div className="flex justify-end border-t border-slate-200 p-4">
-              <button
-                type="button"
-                onClick={() => setViewingRecord(null)}
-                className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                Close
-              </button>
+            <div className="p-6">
+              <h3 className="mb-3 text-sm font-bold text-slate-900">Document information</h3>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[
+                  ['Record type', selected.document?.record_type],
+                  ['Sender', selected.document?.sender],
+                  ['Person who brought it', selected.workflow.transaction_person],
+                  ['Originating office', selected.document?.origin_office],
+                  ['Destination folder', selected.document?.destination_folder],
+                  ['Storage location', getStorageLabel(selected.workflow)],
+                  ['Urgency', selected.workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'],
+                  ['Forwarding date', formatDateOnly(selected.workflow.forwarding_date)],
+                  ['Forwarding time', formatTime(selected.workflow.forwarding_time)],
+                  ['Forwarded at', selected.workflow.forwarded_at ? new Date(selected.workflow.forwarded_at).toLocaleString() : null],
+                  ['Board Room receipt', selected.workflow.board_room_received_at ? new Date(selected.workflow.board_room_received_at).toLocaleString() : null],
+                  ['President action', selected.workflow.president_action_status],
+                  ['Action remarks', selected.workflow.president_action_remarks],
+                  ['Returned to origin', selected.workflow.returned_to_origin_at ? new Date(selected.workflow.returned_to_origin_at).toLocaleString() : null],
+                  ['Returned by', selected.workflow.returned_to_origin_person],
+                  ['Return remarks', selected.workflow.returned_to_origin_remarks],
+                  ['Origin office receipt', selected.workflow.origin_office_received_at ? new Date(selected.workflow.origin_office_received_at).toLocaleString() : null],
+                ].map(([label, value]) => (
+                  <div key={label as string} className="min-w-0 rounded-lg bg-slate-50 p-3">
+                    <p className="text-xs font-medium text-slate-500">{label}</p>
+                    <p className="mt-1 break-words text-sm font-medium text-slate-900">{value ? String(value) : '—'}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end border-t border-slate-200 px-6 py-4">
+              <button type="button" onClick={() => setViewDetailsOpen(false)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Close</button>
             </div>
           </section>
         </div>
       )}
 
+      {/* Return cart checkout */}
       {cartOpen && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
           <section
@@ -1092,8 +942,7 @@ export default function BoardRoomRecords() {
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-slate-500">
-                  Enter individual remarks if needed, then complete the shared
-                  return details.
+                  Select multiple documents, enter individual remarks if needed, and complete the shared checkout details.
                 </p>
               </div>
 
@@ -1109,6 +958,7 @@ export default function BoardRoomRecords() {
             </div>
 
             <form onSubmit={submitReturn} className="space-y-5 p-5 sm:p-6">
+              {/* Selected documents */}
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label className="text-xs font-semibold text-slate-600">
@@ -1133,7 +983,7 @@ export default function BoardRoomRecords() {
                       Your return cart is empty
                     </p>
                     <p className="mt-1 text-sm text-slate-500">
-                      Add eligible documents from the main table.
+                      Add received documents from the Board Room document list.
                     </p>
                     <button
                       type="button"
@@ -1159,14 +1009,14 @@ export default function BoardRoomRecords() {
                               {document?.reference_number || 'No reference number'}
                             </p>
                             <p className="mt-1 break-words text-sm text-slate-700">
-                              {document?.subject ||
-                                document?.content ||
-                                'No subject'}
+                              {document?.subject || document?.content || 'No subject'}
                             </p>
+
+                            <StorageUrgency
+                              workflow={workflow}
+                            />
+
                             <p className="mt-2 text-xs text-slate-500">
-                              Origin: {document?.origin_office || 'Not specified'}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
                               Status: {statusLabels[workflow.workflow_status]}
                             </p>
                           </div>
@@ -1192,7 +1042,7 @@ export default function BoardRoomRecords() {
                               updateCartRemarks(workflow.id, event.target.value)
                             }
                             rows={2}
-                            placeholder="Enter remarks for this document..."
+                            placeholder="Enter remarks for this document, if needed..."
                             className={inputClass}
                           />
                         </label>
@@ -1202,6 +1052,121 @@ export default function BoardRoomRecords() {
                 )}
               </div>
 
+              {/* Shared storage and urgency settings */}
+              <div className="border-t border-slate-200 pt-5">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Shared Storage and Urgency
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  These settings will be applied to every document selected in this return.
+                </p>
+
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-600">
+                      Document Storage Location *
+                    </span>
+                    <div className="mt-2 flex flex-wrap gap-5">
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="radio"
+                          name="returnStorageType"
+                          value="folder"
+                          checked={returnStorageType === 'folder'}
+                          onChange={() => {
+                            setReturnStorageType('folder')
+                            setReturnBoxNumber('')
+                          }}
+                        />
+                        Folder (Color)
+                      </label>
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="radio"
+                          name="returnStorageType"
+                          value="box"
+                          checked={returnStorageType === 'box'}
+                          onChange={() => {
+                            setReturnStorageType('box')
+                            setReturnFolderColor('')
+                          }}
+                        />
+                        Box (Number)
+                      </label>
+                    </div>
+                  </div>
+
+                  {returnStorageType === 'folder' ? (
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-600">
+                        Folder Color *
+                      </span>
+                      <select
+                        required
+                        value={returnFolderColor}
+                        onChange={event => setReturnFolderColor(event.target.value)}
+                        className={inputClass}
+                      >
+                        <option value="">Select folder color...</option>
+                        <option value="Red">Red</option>
+                        <option value="Blue">Blue</option>
+                        <option value="Green">Green</option>
+                        <option value="Yellow">Yellow</option>
+                        <option value="Orange">Orange</option>
+                        <option value="White">White</option>
+                        <option value="Black">Black</option>
+                        <option value="Pink">Pink</option>
+                        <option value="Violet">Violet</option>
+                        <option value="Brown">Brown</option>
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-600">
+                        Box Number *
+                      </span>
+                      <input
+                        required
+                        value={returnBoxNumber}
+                        onChange={event => setReturnBoxNumber(event.target.value)}
+                        placeholder="Enter box number"
+                        className={inputClass}
+                      />
+                    </label>
+                  )}
+
+                  <div>
+                    <span className="text-xs font-semibold text-slate-600">
+                      Urgency *
+                    </span>
+                    <div className="mt-2 flex flex-wrap gap-5">
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="radio"
+                          name="returnUrgency"
+                          value="urgent"
+                          checked={returnUrgency === 'urgent'}
+                          onChange={() => setReturnUrgency('urgent')}
+                        />
+                        <AlertCircle size={15} className="text-red-600" />
+                        Urgent
+                      </label>
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="radio"
+                          name="returnUrgency"
+                          value="not_urgent"
+                          checked={returnUrgency === 'not_urgent'}
+                          onChange={() => setReturnUrgency('not_urgent')}
+                        />
+                        Not Urgent
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Shared return details */}
               <div className="border-t border-slate-200 pt-5">
                 <h3 className="text-sm font-bold text-slate-900">
                   Return Details
@@ -1230,11 +1195,9 @@ export default function BoardRoomRecords() {
                     </span>
                     <textarea
                       value={sharedReturnRemarks}
-                      onChange={event =>
-                        setSharedReturnRemarks(event.target.value)
-                      }
+                      onChange={event => setSharedReturnRemarks(event.target.value)}
                       rows={2}
-                      placeholder="Remarks that apply to all returned documents..."
+                      placeholder="Enter remarks that apply to all returned documents..."
                       className={inputClass}
                     />
                   </label>
@@ -1272,21 +1235,20 @@ export default function BoardRoomRecords() {
                       Recorded By
                     </p>
                     <p className="mt-1 text-sm text-slate-800">
-                      Automatically assigned to the authenticated Supabase
-                      account.
+                      Automatically recorded from the authenticated Supabase session.
                     </p>
                   </div>
                 </div>
               </div>
 
+              {/* Checkout count and actions */}
               <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-slate-700">
                     {cartRecords.length} document(s) selected
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Individual remarks are saved with their respective
-                    documents.
+                    Individual remarks are saved with their respective documents.
                   </p>
                 </div>
 
@@ -1321,6 +1283,7 @@ export default function BoardRoomRecords() {
         </div>
       )}
 
+      {/* Document picker */}
       {documentPickerOpen && cartOpen && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/60 p-4">
           <section
@@ -1362,7 +1325,7 @@ export default function BoardRoomRecords() {
                   autoFocus
                   value={pickerSearch}
                   onChange={event => setPickerSearch(event.target.value)}
-                  placeholder="Search reference, subject, sender, office..."
+                  placeholder="Search reference, subject, sender, office, folder or box..."
                   className="w-full rounded-lg border border-slate-200 py-3 pl-10 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
               </div>
@@ -1373,8 +1336,7 @@ export default function BoardRoomRecords() {
                     {cart.length} in cart
                   </p>
                   <p className="text-xs text-slate-600">
-                    {filteredReturnableRecords.length} matching eligible
-                    documents
+                    {filteredReturnableRecords.length} matching eligible documents
                   </p>
                 </div>
 
@@ -1402,8 +1364,7 @@ export default function BoardRoomRecords() {
                     No eligible documents found
                   </p>
                   <p className="mt-1 text-sm text-slate-500">
-                    Confirm Board Room receipt first. Returned or completed
-                    workflows cannot be added again.
+                    Confirm Board Room receipt first. Returned or completed workflows cannot be added again.
                   </p>
                 </div>
               ) : (
@@ -1429,13 +1390,9 @@ export default function BoardRoomRecords() {
                           {document?.subject || document?.content || 'No subject'}
                         </p>
 
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <span className="rounded-md bg-slate-100 px-2 py-1 text-[11px] text-slate-600">
-                            Origin: {document?.origin_office || 'Not specified'}
-                          </span>
-                          <StorageBadge workflow={workflow} />
-                          <UrgencyBadge urgency={workflow.urgency} />
-                        </div>
+                        <StorageUrgency
+                          workflow={workflow}
+                        />
 
                         <p className="mt-2 text-xs text-slate-500">
                           {statusLabels[workflow.workflow_status]}

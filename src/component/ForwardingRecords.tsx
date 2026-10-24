@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
@@ -221,7 +220,11 @@ export default function ForwardingRecords() {
     useState<WorkflowWithDocument | null>(null)
   const [releaseAssignment, setReleaseAssignment] =
     useState<WorkflowRecord | null>(null)
-  const [releaseStaff, setReleaseStaff] = useState('Sheril')
+  const [releaseStaff, setReleaseStaff] = useState('')
+  const [releaseStaffSearch, setReleaseStaffSearch] = useState('')
+  const [releaseStaffDropdownOpen, setReleaseStaffDropdownOpen] = useState(false)
+  const [releasingStaffOptions, setReleasingStaffOptions] = useState<string[]>([])
+  const [loadingReleasingStaff, setLoadingReleasingStaff] = useState(false)
   const [releaseInstruction, setReleaseInstruction] = useState('For Release')
   const [releaseCustomInstruction, setReleaseCustomInstruction] = useState('')
   const [savingReleaseAssignment, setSavingReleaseAssignment] = useState(false)
@@ -283,6 +286,24 @@ export default function ForwardingRecords() {
           }
         }
       }
+
+      // Load every user with the staff role dynamically, so newly added staff appear without code changes.
+      setLoadingReleasingStaff(true)
+      const { data: releasingStaffRows, error: releasingStaffError } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('role', 'staff')
+        .order('full_name', { ascending: true })
+
+      if (releasingStaffError) {
+        console.warn('Could not load releasing staff:', releasingStaffError)
+      } else {
+        const names = (releasingStaffRows ?? [])
+          .map(row => String(row.full_name ?? '').trim())
+          .filter(Boolean)
+        setReleasingStaffOptions([...new Set(names)])
+      }
+      setLoadingReleasingStaff(false)
 
       setDocuments(receivedDocuments)
       setProfiles(profileMap)
@@ -548,12 +569,30 @@ export default function ForwardingRecords() {
       )
 
       await loadData()
-    } catch (err) {
-      setError(
+    } catch (err: unknown) {
+      // Supabase/PostgREST errors are often plain objects, not Error instances.
+      // Extract their message so the actual database/RPC failure is visible.
+      const details =
+        typeof err === 'object' && err !== null
+          ? (err as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown })
+          : null
+
+      const errorMessage =
         err instanceof Error
           ? err.message
-          : 'Unable to confirm document receipt.',
-      )
+          : typeof details?.message === 'string'
+            ? [
+                details.message,
+                typeof details.details === 'string' ? details.details : '',
+                typeof details.hint === 'string' ? `Hint: ${details.hint}` : '',
+                typeof details.code === 'string' ? `Code: ${details.code}` : '',
+              ].filter(Boolean).join(' — ')
+            : typeof err === 'string'
+              ? err
+              : 'Unknown error. Check the browser console and Supabase logs.'
+
+      console.error('Unable to confirm document receipt:', err)
+      setError(`Unable to confirm document receipt: ${errorMessage}`)
     } finally {
       setConfirmingReceiptId(null)
     }
@@ -579,8 +618,8 @@ export default function ForwardingRecords() {
       return
     }
 
-    if (!['Sheril', 'Indai'].includes(releaseStaff)) {
-      setError('Please select a valid releasing staff member.')
+    if (!releasingStaffOptions.includes(releaseStaff)) {
+      setError('Please select a releasing staff member from the search results.')
       return
     }
 
@@ -636,7 +675,8 @@ export default function ForwardingRecords() {
         `${document?.reference_number || 'Document'} forwarded to ${releaseStaff} — ${instruction}.`,
       )
       setReleaseAssignment(null)
-      setReleaseStaff('Sheril')
+      setReleaseStaff('')
+      setReleaseStaffSearch('')
       setReleaseInstruction('For Release')
       setReleaseCustomInstruction('')
       await loadData()
@@ -1057,7 +1097,8 @@ export default function ForwardingRecords() {
                             onClick={() => {
                               setError('')
                               setSuccess('')
-                              setReleaseStaff('Sheril')
+                              setReleaseStaff('')
+      setReleaseStaffSearch('')
                               setReleaseInstruction('For Release')
                               setReleaseCustomInstruction('')
                               setReleaseAssignment(workflow)
@@ -1349,19 +1390,72 @@ export default function ForwardingRecords() {
               </div>
 
               <div>
-                <label htmlFor="release-staff" className="text-xs font-semibold text-slate-600">
+                <label className="text-xs font-semibold text-slate-600">
                   Releasing Staff *
                 </label>
-                <select
-                  id="release-staff"
-                  required
-                  value={releaseStaff}
-                  onChange={event => setReleaseStaff(event.target.value)}
-                  className={inputClass}
-                >
-                  <option value="Sheril">Sheril</option>
-                  <option value="Indai">Indai</option>
-                </select>
+                <div className="relative mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setReleaseStaffDropdownOpen(open => !open)}
+                    disabled={loadingReleasingStaff || releasingStaffOptions.length === 0}
+                    aria-haspopup="listbox"
+                    aria-expanded={releaseStaffDropdownOpen}
+                    className={`${inputClass} flex items-center justify-between gap-3 text-left disabled:cursor-not-allowed disabled:bg-slate-50`}
+                  >
+                    <span className={releaseStaff ? 'text-slate-800' : 'text-slate-400'}>
+                      {loadingReleasingStaff
+                        ? 'Loading staff...'
+                        : releaseStaff || 'Select a staff member...'}
+                    </span>
+                    <Search size={16} className="shrink-0 text-slate-400" />
+                  </button>
+
+                  {releaseStaffDropdownOpen && (
+                    <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                      <div className="border-b border-slate-100 p-2">
+                        <div className="relative">
+                          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            id="release-staff-search"
+                            autoFocus
+                            autoComplete="off"
+                            value={releaseStaffSearch}
+                            onChange={event => setReleaseStaffSearch(event.target.value)}
+                            placeholder="Search staff..."
+                            className="w-full rounded-md border border-slate-200 py-2 pl-9 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                          />
+                        </div>
+                      </div>
+                      <div role="listbox" aria-label="Releasing staff" className="max-h-48 overflow-y-auto py-1">
+                        {releasingStaffOptions
+                          .filter(name => name.toLowerCase().includes(releaseStaffSearch.trim().toLowerCase()))
+                          .map(name => (
+                            <button
+                              key={name}
+                              type="button"
+                              role="option"
+                              aria-selected={releaseStaff === name}
+                              onClick={() => {
+                                setReleaseStaff(name)
+                                setReleaseStaffSearch('')
+                              setReleaseStaffDropdownOpen(false)
+                                setReleaseStaffDropdownOpen(false)
+                              }}
+                              className={`block w-full px-3 py-2.5 text-left text-sm hover:bg-blue-50 ${releaseStaff === name ? 'bg-blue-50 font-semibold text-blue-700' : 'text-slate-700'}`}
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        {!releasingStaffOptions.some(name => name.toLowerCase().includes(releaseStaffSearch.trim().toLowerCase())) && (
+                          <p className="px-3 py-3 text-sm text-slate-500">No matching staff found.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  {releaseStaff ? `Selected: ${releaseStaff}` : 'Open the dropdown to search and select any staff member.'}
+                </p>
               </div>
 
               <div>

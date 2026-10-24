@@ -58,6 +58,25 @@ type ReceivingRecord = {
   [key: string]: unknown
 }
 
+
+type WorkflowTimelineRow = {
+  id: string
+  release_assigned_to: string | null
+  release_instruction: string | null
+  release_forwarded_at: string | null
+  release_forwarded_by: string | null
+  workflow_status: string | null
+  release_received_at: string | null
+  release_received_by: string | null
+  next_action_office_to_forward: string | null
+  next_action_release_to: string | null
+  next_action_release_at: string | null
+  next_action_system_status: string | null
+  next_action_date_forwarded: string | null
+  next_action_recorded_by: string | null
+  next_action_recorded_by_name: string | null
+}
+
 type EditableRecord = {
   reference_number: string
   system_code: string
@@ -179,9 +198,18 @@ function formatDateTime(value: string | null | undefined) {
 
   const date = new Date(value)
 
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleString()
+  if (Number.isNaN(date.getTime())) return value
+
+  return new Intl.DateTimeFormat('en-PH', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(date)
 }
 
 function displayStatus(status: string | null) {
@@ -240,6 +268,9 @@ export default function ReceivingRecords() {
   const [creatorName, setCreatorName] = useState('')
   const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | null>(null)
   const [creatorLoading, setCreatorLoading] = useState(false)
+  const [timelineRows, setTimelineRows] = useState<WorkflowTimelineRow[]>([])
+  const [timelineLoading, setTimelineLoading] = useState(false)
+  const [timelineError, setTimelineError] = useState('')
 
   const [sortField, setSortField] =
     useState<SortField>('date_received')
@@ -333,6 +364,27 @@ export default function ReceivingRecords() {
     }
   }
 
+  async function loadDocumentTimeline(record: ReceivingRecord) {
+    setTimelineLoading(true)
+    setTimelineError('')
+    setTimelineRows([])
+
+    try {
+      const { data, error: timelineQueryError } = await supabase
+        .from('document_workflow')
+        .select('id, release_assigned_to, release_instruction, release_forwarded_at, release_forwarded_by, workflow_status, release_received_at, release_received_by, next_action_office_to_forward, next_action_release_to, next_action_release_at, next_action_system_status, next_action_date_forwarded, next_action_recorded_by, next_action_recorded_by_name')
+        .eq('receiving_record_id', record.id)
+        .order('release_forwarded_at', { ascending: true })
+
+      if (timelineQueryError) throw timelineQueryError
+      setTimelineRows((data ?? []) as WorkflowTimelineRow[])
+    } catch (err) {
+      setTimelineError(err instanceof Error ? err.message : 'Unable to load document progress.')
+    } finally {
+      setTimelineLoading(false)
+    }
+  }
+
   function openRecord(record: ReceivingRecord) {
     setSelected(record)
     setDraft(createDraft(record))
@@ -342,6 +394,7 @@ export default function ReceivingRecords() {
     setSaveError('')
     setSuccess('')
     void loadCreatorName(record)
+    void loadDocumentTimeline(record)
   }
 
   function startEditing() {
@@ -379,6 +432,8 @@ export default function ReceivingRecords() {
     setCreatorName('')
     setCreatorAvatarUrl(null)
     setCreatorLoading(false)
+    setTimelineRows([])
+    setTimelineError('')
   }
 
   function updateDraft<K extends keyof EditableRecord>(
@@ -1431,10 +1486,75 @@ export default function ReceivingRecords() {
                 </div>
               ) : (
                 <>
+                  {timelineRows.some(workflow =>
+                    Boolean(workflow.next_action_release_at) ||
+                    ['released', 'paper_released'].includes(
+                      (workflow.next_action_system_status || '').toLowerCase().replace(/\s+/g, '_'),
+                    )
+                  ) && (
+                    <div role="status" className="mb-4 flex items-center gap-3 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-emerald-900">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
+                        </svg>
+                      </span>
+                      <div>
+                        <p className="text-sm font-extrabold tracking-wide">PAPER RELEASED</p>
+                        <p className="mt-0.5 text-xs text-emerald-800">A release action has been recorded for this document.</p>
+                      </div>
+                    </div>
+                  )}
+
                   <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {renderRecordDetails(selected)}
                   </dl>
                   <AuditHistory documentId={selected.id} />
+
+                  {/* Document workflow timeline */}
+                  <section className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">Document Progress</h4>
+                        <p className="mt-1 text-xs text-slate-500">Chronological tracking of forwarding, receipt, release, and completion.</p>
+                      </div>
+                      <button type="button" onClick={() => void loadDocumentTimeline(selected)} disabled={timelineLoading} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                        {timelineLoading ? 'Refreshing…' : 'Refresh progress'}
+                      </button>
+                    </div>
+
+                    {timelineError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">{timelineError}</p>}
+                    {timelineLoading ? <p className="mt-4 text-sm text-slate-500">Loading document progress…</p> : timelineRows.length === 0 ? <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No forwarding workflow has been recorded for this document yet.</p> : (
+                      <div className="mt-5 space-y-0">
+                        {timelineRows.map((workflow, index) => {
+                          const events = [
+                            { label: 'Document forwarded', at: workflow.release_forwarded_at, actor: workflow.release_forwarded_by, detail: workflow.release_instruction || 'Forwarded to ' + (workflow.release_assigned_to || 'staff') },
+                            { label: 'Receipt confirmed', at: workflow.release_received_at, actor: workflow.release_received_by, detail: 'Physical receipt confirmed' },
+                            { label: 'Next action released', at: workflow.next_action_release_at, actor: workflow.next_action_recorded_by_name || workflow.next_action_recorded_by, detail: [workflow.next_action_office_to_forward, workflow.next_action_release_to].filter(Boolean).join(' · ') || 'Next action recorded' },
+                            { label: 'Forwarded to next office', at: workflow.next_action_date_forwarded, actor: workflow.next_action_recorded_by_name || workflow.next_action_recorded_by, detail: workflow.next_action_system_status || 'Next step forwarded' },
+                          ].filter(event => event.at)
+                          const completed = (workflow.workflow_status || '').toLowerCase() === 'completed' || (workflow.next_action_system_status || '').toLowerCase() === 'completed'
+                          return <div key={workflow.id} className="relative pb-5 last:pb-0">
+                            {index < timelineRows.length - 1 && <span className="absolute left-[9px] top-5 h-full w-px bg-slate-200" />}
+                            <div className="relative flex gap-3">
+                              <span className={`mt-1 h-5 w-5 shrink-0 rounded-full border-2 ${completed ? 'border-green-600 bg-green-100' : 'border-blue-500 bg-blue-50'}`} />
+                              <div className="min-w-0 flex-1 rounded-lg border border-slate-100 bg-slate-50 p-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-sm font-semibold text-slate-800">Workflow #{index + 1}</p>
+                                  <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold capitalize text-slate-600">{displayStatus(workflow.workflow_status)}</span>
+                                </div>
+                                {events.length ? <div className="mt-3 space-y-3">{events.map((event, eventIndex) => <div key={`${workflow.id}-${event.label}-${eventIndex}`} className="border-l-2 border-blue-200 pl-3">
+                                  <p className="text-xs font-semibold text-slate-800">{event.label}</p>
+                                  <p className="mt-0.5 text-xs text-slate-600">{event.detail}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">{formatDateTime(event.at)}{event.actor ? ` · Account: ${event.actor}` : ''}</p>
+                                </div>)}</div> : <p className="mt-2 text-xs text-slate-500">Forwarding record exists; awaiting the first recorded action.</p>}
+                                {completed && <p className="mt-3 text-xs font-semibold text-green-700">Workflow completed</p>}
+                              </div>
+                            </div>
+                          </div>
+                        })}
+                      </div>
+                    )}
+                  </section>
                 </>
               )}
             </div>

@@ -11,6 +11,7 @@ import {
   Trash2,
   X,
   ShieldAlert,
+  Pencil,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -34,7 +35,6 @@ function getErrorMessage(error: unknown): string {
   return 'An unexpected error occurred.'
 }
 
-// Format timestamps in Philippine Standard Time.
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '—'
 
@@ -53,28 +53,34 @@ export default function UserManagement() {
   const [users, setUsers] = useState<Profile[]>([])
   const [currentUserId, setCurrentUserId] = useState('')
   const [search, setSearch] = useState('')
+
+  // Create-user form
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [role, setRole] = useState<UserRole>('staff')
 
+  // Page state
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [actionUserId, setActionUserId] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
-  // In-app modal state.
+  // Modal state
   const [resetTarget, setResetTarget] = useState<Profile | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null)
+  const [editTarget, setEditTarget] = useState<Profile | null>(null)
+
+  const [editFullName, setEditFullName] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showResetPassword, setShowResetPassword] = useState(false)
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
 
-  const modalOpen = Boolean(resetTarget || deleteTarget)
+  const modalOpen = Boolean(resetTarget || deleteTarget || editTarget)
 
   const loadUsers = useCallback(async () => {
     setLoading(true)
@@ -126,7 +132,6 @@ export default function UserManagement() {
     void loadUsers()
   }, [loadUsers])
 
-  // Close the modal with Escape.
   useEffect(() => {
     if (!modalOpen) return
 
@@ -145,10 +150,22 @@ export default function UserManagement() {
 
     setResetTarget(null)
     setDeleteTarget(null)
+    setEditTarget(null)
+    setEditFullName('')
     setNewPassword('')
     setConfirmPassword('')
     setShowResetPassword(false)
     setModalError('')
+  }
+
+  function openEditModal(user: Profile) {
+    setError('')
+    setMessage('')
+    setModalError('')
+    setResetTarget(null)
+    setDeleteTarget(null)
+    setEditTarget(user)
+    setEditFullName(user.full_name ?? '')
   }
 
   function openResetModal(user: Profile) {
@@ -159,6 +176,7 @@ export default function UserManagement() {
     setConfirmPassword('')
     setShowResetPassword(false)
     setDeleteTarget(null)
+    setEditTarget(null)
     setResetTarget(user)
   }
 
@@ -172,6 +190,7 @@ export default function UserManagement() {
     setMessage('')
     setModalError('')
     setResetTarget(null)
+    setEditTarget(null)
     setDeleteTarget(user)
   }
 
@@ -218,7 +237,7 @@ export default function UserManagement() {
             details = responseBody.error || responseBody.message || details
           }
         } catch {
-          // Retain the original error message.
+          // Keep the original error message.
         }
 
         throw new Error(details)
@@ -233,13 +252,74 @@ export default function UserManagement() {
       setShowPassword(false)
       setRole('staff')
 
-      // Reload profiles, including the new account's creation timestamp.
       await loadUsers()
     } catch (err) {
       console.error('Unable to create account:', err)
       setError(getErrorMessage(err))
     } finally {
       setCreating(false)
+    }
+  }
+
+  async function saveUserName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!editTarget) return
+
+    const cleanName = editFullName.trim()
+
+    if (!cleanName) {
+      setModalError('Full name is required.')
+      return
+    }
+
+    if (cleanName.length > 150) {
+      setModalError('Full name cannot exceed 150 characters.')
+      return
+    }
+
+    setModalLoading(true)
+    setActionUserId(editTarget.id)
+    setModalError('')
+
+    try {
+      // RLS must authorize the signed-in administrator to update this row.
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ full_name: cleanName })
+        .eq('id', editTarget.id)
+
+      if (updateError) throw updateError
+
+      setUsers(currentUsers =>
+        currentUsers.map(user =>
+          user.id === editTarget.id
+            ? { ...user, full_name: cleanName }
+            : user,
+        ),
+      )
+
+      const updatedUserId = editTarget.id
+      const isSelf = updatedUserId === currentUserId
+
+      setEditTarget(null)
+      setEditFullName('')
+      setMessage(
+        isSelf
+          ? 'Your name was updated successfully.'
+          : `Name updated successfully to "${cleanName}".`,
+      )
+
+      // Refresh the header name if the administrator edited their own name.
+      if (isSelf) {
+        window.dispatchEvent(new Event('profile-avatar-updated'))
+      }
+    } catch (err) {
+      console.error('Unable to update user name:', err)
+      setModalError(getErrorMessage(err))
+    } finally {
+      setModalLoading(false)
+      setActionUserId('')
     }
   }
 
@@ -281,7 +361,7 @@ export default function UserManagement() {
             details = responseBody.error || responseBody.message || details
           }
         } catch {
-          // Retain the original error message.
+          // Keep the original error message.
         }
 
         throw new Error(details)
@@ -334,7 +414,7 @@ export default function UserManagement() {
             details = responseBody.error || responseBody.message || details
           }
         } catch {
-          // Retain the original error message.
+          // Keep the original error message.
         }
 
         throw new Error(details)
@@ -384,7 +464,7 @@ export default function UserManagement() {
         </h2>
 
         <p className="mt-1 text-sm text-slate-500">
-          Create accounts, assign roles, reset passwords, and manage users.
+          Create accounts, edit names, reset passwords, and manage users.
         </p>
       </header>
 
@@ -431,6 +511,7 @@ export default function UserManagement() {
             Full Name
             <input
               required
+              maxLength={150}
               value={fullName}
               onChange={event => setFullName(event.target.value)}
               autoComplete="name"
@@ -556,7 +637,7 @@ export default function UserManagement() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1050px] text-left text-sm">
+          <table className="w-full min-w-[1150px] text-left text-sm">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
@@ -639,6 +720,17 @@ export default function UserManagement() {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
+                            onClick={() => openEditModal(user)}
+                            disabled={isBusy || modalLoading}
+                            title={`Edit name for ${user.full_name || 'this user'}`}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                          >
+                            <Pencil size={14} />
+                            Edit Name
+                          </button>
+
+                          <button
+                            type="button"
                             onClick={() => openResetModal(user)}
                             disabled={isBusy || modalLoading}
                             title="Set a new temporary password"
@@ -672,6 +764,107 @@ export default function UserManagement() {
           </table>
         </div>
       </section>
+
+      {/* Edit user name modal */}
+      {editTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+          onMouseDown={event => {
+            if (
+              event.target === event.currentTarget &&
+              !modalLoading
+            ) {
+              closeModals()
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-name-title"
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-start justify-between border-b border-slate-100 p-5">
+              <div>
+                <h3
+                  id="edit-name-title"
+                  className="font-bold text-slate-900"
+                >
+                  Edit User Name
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Update the selected user's full name.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeModals}
+                disabled={modalLoading}
+                aria-label="Close dialog"
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
+              >
+                <X size={19} />
+              </button>
+            </div>
+
+            <form onSubmit={saveUserName}>
+              <div className="space-y-4 p-5">
+                {modalError && (
+                  <div
+                    role="alert"
+                    className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+                  >
+                    {modalError}
+                  </div>
+                )}
+
+                <p className="text-sm text-slate-600">
+                  Editing account:
+                  <span className="ml-1 font-semibold text-slate-900">
+                    {editTarget.full_name || 'Unnamed User'}
+                    {editTarget.id === currentUserId ? ' (You)' : ''}
+                  </span>
+                </p>
+
+                <label className="block text-sm font-medium text-slate-700">
+                  Full Name
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    maxLength={150}
+                    value={editFullName}
+                    onChange={event => setEditFullName(event.target.value)}
+                    placeholder="Enter full name"
+                    className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 p-5">
+                <button
+                  type="button"
+                  onClick={closeModals}
+                  disabled={modalLoading}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={modalLoading}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Pencil size={15} />
+                  {modalLoading ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       {/* Reset password modal */}
       {resetTarget && (

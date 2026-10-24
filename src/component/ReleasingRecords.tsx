@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import {
   Search,
@@ -30,6 +29,7 @@ type ReleasingRecord = {
   urgency: string | null
   release_received_at: string | null
   release_received_by: string | null
+  release_received_by_name: string | null
   next_action_office_to_forward: string | null
   next_action_release_to: string | null
   next_action_release_at: string | null
@@ -48,24 +48,33 @@ type SortField =
   | 'release_date'
   | 'status'
   | 'release_instruction'
+  | 'next_action_recorded_by_name'
+  | 'next_action_office_to_forward'
+  | 'next_action_release_to'
+  | 'next_action_release_at'
+  | 'next_action_system_status'
+  | 'next_action_date_forwarded'
   | 'urgency'
 
 const tableColumns: { label: string; field: SortField }[] = [
   { label: 'Reference No.', field: 'reference_number' },
   { label: 'Subject', field: 'subject' },
-  { label: 'Recipient', field: 'recipient' },
+  { label: 'Urgency', field: 'urgency' },
   { label: 'Destination Office', field: 'destination_office' },
   { label: 'Releasing Staff', field: 'releasing_staff' },
-  { label: 'Release Date', field: 'release_date' },
-  { label: 'Urgency', field: 'urgency' },
-  { label: 'Instruction', field: 'release_instruction' },
-  { label: 'Status', field: 'status' },
+  { label: 'Office to Forward', field: 'next_action_office_to_forward' },
+  { label: 'Release To', field: 'next_action_release_to' },
+  { label: 'Date Release', field: 'next_action_release_at' },
+  { label: 'Time Release', field: 'next_action_release_at' },
+  { label: 'Released By', field: 'next_action_recorded_by_name' },
+  { label: 'Action Done in Unified System / Date Forwarded', field: 'next_action_system_status' },
 ]
 
 export default function ReleasingRecords() {
   const [records, setRecords] = useState<ReleasingRecord[]>([])
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<ReleasingRecord | null>(null)
+  const [releasePanelRecord, setReleasePanelRecord] = useState<ReleasingRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
@@ -73,11 +82,10 @@ export default function ReleasingRecords() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [nextActionOffice, setNextActionOffice] = useState('')
   const [nextActionReleaseTo, setNextActionReleaseTo] = useState('')
-  const [nextActionSystemStatus, setNextActionSystemStatus] = useState<'Forwarded' | 'Not Forwarded'>('Not Forwarded')
   const [savingNextAction, setSavingNextAction] = useState(false)
   const [nextActionMode, setNextActionMode] = useState<'view' | 'edit'>('view')
   const [auditLogs, setAuditLogs] = useState<Array<{ id: string; edited_by_name: string; edited_at: string; change_type: string; previous_values: Record<string, unknown> | null; new_values: Record<string, unknown> | null }>>([])
-  const [viewerRole, setViewerRole] = useState<'admin' | 'releasing_staff' | null>(null)
+  const [viewerRole, setViewerRole] = useState<'admin' | 'staff' | null>(null)
 
   const [sortField, setSortField] =
     useState<SortField>('release_date')
@@ -112,13 +120,13 @@ export default function ReleasingRecords() {
       }
 
       const isAdmin = profile.role === 'admin'
-      const isReleasingStaff = profile.role === 'releasing_staff'
+      const isReleasingStaff = profile.role === 'staff'
 
-      setViewerRole(isAdmin ? 'admin' : isReleasingStaff ? 'releasing_staff' : null)
+      setViewerRole(isAdmin ? 'admin' : isReleasingStaff ? 'staff' : null)
 
       if (!isAdmin && !isReleasingStaff) {
         throw new Error(
-          'This page is available only to administrators and releasing staff.',
+          'This page is available only to administrators and staff.',
         )
       }
 
@@ -132,7 +140,7 @@ export default function ReleasingRecords() {
       let assignmentsQuery = supabase
         .from('document_workflow')
         .select(
-          'id, receiving_record_id, release_assigned_to, release_instruction, release_forwarded_at, release_forwarded_by, workflow_status, urgency, release_received_at, release_received_by, next_action_office_to_forward, next_action_release_to, next_action_release_at, next_action_system_status, next_action_date_forwarded, next_action_recorded_by, next_action_recorded_by_name',
+          'id, receiving_record_id, release_assigned_to, release_instruction, release_forwarded_at, release_forwarded_by, workflow_status, urgency, release_received_at, release_received_by, release_received_by_name, next_action_office_to_forward, next_action_release_to, next_action_release_at, next_action_system_status, next_action_date_forwarded, next_action_recorded_by, next_action_recorded_by_name',
         )
         .not('release_instruction', 'is', null)
         .order('release_forwarded_at', { ascending: false })
@@ -213,6 +221,7 @@ export default function ReleasingRecords() {
           urgency: workflow.urgency || 'normal',
           release_received_at: workflow.release_received_at || null,
           release_received_by: workflow.release_received_by || null,
+          release_received_by_name: workflow.release_received_by_name || null,
           next_action_office_to_forward: workflow.next_action_office_to_forward || null,
           next_action_release_to: workflow.next_action_release_to || null,
           next_action_release_at: workflow.next_action_release_at || null,
@@ -237,42 +246,111 @@ export default function ReleasingRecords() {
   }
 
   async function confirmReceipt(record: ReleasingRecord) {
-    if (viewerRole !== 'releasing_staff') {
-      setActionError('Only the assigned releasing staff member can confirm receipt.')
+    setActionError('')
+    setActionSuccess('')
+
+    if (viewerRole !== 'admin' && viewerRole !== 'staff') {
+      setActionError('Your account is not authorized to confirm physical receipt.')
       return
     }
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (record.release_received_at) {
+      setActionError('Receipt has already been confirmed for this document.')
+      return
+    }
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
     if (authError) {
       setActionError(authError.message)
       return
     }
+
     if (!user) {
       setActionError('Your session has expired. Please sign in again.')
       return
     }
 
+    const { data: receiptProfile, error: receiptProfileError } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (receiptProfileError) {
+      setActionError(receiptProfileError.message)
+      return
+    }
+
+    const receiptAccountName = receiptProfile?.full_name?.trim()
+    if (!receiptAccountName) {
+      setActionError('Your account profile must have a full name before confirming receipt.')
+      return
+    }
+
+    // Admins can confirm receipt for any assignment. Staff can confirm only
+    // documents assigned to their own profile name.
+    if (
+      viewerRole === 'staff' &&
+      record.releasing_staff?.trim().toLocaleLowerCase() !== receiptAccountName.toLocaleLowerCase()
+    ) {
+      setActionError('Only the assigned releasing staff member or an administrator can confirm receipt.')
+      return
+    }
+
     setConfirmingId(record.id)
-    setActionError('')
+
     try {
-      const { error: updateError } = await supabase
+      const now = new Date().toISOString()
+
+      const { data: updatedRecord, error: updateError } = await supabase
         .from('document_workflow')
         .update({
           workflow_status: 'action_in_progress',
-          release_received_at: new Date().toISOString(),
+          release_received_at: now,
           release_received_by: user.id,
+          release_received_by_name: receiptAccountName,
         })
         .eq('id', record.id)
         .eq('release_assigned_to', record.releasing_staff)
         .is('release_received_at', null)
+        .select('id, release_received_at, release_received_by, release_received_by_name')
+        .maybeSingle()
 
       if (updateError) throw updateError
+
+      if (!updatedRecord) {
+        throw new Error(
+          'Receipt was not confirmed. The document may already be confirmed, may not be assigned to you, or your database permissions may not allow this action. Refresh and try again.',
+        )
+      }
+
       await loadRecords()
+
+      setSelected(current =>
+        current?.id === record.id
+          ? {
+              ...current,
+              release_received_at: updatedRecord.release_received_at,
+              release_received_by: updatedRecord.release_received_by,
+              release_received_by_name: updatedRecord.release_received_by_name,
+              workflow_status: 'action_in_progress',
+              status: 'action_in_progress',
+            }
+          : current,
+      )
+
+      setActionSuccess(
+        `Physical receipt confirmed for ${record.reference_number}. You can now complete the Next Action.`,
+      )
     } catch (err) {
       setActionError(
         err instanceof Error
           ? err.message
-          : 'Unable to confirm document receipt. Check the database columns and UPDATE policy.',
+          : 'Unable to confirm physical receipt. Check the database columns and UPDATE policy.',
       )
     } finally {
       setConfirmingId(null)
@@ -334,10 +412,8 @@ export default function ReleasingRecords() {
         office_to_forward: office,
         release_to: releaseTo,
         release_at: record.next_action_release_at || now,
-        system_status: nextActionSystemStatus,
-        date_forwarded: nextActionSystemStatus === 'Forwarded'
-          ? (record.next_action_date_forwarded || now)
-          : null,
+        system_status: 'Forwarded',
+        date_forwarded: record.next_action_date_forwarded || now,
       }
       const isEdit = Boolean(record.next_action_release_at)
 
@@ -347,11 +423,11 @@ export default function ReleasingRecords() {
           next_action_office_to_forward: office,
           next_action_release_to: releaseTo,
           next_action_release_at: record.next_action_release_at || now,
-          next_action_system_status: nextActionSystemStatus,
+          next_action_system_status: 'Forwarded',
           next_action_date_forwarded: newValues.date_forwarded,
           next_action_recorded_by: user.id,
           next_action_recorded_by_name: editorName,
-          workflow_status: nextActionSystemStatus === 'Forwarded' ? 'action_completed' : 'action_in_progress',
+          workflow_status: 'action_completed',
           updated_at: now,
         })
         .eq('id', record.id)
@@ -378,17 +454,21 @@ export default function ReleasingRecords() {
         next_action_office_to_forward: office,
         next_action_release_to: releaseTo,
         next_action_release_at: newValues.release_at,
-        next_action_system_status: nextActionSystemStatus,
+        next_action_system_status: 'Forwarded',
         next_action_date_forwarded: newValues.date_forwarded,
         next_action_recorded_by: user.id,
         next_action_recorded_by_name: editorName,
-        workflow_status: nextActionSystemStatus === 'Forwarded' ? 'action_completed' : 'action_in_progress',
-        status: nextActionSystemStatus === 'Forwarded' ? 'action_completed' : 'action_in_progress',
+        workflow_status: 'action_completed',
+        status: 'action_completed',
       }
       setSelected(updatedRecord)
       setNextActionMode('view')
       await loadNextActionLogs(record.id)
-      setActionSuccess(`Next Action ${isEdit ? 'updated' : 'saved'} for ${record.reference_number}.`)
+
+      // This workflow always records the action as Forwarded when saved.
+      // Close the panel and refresh the table so the completed state is visible.
+      setReleasePanelRecord(null)
+      setActionSuccess(`Document ${record.reference_number} was marked Forwarded successfully.`)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Unable to save Next Action.')
     } finally {
@@ -435,6 +515,7 @@ export default function ReleasingRecords() {
         record.status,
         record.remarks,
         record.release_instruction,
+        record.next_action_recorded_by_name,
         record.urgency,
       ].some(value =>
         (value ?? '').toLowerCase().includes(term)
@@ -474,11 +555,48 @@ export default function ReleasingRecords() {
 
     return Number.isNaN(date.getTime())
       ? value
-      : date.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })
+      : date.toLocaleString('en-PH', {
+          timeZone: 'Asia/Manila',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
+        })
+  }
+
+  function formatReleaseTime(value: string | null) {
+    if (!value) return '—'
+    const date = new Date(value)
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleTimeString('en-PH', {
+          timeZone: 'Asia/Manila',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
+        })
   }
 
   function displayStatus(status: string | null) {
     return (status || 'unknown').replaceAll('_', ' ')
+  }
+
+  function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
+    const normalized = (value || '').trim().toLowerCase().replaceAll('_', ' ').replaceAll('-', ' ')
+    return ['urgent', 'high', 'critical', 'very urgent'].includes(normalized)
+      ? 'urgent'
+      : 'not urgent'
+  }
+
+  function urgencyBadge(value: string | null) {
+    const urgency = normalizeUrgency(value)
+    return urgency === 'urgent'
+      ? { label: 'Urgent', className: 'border-red-200 bg-red-50 text-red-700' }
+      : { label: 'Not Urgent', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
   }
 
   return (
@@ -587,7 +705,7 @@ export default function ReleasingRecords() {
 
         {/* Data table */}
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1100px] border-collapse text-left">
+          <table className="w-full min-w-[1650px] border-collapse text-left">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50">
                 {tableColumns.map(column => (
@@ -627,7 +745,7 @@ export default function ReleasingRecords() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={12}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     <RefreshCw
@@ -640,7 +758,7 @@ export default function ReleasingRecords() {
               ) : error && records.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={12}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Records could not be loaded. Check the error above.
@@ -649,7 +767,7 @@ export default function ReleasingRecords() {
               ) : filteredRecords.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={12}
                     className="px-4 py-14 text-center"
                   >
                     <FileText
@@ -689,45 +807,36 @@ export default function ReleasingRecords() {
                       </span>
                     </td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.recipient || '—'}
+                    <td className="whitespace-nowrap px-4 py-3.5 text-xs">
+                      {(() => {
+                        const badge = urgencyBadge(record.urgency)
+                        return (
+                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${badge.className}`}>
+                            {badge.label}
+                          </span>
+                        )
+                      })()}
                     </td>
 
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.destination_office || '—'}
                     </td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.releasing_staff || '—'}
-                    </td>
+                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.releasing_staff || '—'}</td>
 
-                    <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
-                      {formatDate(record.release_date)}
-                    </td>
+                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_office_to_forward || '—'}</td>
 
-                    <td className="px-4 py-3.5">
-                      {record.urgency?.toLowerCase() === 'urgent' ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[10px] font-semibold text-red-700">
-                          <AlertTriangle size={12} /> Urgent
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
-                          Normal
-                        </span>
-                      )}
-                    </td>
+                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_release_to || '—'}</td>
 
-                    <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
-                      <span className="whitespace-pre-wrap break-words">
-                        {record.release_instruction || '—'}
-                      </span>
-                    </td>
+                    <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">{record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</td>
 
-                    <td className="px-4 py-3.5">
-                      <span className="inline-flex items-center whitespace-nowrap rounded-full border border-red-100 bg-red-50 px-2.5 py-1 text-[10px] font-semibold capitalize text-red-700">
-                        <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-red-500" />
-                        {displayStatus(record.status)}
-                      </span>
+                    <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">{record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</td>
+
+                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_recorded_by_name || '—'}</td>
+
+                    <td className="min-w-[210px] px-4 py-3.5 text-xs text-slate-600">
+                      <span className="font-semibold">{(record.next_action_system_status || '').trim().toLowerCase() === 'forwarded' || record.next_action_date_forwarded ? 'Forwarded' : (record.next_action_system_status || 'Not recorded')}</span>
+                      <span className="mt-1 block text-[10px] text-slate-500">Date Forwarded: {record.next_action_date_forwarded ? formatDateTime(record.next_action_date_forwarded) : '—'}</span>
                     </td>
 
                     <td className="px-4 py-3.5">
@@ -736,7 +845,7 @@ export default function ReleasingRecords() {
                         <span className="text-[10px] text-emerald-700">
                           Received: {formatDateTime(record.release_received_at)}
                         </span>
-                      ) : viewerRole === 'releasing_staff' && record.releasing_staff ? (
+                      ) : (viewerRole === 'admin' || (viewerRole === 'staff' && record.releasing_staff)) ? (
                         <button
                           type="button"
                           onClick={() => void confirmReceipt(record)}
@@ -749,23 +858,31 @@ export default function ReleasingRecords() {
                       ) : (
                         <span className="text-[10px] text-amber-700">Awaiting receipt</span>
                       )}
+                      {record.release_received_at && (record.next_action_system_status || '').trim().toLowerCase() !== 'forwarded' && !record.next_action_date_forwarded && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReleasePanelRecord(record)
+                            setNextActionMode(record.next_action_release_at ? 'view' : 'edit')
+                            setActionError('')
+                            setActionSuccess('')
+                            void loadNextActionLogs(record.id)
+                            setNextActionOffice(record.next_action_office_to_forward || '')
+                            setNextActionReleaseTo(record.next_action_release_to || '')
+                            
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-red-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-red-800"
+                        >
+                          <Send size={13} /> {record.next_action_release_at ? 'Continue Release' : 'Complete Release'}
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => {
-                          setSelected(record)
-                          setNextActionMode(record.next_action_release_at ? 'view' : 'edit')
-                          setActionError('')
-                          setActionSuccess('')
-                          void loadNextActionLogs(record.id)
-                          setNextActionOffice(record.next_action_office_to_forward || '')
-                          setNextActionReleaseTo(record.next_action_release_to || '')
-                          setNextActionSystemStatus(record.next_action_system_status === 'Forwarded' ? 'Forwarded' : 'Not Forwarded')
-                        }}
+                        onClick={() => setSelected(record)}
                         aria-label={`View ${record.reference_number}`}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                       >
-                        <Eye size={13} />
-                        View
+                        <Eye size={13} /> View
                       </button>
                       </div>
                     </td>
@@ -834,13 +951,15 @@ export default function ReleasingRecords() {
                 {[
                   ['Reference Number', selected.reference_number],
                   ['Subject', selected.subject],
-                  ['Recipient', selected.recipient],
+                  ['Urgency', urgencyBadge(selected.urgency).label],
                   ['Destination Office', selected.destination_office],
                   ['Releasing Staff', selected.releasing_staff],
                   ['Release Date', formatDate(selected.release_date)],
                   ['Release Time', selected.release_time],
                   ['Status', displayStatus(selected.status)],
                   ['Remarks', selected.remarks],
+                  ['Released By', selected.next_action_recorded_by_name || 'Not released yet'],
+                  ['Release Recorded At', formatDateTime(selected.next_action_release_at)],
                   ['Created At', formatDateTime(selected.created_at)],
                 ].map(([label, value]) => (
                   <div
@@ -859,115 +978,42 @@ export default function ReleasingRecords() {
               </dl>
 
               <section className="mt-6 rounded-xl border border-red-100 bg-red-50/40 p-4">
-                <h4 className="text-sm font-bold text-slate-900">Next Action</h4>
-                <p className="mt-1 text-xs text-slate-500">
-                  Complete this section after confirming physical receipt of the document.
+                <h4 className="text-sm font-bold text-slate-900">
+                  Physical Receipt Confirmation
+                </h4>
+                <p className="mt-1 text-xs text-slate-600">
+                  Confirm that you have physically received this document from the originating office before proceeding with the next action.
                 </p>
 
-                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <label className="text-xs font-semibold text-slate-600">
-                    Office to Forward *
-                    <input
-                      value={nextActionOffice}
-                      onChange={event => setNextActionOffice(event.target.value)}
-                      disabled={nextActionMode === 'view' && Boolean(selected.next_action_release_at)}
-                      placeholder="Enter destination office manually"
-                      className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
-                    />
-                  </label>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Release To *
-                    <input
-                      value={nextActionReleaseTo}
-                      onChange={event => setNextActionReleaseTo(event.target.value)}
-                      disabled={nextActionMode === 'view' && Boolean(selected.next_action_release_at)}
-                      placeholder="Enter person transacting"
-                      className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
-                    />
-                  </label>
-                  <div className="text-xs font-semibold text-slate-600">
-                    Date Release / Time Release
-                    <p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">
-                      {selected.next_action_release_at ? formatDateTime(selected.next_action_release_at) : 'Set automatically when saved'}
+                {selected.release_received_at ? (
+                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
+                      <CheckCircle2 size={16} />
+                      Receipt Confirmed
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-700">
+                      Confirmed on: {formatDateTime(selected.release_received_at)}
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-700">
+                      Confirmed by: {selected.release_received_by_name || 'Account name unavailable'}
                     </p>
                   </div>
-                  <label className="text-xs font-semibold text-slate-600">
-                    Action Done in Unified System *
-                    <select
-                      value={nextActionSystemStatus}
-                      onChange={event => setNextActionSystemStatus(event.target.value as 'Forwarded' | 'Not Forwarded')}
-                      disabled={nextActionMode === 'view' && Boolean(selected.next_action_release_at)}
-                      className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
-                    >
-                      <option value="Not Forwarded">Not Forwarded</option>
-                      <option value="Forwarded">Forwarded</option>
-                    </select>
-                  </label>
-                  <div className="text-xs font-semibold text-slate-600 sm:col-span-2">
-                    Date Forwarded
-                    <p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">
-                      {selected.next_action_date_forwarded ? formatDateTime(selected.next_action_date_forwarded) : nextActionSystemStatus === 'Forwarded' ? 'Will be recorded when saved' : 'Not forwarded yet'}
-                    </p>
-                  </div>
-                </div>
-
-                {selected.next_action_recorded_by && (
-                  <p className="mt-3 text-xs text-slate-500">
-                    Recorded by: {selected.next_action_recorded_by_name || 'Name unavailable'}
+                ) : (viewerRole === 'admin' || (viewerRole === 'staff' && selected.releasing_staff)) ? (
+                  <button
+                    type="button"
+                    onClick={() => void confirmReceipt(selected)}
+                    disabled={confirmingId === selected.id}
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CheckCircle2 size={16} />
+                    {confirmingId === selected.id ? 'Confirming Receipt...' : 'Confirm Receipt'}
+                  </button>
+                ) : (
+                  <p className="mt-3 text-xs text-amber-700">
+                    Receipt is awaiting confirmation by the assigned releasing staff member.
                   </p>
                 )}
 
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs text-slate-500">
-                    {nextActionSystemStatus === 'Forwarded'
-                      ? 'Saving as Forwarded records the forwarding date and advances the workflow.'
-                      : 'Not Forwarded keeps the workflow in progress.'}
-                  </p>
-                  {selected.next_action_release_at && nextActionMode === 'view' ? (
-                    <button type="button" onClick={() => setNextActionMode('edit')} className="inline-flex items-center gap-2 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800">
-                      Edit Next Action
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => void saveNextAction(selected)}
-                      disabled={savingNextAction || !selected.release_received_at}
-                      title={!selected.release_received_at ? 'Confirm receipt first' : 'Save next action'}
-                      className="inline-flex items-center gap-2 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingNextAction ? 'Saving...' : selected.next_action_release_at ? 'Save Changes' : 'Save Next Action'}
-                    </button>
-                  )}
-                </div>
-                {!selected.release_received_at && (
-                  <p className="mt-2 text-xs text-amber-700">
-                    Confirm Receipt first to enable the Next Action form.
-                  </p>
-                )}
-                {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{actionError}</p>}
-                {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">{actionSuccess}</p>}
-
-                {auditLogs.length > 0 && (
-                  <div className="mt-5 border-t border-slate-200 pt-4">
-                    <h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Edit History / Audit Log</h5>
-                    <div className="mt-3 space-y-2">
-                      {auditLogs.map(log => (
-                        <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="font-semibold text-slate-800">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span>
-                            <span className="text-slate-500">{formatDateTime(log.edited_at)}</span>
-                          </div>
-                          {log.previous_values && log.change_type === 'EDIT' && (
-                            <p className="mt-2 text-slate-600">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')})</p>
-                          )}
-                          {log.new_values && (
-                            <p className="mt-1 text-slate-600">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')})</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </section>
             </div>
 
@@ -979,6 +1025,52 @@ export default function ReleasingRecords() {
               >
                 Close
               </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Separate Release Panel: intentionally independent from View details. */}
+      {releasePanelRecord && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[2px]" onClick={() => setReleasePanelRecord(null)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="release-panel-title" className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl" onClick={event => event.stopPropagation()}>
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
+              <div>
+                <p className="text-xs font-medium text-red-700">Document Workflow</p>
+                <h3 id="release-panel-title" className="mt-1 text-xl font-bold text-slate-900">Release Panel · {releasePanelRecord.reference_number}</h3>
+                <p className="mt-1 text-xs text-slate-500">Record the next destination and release status. Physical receipt must be confirmed first.</p>
+              </div>
+              <button type="button" onClick={() => setReleasePanelRecord(null)} aria-label="Close release panel" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="space-y-5 p-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Subject</p><p className="mt-1 text-sm text-slate-800">{releasePanelRecord.subject || '—'}</p></div>
+                <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Physical Receipt</p><p className="mt-1 text-sm font-semibold">{releasePanelRecord.release_received_at ? `Confirmed · ${formatDateTime(releasePanelRecord.release_received_at)}` : 'Awaiting confirmation'}</p></div>
+              </div>
+              <div className="rounded-xl border border-red-100 bg-red-50/40 p-4">
+                <h4 className="text-sm font-bold text-slate-900">Release Details</h4>
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <label className="text-xs font-semibold text-slate-600">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100" /></label>
+                  <label className="text-xs font-semibold text-slate-600">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100" /></label>
+                  <div className="text-xs font-semibold text-slate-600">Date Release<p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_release_at ? formatDate(releasePanelRecord.next_action_release_at) : 'Recorded automatically when saved'}</p></div>
+                  <div className="text-xs font-semibold text-slate-600">Time Release<p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_release_at ? formatReleaseTime(releasePanelRecord.next_action_release_at) : 'Recorded automatically when saved'}</p></div>
+                  <div className="text-xs font-semibold text-slate-600">Action Done in Unified System
+                    <p className="mt-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800">Forwarded</p>
+                  </div>
+                  <div className="text-xs font-semibold text-slate-600">Date Forwarded
+                    <p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_date_forwarded ? formatDateTime(releasePanelRecord.next_action_date_forwarded) : 'Recorded automatically when saved'}</p>
+                  </div>
+                </div>
+                {releasePanelRecord.next_action_recorded_by && <p className="mt-3 text-xs text-slate-500">Released by: {releasePanelRecord.next_action_recorded_by_name || 'Name unavailable'}</p>}
+                {!releasePanelRecord.release_received_at && <p className="mt-3 text-xs text-amber-700">Confirm physical receipt before releasing this document.</p>}
+                {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{actionError}</p>}
+                {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">{actionSuccess}</p>}
+                {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')})</p>}</div>)}</div></div>}
+                <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-red-100 pt-4">
+                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => setNextActionMode('edit')} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50">{savingNextAction ? 'Processing…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
+                  <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close Panel</button>
+                </div>
+              </div>
             </div>
           </section>
         </div>

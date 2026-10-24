@@ -25,18 +25,34 @@ type AuditHistoryProps = {
   documentId: string
 }
 
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString('en-PH', {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '—'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-PH', {
     timeZone: 'Asia/Manila',
-  })
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(date)
 }
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function collectUuids(value: unknown, found = new Set<string>()): Set<string> {
+function collectUuids(
+  value: unknown,
+  found = new Set<string>(),
+): Set<string> {
   if (typeof value === 'string' && UUID_PATTERN.test(value)) {
     found.add(value)
   } else if (Array.isArray(value)) {
@@ -60,8 +76,22 @@ function formatValue(
 
   if (typeof value === 'string') {
     if (staffNames[value]) return staffNames[value]
-    // Avoid showing raw UUIDs if the profile could not be resolved.
-    if (UUID_PATTERN.test(value)) return 'Staff member (name unavailable)'
+
+    // Format ISO date-time strings in Philippine time using a 12-hour clock.
+    // Only strings that look like full ISO timestamps are converted.
+    const looksLikeIsoDateTime =
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(value)
+
+    if (looksLikeIsoDateTime) {
+      const formattedDateTime = formatDateTime(value)
+      if (formattedDateTime !== value) return formattedDateTime
+    }
+
+    // Avoid displaying raw UUIDs when the profile cannot be resolved.
+    if (UUID_PATTERN.test(value)) {
+      return 'Staff member (name unavailable)'
+    }
+
     return value
   }
 
@@ -73,8 +103,12 @@ function formatValue(
 
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
+
     return entries
-      .map(([key, item]) => `${key.replaceAll('_', ' ')}: ${formatValue(item, staffNames)}`)
+      .map(
+        ([key, item]) =>
+          `${key.replaceAll('_', ' ')}: ${formatValue(item, staffNames)}`,
+      )
       .join('; ')
   }
 
@@ -91,7 +125,9 @@ function getChangedFields(
 
   return Object.keys(current)
     .filter(key => !ignoredFields.has(key))
-    .filter(key => JSON.stringify(previous[key]) !== JSON.stringify(current[key]))
+    .filter(
+      key => JSON.stringify(previous[key]) !== JSON.stringify(current[key]),
+    )
     .map(key => ({
       field: key.replaceAll('_', ' '),
       before: previous[key],
@@ -99,7 +135,9 @@ function getChangedFields(
     }))
 }
 
-export default function AuditHistory({ documentId }: AuditHistoryProps) {
+export default function AuditHistory({
+  documentId,
+}: AuditHistoryProps) {
   const [logs, setLogs] = useState<AuditLog[]>([])
   const [staffNames, setStaffNames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -139,9 +177,9 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
       const loadedLogs = (data ?? []) as AuditLog[]
       setLogs(loadedLogs)
 
-      // Collect UUIDs from historical before/after values and resolve them
-      // through profiles so old audit entries show names as well.
+      // Resolve UUIDs in historical before/after values to profile names.
       const ids = new Set<string>()
+
       loadedLogs.forEach(log => {
         collectUuids(log.previous_values, ids)
         collectUuids(log.new_values, ids)
@@ -155,12 +193,17 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
 
         if (!profileError && profiles) {
           const resolved: Record<string, string> = {}
+
           ;(profiles as StaffProfile[]).forEach(profile => {
             if (profile.id && profile.full_name?.trim()) {
               resolved[profile.id] = profile.full_name.trim()
             }
           })
-          setStaffNames(previous => ({ ...previous, ...resolved }))
+
+          setStaffNames(previous => ({
+            ...previous,
+            ...resolved,
+          }))
         }
       }
     } catch (err) {
@@ -209,6 +252,7 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
             <History size={16} />
             Edit History / Audit Log
           </h3>
+
           <p className="mt-1 text-xs text-slate-500">
             Recorded document changes
           </p>
@@ -230,7 +274,9 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
 
       <div className="space-y-3 p-4">
         {loading && (
-          <p className="text-sm text-slate-500">Loading audit history...</p>
+          <p className="text-sm text-slate-500">
+            Loading audit history...
+          </p>
         )}
 
         {!loading && error && (
@@ -242,7 +288,11 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
         {!loading && !error && logs.length === 0 && (
           <div className="rounded-lg border border-dashed border-slate-300 p-5 text-center">
             <History size={22} className="mx-auto mb-2 text-slate-400" />
-            <p className="text-sm font-medium text-slate-700">No history yet</p>
+
+            <p className="text-sm font-medium text-slate-700">
+              No history yet
+            </p>
+
             <p className="mt-1 text-xs text-slate-500">
               Changes recorded after audit logging was enabled will appear here.
             </p>
@@ -250,7 +300,10 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
         )}
 
         {logs.map(log => {
-          const changes = getChangedFields(log.previous_values, log.new_values)
+          const changes = getChangedFields(
+            log.previous_values,
+            log.new_values,
+          )
 
           return (
             <article
@@ -261,6 +314,7 @@ export default function AuditHistory({ documentId }: AuditHistoryProps) {
                 <div>
                   <p className="text-sm font-semibold text-slate-800">
                     {log.performed_by_name || 'Unknown User'}
+
                     <span className="font-normal text-slate-500">
                       {' '}· {log.action_type}
                     </span>

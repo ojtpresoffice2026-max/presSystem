@@ -47,6 +47,7 @@ import UserManagement from './pages/UserManagement'
 import SettingsPage from './pages/Settings'
 import OriginOfficeReturns from './component/OriginOfficeReturns'
 import Dashboard from './pages/Dashboard'
+import MyProfile from './pages/MyProfile'
 
 type HeaderProfile = {
   full_name: string | null
@@ -135,7 +136,7 @@ function AdminOnly({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-// Both admin and staff can access operational modules.
+// Both admin and staff can access operational modules and My Profile.
 function OperationalAccess({ children }: { children: ReactNode }) {
   const { session, role, loading } = useAuth()
 
@@ -257,23 +258,10 @@ function HeaderProfileButton() {
 
       <button
         type="button"
-        onClick={() => {
-          if (role === 'admin') {
-            navigate('/settings')
-          }
-        }}
-        disabled={role !== 'admin'}
-        aria-label={
-          role === 'admin'
-            ? 'Open profile settings'
-            : 'Profile picture'
-        }
-        title={
-          role === 'admin'
-            ? 'Open profile settings'
-            : 'Profile'
-        }
-        className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-blue-100 text-blue-800 shadow-sm transition hover:ring-4 hover:ring-blue-100 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-default disabled:hover:ring-0"
+        onClick={() => navigate('/profile')}
+        aria-label="Open My Profile"
+        title="My Profile"
+        className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-blue-100 text-blue-800 shadow-sm transition hover:ring-4 hover:ring-blue-100 focus:outline-none focus:ring-4 focus:ring-blue-200"
       >
         {avatarUrl && !imageFailed ? (
           <img
@@ -312,6 +300,11 @@ function DashboardLayout() {
       label: 'Dashboard',
       path: '/dashboard',
       icon: LayoutDashboard,
+    },
+    {
+      label: 'My Profile',
+      path: '/profile',
+      icon: UserRound,
     },
     {
       label: 'Receiving',
@@ -469,6 +462,16 @@ export default function App() {
               <Route
                 path="/dashboard"
                 element={<Dashboard />}
+              />
+
+              {/* Profile page for Admin and Staff */}
+              <Route
+                path="/profile"
+                element={
+                  <OperationalAccess>
+                    <MyProfile />
+                  </OperationalAccess>
+                }
               />
 
               {/* Receiving */}

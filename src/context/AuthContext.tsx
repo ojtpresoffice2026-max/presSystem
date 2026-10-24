@@ -13,6 +13,8 @@ import { supabase } from '../lib/supabase'
 export type UserRole =
   | 'admin'
   | 'receiving_staff'
+  | 'forwarding_staff'
+  | 'board_room_staff'
   | 'releasing_staff'
 
 type AuthContextType = {
@@ -27,6 +29,8 @@ function isValidRole(role: unknown): role is UserRole {
   return (
     role === 'admin' ||
     role === 'receiving_staff' ||
+    role === 'forwarding_staff' ||
+    role === 'board_room_staff' ||
     role === 'releasing_staff'
   )
 }
@@ -45,11 +49,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange((_event, newSession) => {
       if (!active) return
 
-      setSession(currentSession => {
+      setSession((currentSession) => {
         const currentUserId = currentSession?.user?.id ?? null
         const newUserId = newSession?.user?.id ?? null
 
-        // Only clear the current role when the account changes.
+        // Clear the role when the authenticated account changes.
         if (currentUserId !== newUserId) {
           setRole(null)
         }
@@ -61,10 +65,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setRole(null)
         setLoading(false)
       }
-
-      // Do not set loading=true for token refreshes.
-      // The user's ID may remain unchanged, so the role-loading
-      // effect would not rerun and the app could remain stuck.
     })
 
     async function initializeSession() {
@@ -132,7 +132,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setRole(data.role)
         } else {
           console.error(
-            'User has no valid role in the profiles table.'
+            'User has no valid role in the profiles table. ' +
+              'Allowed roles: admin, receiving_staff, forwarding_staff, ' +
+              'board_room_staff, releasing_staff.',
           )
           setRole(null)
         }

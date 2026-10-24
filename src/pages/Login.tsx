@@ -10,6 +10,8 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
+type UserRole = 'admin' | 'receiving_staff' | 'releasing_staff'
+
 export default function Login() {
   const navigate = useNavigate()
 
@@ -27,13 +29,13 @@ export default function Login() {
     try {
       const { data, error: loginError } =
         await supabase.auth.signInWithPassword({
-          email: email.trim(),
+          email: email.trim().toLowerCase(),
           password,
         })
 
       if (loginError) throw loginError
 
-      if (!data.session) {
+      if (!data.session || !data.user) {
         throw new Error('Unable to establish a session.')
       }
 
@@ -43,28 +45,46 @@ export default function Login() {
         .eq('id', data.user.id)
         .maybeSingle()
 
-      if (profileError) throw profileError
-
-      const role = profile?.role
-
-      if (role !== 'admin' && role !== 'receiving_staff') {
-        await supabase.auth.signOut()
-
+      if (profileError) {
+        console.error('Profile lookup failed:', profileError)
         throw new Error(
-          'Your account has no authorized presSystem role. Contact your administrator.'
+          'Unable to verify your account role. Please contact your administrator.',
         )
       }
 
-      if (role === 'receiving_staff') {
-        navigate('/receiving', { replace: true })
-      } else {
-        navigate('/dashboard', { replace: true })
+      const role = profile?.role as UserRole | undefined
+
+      if (
+        !role ||
+        !['admin', 'receiving_staff', 'releasing_staff'].includes(role)
+      ) {
+        await supabase.auth.signOut()
+
+        throw new Error(
+          'Your account has no authorized presSystem role. Contact your administrator.',
+        )
+      }
+
+      switch (role) {
+        case 'admin':
+          navigate('/dashboard', { replace: true })
+          break
+
+        case 'receiving_staff':
+          navigate('/receiving', { replace: true })
+          break
+
+        case 'releasing_staff':
+          navigate('/releasing', { replace: true })
+          break
       }
     } catch (err) {
+      console.error('Login failed:', err)
+
       setError(
         err instanceof Error
           ? err.message
-          : 'Unable to sign in. Please try again.'
+          : 'Unable to sign in. Please try again.',
       )
     } finally {
       setLoading(false)

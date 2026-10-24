@@ -1,4 +1,6 @@
+
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Search,
@@ -10,8 +12,10 @@ import {
   Pencil,
   Save,
   Ban,
+  ChevronDown,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import AuditHistory from './AuditHistory'
 
 type ReceivingRecord = {
   id: string
@@ -32,30 +36,26 @@ type ReceivingRecord = {
   remarks: string | null
   created_at: string | null
   created_by: string | null
-
   office_designation: string | null
   date_of_letter: string | null
   other_notes_remarks: string | null
-
   origin_office: string | null
   payee: string | null
   document_type: string | null
-
   amount_peso: number | string | null
   document_code: string | null
   ors_burs_amount: number | string | null
   dv_amount: number | string | null
   check_amount: number | string | null
-
   campus: string | null
   document_date: string | null
   batch_no: string | null
   total_amount: number | string | null
-
   norsa_type: string | null
   serial_number: string | null
   amount_to_adjust: number | string | null
   adjusted_amount: number | string | null
+  [key: string]: unknown
 }
 
 type EditableRecord = {
@@ -109,7 +109,16 @@ const DESTINATION_FOLDERS = [
   'NORSA/NBURSA',
 ]
 
-const columns = '*'
+const SPECIAL_DESTINATIONS = [
+  'BAIS',
+  'SIATION',
+  'MABINAY',
+  'GUIHULNGAN',
+  'BAYAWAN',
+]
+
+const inputClass =
+  'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
 
 const tableColumns: { label: string; field: SortField }[] = [
   { label: 'PresOffice No.', field: 'reference_number' },
@@ -122,25 +131,16 @@ const tableColumns: { label: string; field: SortField }[] = [
   { label: 'Status', field: 'status' },
 ]
 
-const inputClass =
-  'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
-
-const SPECIAL_DESTINATIONS = [
-  'BAIS',
-  'SIATION',
-  'MABINAY',
-  'GUIHULNGAN',
-  'BAYAWAN',
-]
-
 function money(value: number | string | null | undefined) {
   if (value === null || value === undefined || value === '') {
-    return null
+    return '—'
   }
 
   const amount = Number(value)
 
-  if (!Number.isFinite(amount)) return String(value)
+  if (!Number.isFinite(amount)) {
+    return String(value)
+  }
 
   return `₱${amount.toLocaleString('en-PH', {
     minimumFractionDigits: 2,
@@ -160,22 +160,85 @@ function valueOrDash(value: unknown): string {
   return String(value)
 }
 
+function normalize(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return '—'
+
+  const date = new Date(`${value}T00:00:00`)
+
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString()
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '—'
+
+  const date = new Date(value)
+
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString()
+}
+
+function displayStatus(status: string | null) {
+  return (status || 'unknown').replaceAll('_', ' ')
+}
+
 export default function ReceivingRecords() {
   const navigate = useNavigate()
 
   const [records, setRecords] = useState<ReceivingRecord[]>([])
+
+  // General record search
   const [searchInput, setSearchInput] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
+
+  // Searchable destination folder dropdown
   const [selectedFolder, setSelectedFolder] = useState('ALL')
+  const [folderDropdownOpen, setFolderDropdownOpen] = useState(false)
+  const [folderDropdownSearch, setFolderDropdownSearch] = useState('')
+
+  const filteredFolderOptions = useMemo(
+    () =>
+      DESTINATION_FOLDERS.filter(folder =>
+        folder
+          .toLowerCase()
+          .includes(folderDropdownSearch.trim().toLowerCase()),
+      ),
+    [folderDropdownSearch],
+  )
+
   const [selected, setSelected] = useState<ReceivingRecord | null>(null)
   const [draft, setDraft] = useState<EditableRecord | null>(null)
   const [editMode, setEditMode] = useState(false)
+  const [editFolderDropdownOpen, setEditFolderDropdownOpen] = useState(false)
+  const [editFolderSearch, setEditFolderSearch] = useState('')
+
+  const editFolderOptions = useMemo(() => {
+    const currentFolder = draft?.destination_folder?.trim() ?? ''
+    const options = currentFolder && !DESTINATION_FOLDERS.some(
+      folder => folder.toLowerCase() === currentFolder.toLowerCase(),
+    )
+      ? [currentFolder, ...DESTINATION_FOLDERS]
+      : DESTINATION_FOLDERS
+
+    const term = editFolderSearch.trim().toLowerCase()
+    return options.filter(folder => folder.toLowerCase().includes(term))
+  }, [draft?.destination_folder, editFolderSearch])
+
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [success, setSuccess] = useState('')
+
+  // Creator profile details displayed in the record modal.
   const [creatorName, setCreatorName] = useState('')
+  const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | null>(null)
   const [creatorLoading, setCreatorLoading] = useState(false)
 
   const [sortField, setSortField] =
@@ -190,7 +253,7 @@ export default function ReceivingRecords() {
     try {
       const { data, error: queryError } = await supabase
         .from('receiving_records')
-        .select(columns)
+        .select('*')
         .order('created_at', { ascending: false })
 
       if (queryError) throw queryError
@@ -212,16 +275,23 @@ export default function ReceivingRecords() {
     void loadRecords()
   }, [])
 
+  // Load the record creator's name and profile picture.
+  // This assumes created_by contains the Supabase auth user UUID.
   async function loadCreatorName(record: ReceivingRecord) {
     setCreatorName('')
+    setCreatorAvatarUrl(null)
+
+    if (!record.created_by) {
+      setCreatorLoading(false)
+      return
+    }
+
     setCreatorLoading(true)
 
     try {
-      if (!record.created_by) return
-
       const { data, error: profileError } = await supabase
         .from('profiles')
-        .select('full_name')
+        .select('full_name, avatar_path')
         .eq('id', record.created_by)
         .maybeSingle()
 
@@ -231,8 +301,18 @@ export default function ReceivingRecords() {
       }
 
       setCreatorName(data?.full_name?.trim() || '')
+
+      if (data?.avatar_path) {
+        const { data: avatarData } = supabase.storage
+          .from('avatars')
+          .getPublicUrl(data.avatar_path)
+
+        setCreatorAvatarUrl(avatarData.publicUrl)
+      } else {
+        setCreatorAvatarUrl(null)
+      }
     } catch (err) {
-      console.error('Unable to load creator name:', err)
+      console.error('Unable to load creator profile:', err)
     } finally {
       setCreatorLoading(false)
     }
@@ -257,6 +337,8 @@ export default function ReceivingRecords() {
     setSelected(record)
     setDraft(createDraft(record))
     setEditMode(false)
+    setEditFolderDropdownOpen(false)
+    setEditFolderSearch('')
     setSaveError('')
     setSuccess('')
     void loadCreatorName(record)
@@ -267,14 +349,20 @@ export default function ReceivingRecords() {
 
     setDraft(createDraft(selected))
     setEditMode(true)
+    setEditFolderDropdownOpen(false)
+    setEditFolderSearch('')
     setSaveError('')
     setSuccess('')
   }
 
   function cancelEditing() {
-    if (selected) setDraft(createDraft(selected))
+    if (selected) {
+      setDraft(createDraft(selected))
+    }
 
     setEditMode(false)
+    setEditFolderDropdownOpen(false)
+    setEditFolderSearch('')
     setSaveError('')
   }
 
@@ -284,9 +372,12 @@ export default function ReceivingRecords() {
     setSelected(null)
     setDraft(null)
     setEditMode(false)
+    setEditFolderDropdownOpen(false)
+    setEditFolderSearch('')
     setSaveError('')
     setSuccess('')
     setCreatorName('')
+    setCreatorAvatarUrl(null)
     setCreatorLoading(false)
   }
 
@@ -404,17 +495,38 @@ export default function ReceivingRecords() {
     switch (field) {
       case 'content':
         return record.content || record.subject || ''
+
       case 'bearer':
         return record.bearer || record.sender || ''
+
       case 'destination_folder':
         return record.destination_folder || record.current_office || ''
+
       default:
         return String(record[field] ?? '')
     }
   }
 
+  function handleSearch() {
+    setAppliedSearch(searchInput.trim())
+  }
+
+  function handleFolderChange(folder: string) {
+    setSelectedFolder(folder)
+    setFolderDropdownSearch('')
+    setFolderDropdownOpen(false)
+  }
+
+  function clearFilters() {
+    setSearchInput('')
+    setAppliedSearch('')
+    setSelectedFolder('ALL')
+    setFolderDropdownSearch('')
+    setFolderDropdownOpen(false)
+  }
+
   const filteredRecords = useMemo(() => {
-    const term = appliedSearch.trim().toLowerCase()
+    const term = normalize(appliedSearch)
 
     const filtered = records.filter(record => {
       const destination = (
@@ -425,6 +537,7 @@ export default function ReceivingRecords() {
         .trim()
         .toUpperCase()
 
+      // Apply the destination filter first.
       if (
         selectedFolder !== 'ALL' &&
         destination !== selectedFolder.toUpperCase()
@@ -432,44 +545,57 @@ export default function ReceivingRecords() {
         return false
       }
 
-      if (!term) return true
+      // Then apply the general record search.
+      if (term) {
+        const searchFields = [
+          record.reference_number,
+          record.system_code,
+          record.record_type,
+          record.subject,
+          record.sender,
+          record.bearer,
+          record.content,
+          record.description,
+          record.destination_folder,
+          record.receiving_staff,
+          record.status,
+          record.current_office,
+          record.remarks,
+          record.origin_office,
+          record.payee,
+          record.document_type,
+          record.document_code,
+          record.batch_no,
+          record.serial_number,
+          record.norsa_type,
+          record.office_designation,
+          record.other_notes_remarks,
+          record.campus,
+          record.amount_peso,
+          record.ors_burs_amount,
+          record.dv_amount,
+          record.check_amount,
+          record.total_amount,
+          record.amount_to_adjust,
+          record.adjusted_amount,
+        ]
 
-      return [
-        record.reference_number,
-        record.system_code,
-        record.record_type,
-        record.subject,
-        record.sender,
-        record.bearer,
-        record.content,
-        record.description,
-        record.destination_folder,
-        record.receiving_staff,
-        record.status,
-        record.current_office,
-        record.remarks,
-        record.origin_office,
-        record.payee,
-        record.document_code,
-        record.batch_no,
-        record.serial_number,
-        record.norsa_type,
-        record.office_designation,
-        record.other_notes_remarks,
-      ].some(value =>
-        String(value ?? '').toLowerCase().includes(term),
-      )
+        if (!searchFields.some(value => normalize(value).includes(term))) {
+          return false
+        }
+      }
+
+      return true
     })
 
     return [...filtered].sort((a, b) => {
       const first = getSortValue(a, sortField)
       const second = getSortValue(b, sortField)
 
-      const comparison = first.localeCompare(
-        second,
-        undefined,
-        { numeric: true, sensitivity: 'base' },
-      )
+      const comparison = first.localeCompare(second, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      })
 
       return sortDirection === 'asc' ? comparison : -comparison
     })
@@ -480,40 +606,6 @@ export default function ReceivingRecords() {
     sortField,
     sortDirection,
   ])
-
-  function formatDate(value: string | null | undefined) {
-    if (!value) return '—'
-
-    const date = new Date(`${value}T00:00:00`)
-
-    return Number.isNaN(date.getTime())
-      ? value
-      : date.toLocaleDateString()
-  }
-
-  function formatDateTime(value: string | null | undefined) {
-    if (!value) return '—'
-
-    const date = new Date(value)
-
-    return Number.isNaN(date.getTime())
-      ? value
-      : date.toLocaleString()
-  }
-
-  function displayStatus(status: string | null) {
-    return (status || 'unknown').replaceAll('_', ' ')
-  }
-
-  function handleSearch() {
-    setAppliedSearch(searchInput.trim())
-  }
-
-  function clearFilters() {
-    setSearchInput('')
-    setAppliedSearch('')
-    setSelectedFolder('ALL')
-  }
 
   function detail(
     label: string,
@@ -535,6 +627,7 @@ export default function ReceivingRecords() {
         <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           {label}
         </dt>
+
         <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800">
           {displayValue}
         </dd>
@@ -542,16 +635,16 @@ export default function ReceivingRecords() {
     )
   }
 
-  function renderRecordDetails(record: ReceivingRecord) {
+  function renderRecordDetails(record: ReceivingRecord): ReactNode[] {
     const destination = (
       record.destination_folder ||
       record.current_office ||
       ''
-    ).toUpperCase()
+    )
+      .trim()
+      .toUpperCase()
 
-    const details: React.ReactNode[] = []
-
-    details.push(
+    const details: ReactNode[] = [
       detail('PresOffice Number', record.reference_number),
       detail('System Code', record.system_code),
       detail('Record Type', record.record_type),
@@ -566,11 +659,12 @@ export default function ReceivingRecords() {
       detail('Status', displayStatus(record.status)),
       detail('Current Office', record.current_office),
       detail('Description', record.description),
-    )
+    ]
 
     if (destination === 'LDDAP') {
       details.push(
         detail('Amount (₱)', record.amount_peso, money),
+        detail('Other Notes / Remarks', record.other_notes_remarks),
       )
     }
 
@@ -578,6 +672,7 @@ export default function ReceivingRecords() {
       details.push(
         detail('ORS / BURS Type', record.document_type),
         detail('ORS / BURS Amount', record.ors_burs_amount, money),
+        detail('Other Notes / Remarks', record.other_notes_remarks),
       )
     }
 
@@ -587,6 +682,7 @@ export default function ReceivingRecords() {
         detail('ORS / BURS Amount', record.ors_burs_amount, money),
         detail('DV Amount', record.dv_amount, money),
         detail('Check Amount', record.check_amount, money),
+        detail('Other Notes / Remarks', record.other_notes_remarks),
       )
     }
 
@@ -596,6 +692,7 @@ export default function ReceivingRecords() {
         detail('Document Date', record.document_date, formatDate),
         detail('Batch No.', record.batch_no),
         detail('Total Amount', record.total_amount, money),
+        detail('Other Notes / Remarks', record.other_notes_remarks),
       )
     }
 
@@ -605,6 +702,7 @@ export default function ReceivingRecords() {
         detail('Serial Number', record.serial_number),
         detail('Amount to Adjust', record.amount_to_adjust, money),
         detail('Adjusted Amount', record.adjusted_amount, money),
+        detail('Other Notes / Remarks', record.other_notes_remarks),
       )
     }
 
@@ -626,14 +724,17 @@ export default function ReceivingRecords() {
 
   return (
     <div className="min-w-0 space-y-6">
+      {/* Page heading */}
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-xs font-medium text-slate-500">
             Workspace / Document Management
           </p>
+
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Receiving Records
           </h2>
+
           <p className="mt-1 text-sm text-slate-500">
             Manage and review all incoming documents.
           </p>
@@ -649,6 +750,7 @@ export default function ReceivingRecords() {
         </button>
       </header>
 
+      {/* Records table */}
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
           <div className="flex items-center gap-3">
@@ -660,6 +762,7 @@ export default function ReceivingRecords() {
               <h3 className="text-sm font-semibold text-slate-900">
                 Incoming Documents
               </h3>
+
               <p className="mt-0.5 text-xs text-slate-500">
                 {loading
                   ? 'Loading records...'
@@ -668,76 +771,237 @@ export default function ReceivingRecords() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 lg:flex-row">
-            <select
-              value={selectedFolder}
-              onChange={event => setSelectedFolder(event.target.value)}
-              aria-label="Filter by destination folder"
-              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 lg:w-48"
-            >
-              <option value="ALL">All Folders</option>
-              {DESTINATION_FOLDERS.map(folder => (
-                <option key={folder} value={folder}>
-                  {folder}
-                </option>
-              ))}
-            </select>
+          {/* Searchable folder selector and general search */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className="relative min-w-0">
+              <label
+                htmlFor="destination-folder-search"
+                className="text-xs font-semibold text-slate-600"
+              >
+                Destination Folder
+              </label>
 
-            <div className="relative min-w-0 flex-1">
-              <Search
-                size={15}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={searchInput}
-                onChange={event => setSearchInput(event.target.value)}
-                onKeyDown={event => {
-                  if (event.key === 'Enter') handleSearch()
-                }}
-                placeholder="Search by number, subject, sender..."
-                aria-label="Search receiving records"
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-              />
+              <div className="relative mt-1.5">
+                <input
+                  id="destination-folder-search"
+                  type="text"
+                  autoComplete="off"
+                  role="combobox"
+                  aria-expanded={folderDropdownOpen}
+                  aria-controls="destination-folder-options"
+                  aria-autocomplete="list"
+                  value={
+                    folderDropdownOpen
+                      ? folderDropdownSearch
+                      : selectedFolder === 'ALL'
+                        ? ''
+                        : selectedFolder
+                  }
+                  placeholder={
+                    selectedFolder === 'ALL'
+                      ? 'Search destination folder...'
+                      : selectedFolder
+                  }
+                  onFocus={() => {
+                    setFolderDropdownOpen(true)
+                    setFolderDropdownSearch('')
+                  }}
+                  onChange={event => {
+                    setFolderDropdownSearch(event.target.value)
+                    setFolderDropdownOpen(true)
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Escape') {
+                      setFolderDropdownOpen(false)
+                      setFolderDropdownSearch('')
+                    }
+
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+
+                      if (filteredFolderOptions.length > 0) {
+                        handleFolderChange(filteredFolderOptions[0])
+                      } else if (
+                        'all folders'.includes(
+                          folderDropdownSearch.trim().toLowerCase(),
+                        )
+                      ) {
+                        handleFolderChange('ALL')
+                      }
+                    }
+
+                    if (event.key === 'ArrowDown') {
+                      setFolderDropdownOpen(true)
+                    }
+                  }}
+                  className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 pr-10 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+
+                <button
+                  type="button"
+                  aria-label="Toggle destination folder options"
+                  onClick={() => {
+                    setFolderDropdownOpen(open => !open)
+                    setFolderDropdownSearch('')
+                  }}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-500 hover:text-blue-700"
+                >
+                  <ChevronDown
+                    size={16}
+                    className={`transition-transform ${
+                      folderDropdownOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {folderDropdownOpen && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Close folder dropdown"
+                    className="fixed inset-0 z-30 cursor-default"
+                    onClick={() => {
+                      setFolderDropdownOpen(false)
+                      setFolderDropdownSearch('')
+                    }}
+                  />
+
+                  <div
+                    id="destination-folder-options"
+                    role="listbox"
+                    className="absolute left-0 right-0 z-40 mt-1 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl"
+                  >
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selectedFolder === 'ALL'}
+                      onClick={() => handleFolderChange('ALL')}
+                      className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${
+                        selectedFolder === 'ALL'
+                          ? 'bg-blue-50 font-semibold text-blue-700'
+                          : 'text-slate-700'
+                      }`}
+                    >
+                      All Folders
+                    </button>
+
+                    {filteredFolderOptions.length > 0 ? (
+                      filteredFolderOptions.map(folder => (
+                        <button
+                          key={folder}
+                          type="button"
+                          role="option"
+                          aria-selected={selectedFolder === folder}
+                          onClick={() => handleFolderChange(folder)}
+                          className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${
+                            selectedFolder === folder
+                              ? 'bg-blue-50 font-semibold text-blue-700'
+                              : 'text-slate-700'
+                          }`}
+                        >
+                          {folder}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="px-3 py-3 text-sm text-slate-500">
+                        No matching folders found.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
 
-            <button
-              type="button"
-              onClick={handleSearch}
-              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white transition hover:bg-blue-800"
-            >
-              <Search size={15} />
-              Search
-            </button>
+            {/* General search */}
+            <div className="min-w-0">
+              <label
+                htmlFor="general-search"
+                className="text-xs font-semibold text-slate-600"
+              >
+                Search Records
+              </label>
 
-            <button
-              type="button"
-              onClick={() => void loadRecords()}
-              disabled={loading}
-              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-            >
-              <RefreshCw
-                size={14}
-                className={loading ? 'animate-spin' : ''}
-              />
-              Refresh
-            </button>
+              <div className="mt-1.5 flex gap-2">
+                <div className="relative min-w-0 flex-1">
+                  <Search
+                    size={15}
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  />
 
-            <button
-              type="button"
-              onClick={clearFilters}
-              className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
-            >
-              Clear
-            </button>
+                  <input
+                    id="general-search"
+                    value={searchInput}
+                    onChange={event => setSearchInput(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') handleSearch()
+                    }}
+                    placeholder="Number, subject, sender..."
+                    aria-label="Search receiving records"
+                    className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSearch}
+                  className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-3 text-xs font-semibold text-white transition hover:bg-blue-800"
+                >
+                  <Search size={14} />
+                  Search
+                </button>
+              </div>
+            </div>
+
+            {/* Refresh and clear */}
+            <div className="flex items-end gap-2">
+              <button
+                type="button"
+                onClick={() => void loadRecords()}
+                disabled={loading}
+                className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                <RefreshCw
+                  size={14}
+                  className={loading ? 'animate-spin' : ''}
+                />
+                Refresh
+              </button>
+
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex h-10 flex-1 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
+              >
+                Clear Filters
+              </button>
+            </div>
+          </div>
+
+          {/* Active filters */}
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            {selectedFolder !== 'ALL' && (
+              <span className="rounded-full bg-blue-50 px-3 py-1.5 font-medium text-blue-700">
+                Folder: {selectedFolder}
+              </span>
+            )}
+
+            {appliedSearch && (
+              <span className="rounded-full bg-slate-100 px-3 py-1.5 font-medium text-slate-700">
+                Search: {appliedSearch}
+              </span>
+            )}
           </div>
         </div>
 
+        {/* Error message */}
         {error && (
           <div
             role="alert"
-            className="m-4 flex flex-col gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 sm:flex-row sm:items-center sm:justify-between"
+            className="m-4 flex flex-col gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between"
           >
             <span>Failed to load records: {error}</span>
+
             <button
               type="button"
               onClick={() => void loadRecords()}
@@ -748,6 +1012,7 @@ export default function ReceivingRecords() {
           </div>
         )}
 
+        {/* Records list */}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1150px] border-collapse text-left">
             <thead>
@@ -763,6 +1028,7 @@ export default function ReceivingRecords() {
                       className="inline-flex items-center gap-1.5 transition hover:text-blue-700"
                     >
                       {column.label}
+
                       <span className="font-bold text-slate-400">
                         {sortField === column.field
                           ? sortDirection === 'asc'
@@ -773,6 +1039,7 @@ export default function ReceivingRecords() {
                     </button>
                   </th>
                 ))}
+
                 <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Details
                 </th>
@@ -805,7 +1072,7 @@ export default function ReceivingRecords() {
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     {appliedSearch || selectedFolder !== 'ALL'
-                      ? 'No matching records found.'
+                      ? 'No matching records found. Try changing your search or folder.'
                       : 'No incoming documents yet.'}
                   </td>
                 </tr>
@@ -818,9 +1085,11 @@ export default function ReceivingRecords() {
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                       {record.reference_number || '—'}
                     </td>
+
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
                       {record.system_code || '—'}
                     </td>
+
                     <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
                       <span
                         className="block truncate"
@@ -829,26 +1098,32 @@ export default function ReceivingRecords() {
                         {record.content || record.subject || '—'}
                       </span>
                     </td>
+
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.bearer || record.sender || '—'}
                     </td>
+
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.receiving_staff || '—'}
                     </td>
+
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.destination_folder ||
                         record.current_office ||
                         '—'}
                     </td>
+
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
                       {formatDate(record.date_received)}
                     </td>
+
                     <td className="px-4 py-3.5">
                       <span className="inline-flex items-center whitespace-nowrap rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[10px] font-semibold capitalize text-blue-700">
                         <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-blue-500" />
                         {displayStatus(record.status)}
                       </span>
                     </td>
+
                     <td className="px-4 py-3.5">
                       <button
                         type="button"
@@ -866,16 +1141,19 @@ export default function ReceivingRecords() {
           </table>
         </div>
 
+        {/* Table footer */}
         <div className="flex flex-col gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[11px] text-slate-500">
             Showing {filteredRecords.length} record(s)
           </p>
+
           <p className="text-[11px] text-slate-400">
             Select a column heading to sort.
           </p>
         </div>
       </section>
 
+      {/* Record details and editing modal */}
       {selected && draft && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-[2px]"
@@ -893,12 +1171,14 @@ export default function ReceivingRecords() {
                 <p className="text-xs font-medium text-slate-500">
                   Incoming Document
                 </p>
+
                 <h3
                   id="receiving-detail-title"
                   className="mt-1 text-xl font-bold text-slate-900"
                 >
                   {selected.reference_number}
                 </h3>
+
                 <p className="mt-1 text-xs text-slate-500">
                   {editMode
                     ? 'Edit the fields below and save your changes.'
@@ -998,24 +1278,114 @@ export default function ReceivingRecords() {
                     />
                   </label>
 
-                  <label className="text-xs font-semibold text-slate-600">
-                    Destination Folder *
-                    <select
-                      required
-                      value={draft.destination_folder}
-                      onChange={event =>
-                        updateDraft('destination_folder', event.target.value)
-                      }
-                      className={inputClass}
+                  <div className="relative sm:col-span-2">
+                    <label
+                      htmlFor="edit-destination-folder-search"
+                      className="text-xs font-semibold text-slate-600"
                     >
-                      <option value="">Select destination folder</option>
-                      {DESTINATION_FOLDERS.map(folder => (
-                        <option key={folder} value={folder}>
-                          {folder}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      Destination Folder *
+                    </label>
+                    <div className="relative mt-1.5">
+                      <input
+                        id="edit-destination-folder-search"
+                        type="text"
+                        required
+                        autoComplete="off"
+                        role="combobox"
+                        aria-expanded={editFolderDropdownOpen}
+                        aria-controls="edit-destination-folder-options"
+                        aria-autocomplete="list"
+                        value={
+                          editFolderDropdownOpen
+                            ? editFolderSearch
+                            : draft.destination_folder
+                        }
+                        placeholder="Search or select destination folder..."
+                        onFocus={() => {
+                          setEditFolderSearch('')
+                          setEditFolderDropdownOpen(true)
+                        }}
+                        onChange={event => {
+                          setEditFolderSearch(event.target.value)
+                          setEditFolderDropdownOpen(true)
+                          if (!event.target.value.trim()) {
+                            updateDraft('destination_folder', '')
+                          }
+                        }}
+                        onBlur={() => {
+                          window.setTimeout(() => setEditFolderDropdownOpen(false), 120)
+                        }}
+                        onKeyDown={event => {
+                          if (event.key === 'Escape') {
+                            setEditFolderDropdownOpen(false)
+                            setEditFolderSearch('')
+                          }
+                          if (event.key === 'Enter' && editFolderDropdownOpen) {
+                            event.preventDefault()
+                            if (editFolderOptions.length > 0) {
+                              updateDraft('destination_folder', editFolderOptions[0])
+                              setEditFolderSearch('')
+                              setEditFolderDropdownOpen(false)
+                            }
+                          }
+                          if (event.key === 'ArrowDown') {
+                            setEditFolderDropdownOpen(true)
+                          }
+                        }}
+                        className={`${inputClass} pr-10`}
+                      />
+                      <button
+                        type="button"
+                        aria-label="Toggle destination folder options"
+                        onMouseDown={event => event.preventDefault()}
+                        onClick={() => {
+                          setEditFolderDropdownOpen(open => !open)
+                          setEditFolderSearch('')
+                        }}
+                        className="absolute inset-y-0 right-0 mt-1.5 flex items-center px-3 text-slate-500 hover:text-blue-700"
+                      >
+                        <ChevronDown
+                          size={16}
+                          className={`transition-transform ${editFolderDropdownOpen ? 'rotate-180' : ''}`}
+                        />
+                      </button>
+                    </div>
+                    {editFolderDropdownOpen && (
+                      <div
+                        id="edit-destination-folder-options"
+                        role="listbox"
+                        className="absolute left-0 right-0 z-50 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl"
+                      >
+                        {editFolderOptions.length > 0 ? (
+                          editFolderOptions.map(folder => (
+                            <button
+                              key={folder}
+                              type="button"
+                              role="option"
+                              aria-selected={draft.destination_folder === folder}
+                              onMouseDown={event => event.preventDefault()}
+                              onClick={() => {
+                                updateDraft('destination_folder', folder)
+                                setEditFolderSearch('')
+                                setEditFolderDropdownOpen(false)
+                              }}
+                              className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${
+                                draft.destination_folder === folder
+                                  ? 'bg-blue-50 font-semibold text-blue-700'
+                                  : 'text-slate-700'
+                              }`}
+                            >
+                              {folder}
+                            </button>
+                          ))
+                        ) : (
+                          <p className="px-3 py-3 text-sm text-slate-500">
+                            No matching folders found.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   <label className="text-xs font-semibold text-slate-600">
                     Date Received *
@@ -1060,24 +1430,44 @@ export default function ReceivingRecords() {
                   </label>
                 </div>
               ) : (
-                <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {renderRecordDetails(selected)}
-                </dl>
+                <>
+                  <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {renderRecordDetails(selected)}
+                  </dl>
+                  <AuditHistory documentId={selected.id} />
+                </>
               )}
             </div>
 
+            {/* Modal footer and creator profile */}
             <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50/70 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 {!editMode && (
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                      Created By
-                    </p>
-                    <p className="mt-1 text-sm font-semibold text-slate-800">
-                      {creatorLoading
-                        ? 'Loading account name...'
-                        : creatorName || 'Account name unavailable'}
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-blue-100 text-sm font-bold text-blue-800">
+                      {creatorAvatarUrl ? (
+                        <img
+                          src={creatorAvatarUrl}
+                          alt={`${creatorName || 'Creator'} profile picture`}
+                          className="h-full w-full object-cover"
+                          onError={() => setCreatorAvatarUrl(null)}
+                        />
+                      ) : (
+                        creatorName.trim().charAt(0).toUpperCase() || '?'
+                      )}
+                    </div>
+
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Created By
+                      </p>
+
+                      <p className="mt-1 max-w-48 truncate text-sm font-semibold text-slate-800">
+                        {creatorLoading
+                          ? 'Loading account...'
+                          : creatorName || 'Account name unavailable'}
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

@@ -8,7 +8,6 @@ import {
   Send,
   FileText,
   CheckCircle2,
-  AlertTriangle,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -73,6 +72,8 @@ const tableColumns: { label: string; field: SortField }[] = [
 export default function ReleasingRecords() {
   const [records, setRecords] = useState<ReleasingRecord[]>([])
   const [search, setSearch] = useState('')
+  const [releaseStatusFilter, setReleaseStatusFilter] = useState('ALL')
+  const [urgencyFilter, setUrgencyFilter] = useState('ALL')
   const [selected, setSelected] = useState<ReleasingRecord | null>(null)
   const [releasePanelRecord, setReleasePanelRecord] = useState<ReleasingRecord | null>(null)
   const [loading, setLoading] = useState(true)
@@ -417,7 +418,7 @@ export default function ReleasingRecords() {
       }
       const isEdit = Boolean(record.next_action_release_at)
 
-      const { error: updateError } = await supabase
+      const { data: updatedRows, error: updateError } = await supabase
         .from('document_workflow')
         .update({
           next_action_office_to_forward: office,
@@ -431,7 +432,15 @@ export default function ReleasingRecords() {
           updated_at: now,
         })
         .eq('id', record.id)
+        .select('id, workflow_status, next_action_system_status, next_action_date_forwarded')
+
       if (updateError) throw updateError
+
+      if (!updatedRows || updatedRows.length === 0) {
+        throw new Error(
+          'Release was not saved. Check your Supabase UPDATE permissions and row-level security policies.',
+        )
+      }
 
       // Store a separate immutable history entry for the initial save and every edit.
       const { error: logError } = await supabase
@@ -502,6 +511,15 @@ export default function ReleasingRecords() {
     const term = search.trim().toLowerCase()
 
     const filtered = records.filter(record => {
+      const completed = isReleaseCompleted(record)
+      const recordUrgency = normalizeUrgency(record.urgency)
+
+      if (releaseStatusFilter === 'AWAITING_RECEIPT' && record.release_received_at) return false
+      if (releaseStatusFilter === 'READY_TO_RELEASE' && (!record.release_received_at || completed)) return false
+      if (releaseStatusFilter === 'RELEASED' && !completed) return false
+      if (urgencyFilter === 'URGENT' && recordUrgency !== 'urgent') return false
+      if (urgencyFilter === 'NOT_URGENT' && recordUrgency !== 'not urgent') return false
+
       if (!term) return true
 
       return [
@@ -516,9 +534,12 @@ export default function ReleasingRecords() {
         record.remarks,
         record.release_instruction,
         record.next_action_recorded_by_name,
+        record.next_action_office_to_forward,
+        record.next_action_release_to,
+        record.next_action_system_status,
         record.urgency,
       ].some(value =>
-        (value ?? '').toLowerCase().includes(term)
+        String(value ?? '').toLowerCase().includes(term)
       )
     })
 
@@ -536,7 +557,7 @@ export default function ReleasingRecords() {
         ? comparison
         : -comparison
     })
-  }, [records, search, sortField, sortDirection])
+  }, [records, search, releaseStatusFilter, urgencyFilter, sortField, sortDirection])
 
   function formatDate(value: string | null) {
     if (!value) return '—'
@@ -583,6 +604,23 @@ export default function ReleasingRecords() {
 
   function displayStatus(status: string | null) {
     return (status || 'unknown').replaceAll('_', ' ')
+  }
+
+  // A release is complete if the workflow status or the saved forwarding
+  // fields indicate that the next action has already been forwarded.
+  function isReleaseCompleted(record: ReleasingRecord) {
+    const workflowStatus = (record.workflow_status || '').trim().toLowerCase()
+    const systemStatus = (record.next_action_system_status || '').trim().toLowerCase()
+
+    return (
+      workflowStatus === 'action_completed' ||
+      workflowStatus === 'completed' ||
+      systemStatus === 'forwarded' ||
+      Boolean(record.next_action_date_forwarded) ||
+      // A saved release timestamp means the release action was already recorded.
+      // Do not show Continue Release again just because a status field is stale.
+      Boolean(record.next_action_release_at)
+    )
   }
 
   function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
@@ -640,14 +678,13 @@ export default function ReleasingRecords() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Compact search */}
-            <div className="relative w-full sm:w-64">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+            {/* Search and release filters */}
+            <div className="relative w-full sm:w-56">
               <Search
                 size={15}
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
-
               <input
                 value={search}
                 onChange={event => setSearch(event.target.value)}
@@ -657,6 +694,41 @@ export default function ReleasingRecords() {
               />
             </div>
 
+            <select
+              value={releaseStatusFilter}
+              onChange={event => setReleaseStatusFilter(event.target.value)}
+              aria-label="Filter by release status"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100 sm:w-44"
+            >
+              <option value="ALL">All Release Statuses</option>
+              <option value="AWAITING_RECEIPT">Awaiting Receipt</option>
+              <option value="READY_TO_RELEASE">Ready to Release</option>
+              <option value="RELEASED">Released / Forwarded</option>
+            </select>
+
+            <select
+              value={urgencyFilter}
+              onChange={event => setUrgencyFilter(event.target.value)}
+              aria-label="Filter by urgency"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100 sm:w-36"
+            >
+              <option value="ALL">All Urgency</option>
+              <option value="URGENT">Urgent</option>
+              <option value="NOT_URGENT">Not Urgent</option>
+            </select>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSearch('')
+                setReleaseStatusFilter('ALL')
+                setUrgencyFilter('ALL')
+              }}
+              className="h-9 shrink-0 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+            >
+              Clear Filters
+            </button>
+
             <button
               type="button"
               onClick={() => void loadRecords()}
@@ -665,10 +737,7 @@ export default function ReleasingRecords() {
               title="Refresh records"
               className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <RefreshCw
-                size={14}
-                className={loading ? 'animate-spin' : ''}
-              />
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               <span className="hidden sm:inline">Refresh</span>
             </button>
           </div>
@@ -835,8 +904,8 @@ export default function ReleasingRecords() {
                     <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_recorded_by_name || '—'}</td>
 
                     <td className="min-w-[210px] px-4 py-3.5 text-xs text-slate-600">
-                      <span className="font-semibold">{(record.next_action_system_status || '').trim().toLowerCase() === 'forwarded' || record.next_action_date_forwarded ? 'Forwarded' : (record.next_action_system_status || 'Not recorded')}</span>
-                      <span className="mt-1 block text-[10px] text-slate-500">Date Forwarded: {record.next_action_date_forwarded ? formatDateTime(record.next_action_date_forwarded) : '—'}</span>
+                      <span className="font-semibold">{isReleaseCompleted(record) ? 'Forwarded' : (record.next_action_system_status || 'Not Forwarded')}</span>
+                      <span className="mt-1 block text-[10px] text-slate-500">Date Forwarded: {record.next_action_date_forwarded || record.next_action_release_at ? formatDateTime(record.next_action_date_forwarded || record.next_action_release_at) : '—'}</span>
                     </td>
 
                     <td className="px-4 py-3.5">
@@ -858,7 +927,7 @@ export default function ReleasingRecords() {
                       ) : (
                         <span className="text-[10px] text-amber-700">Awaiting receipt</span>
                       )}
-                      {record.release_received_at && (record.next_action_system_status || '').trim().toLowerCase() !== 'forwarded' && !record.next_action_date_forwarded && (
+                      {record.release_received_at && !isReleaseCompleted(record) && (
                         <button
                           type="button"
                           onClick={() => {

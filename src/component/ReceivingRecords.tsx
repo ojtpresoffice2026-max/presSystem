@@ -269,6 +269,7 @@ export default function ReceivingRecords() {
   const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | null>(null)
   const [creatorLoading, setCreatorLoading] = useState(false)
   const [timelineRows, setTimelineRows] = useState<WorkflowTimelineRow[]>([])
+  const [timelineAccountNames, setTimelineAccountNames] = useState<Record<string, string>>({})
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [timelineError, setTimelineError] = useState('')
 
@@ -368,6 +369,7 @@ export default function ReceivingRecords() {
     setTimelineLoading(true)
     setTimelineError('')
     setTimelineRows([])
+    setTimelineAccountNames({})
 
     try {
       const { data, error: timelineQueryError } = await supabase
@@ -377,12 +379,58 @@ export default function ReceivingRecords() {
         .order('release_forwarded_at', { ascending: true })
 
       if (timelineQueryError) throw timelineQueryError
-      setTimelineRows((data ?? []) as WorkflowTimelineRow[])
+
+      const rows = (data ?? []) as WorkflowTimelineRow[]
+      setTimelineRows(rows)
+
+      // Resolve workflow actor UUIDs to display names from the profiles table.
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      const actorIds = Array.from(
+        new Set(
+          rows.flatMap(workflow => [
+            workflow.release_forwarded_by,
+            workflow.release_received_by,
+            workflow.next_action_recorded_by,
+          ]).filter((value): value is string => Boolean(value && uuidPattern.test(value))),
+        ),
+      )
+
+      if (actorIds.length > 0) {
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', actorIds)
+
+        if (profilesError) {
+          console.error('Unable to resolve workflow account names:', profilesError)
+        } else {
+          const names: Record<string, string> = {}
+          for (const profile of profiles ?? []) {
+            const id = typeof profile.id === 'string' ? profile.id : ''
+            const name = typeof profile.full_name === 'string' ? profile.full_name.trim() : ''
+            if (id && name) names[id] = name
+          }
+          setTimelineAccountNames(names)
+        }
+      }
     } catch (err) {
       setTimelineError(err instanceof Error ? err.message : 'Unable to load document progress.')
     } finally {
       setTimelineLoading(false)
     }
+  }
+
+  function displayTimelineActor(actor: string | null | undefined): string {
+    if (!actor) return ''
+    const value = actor.trim()
+    if (!value) return ''
+
+    const resolvedName = timelineAccountNames[value]
+    if (resolvedName) return resolvedName
+
+    // Keep existing human-readable names, but never display an unresolved UUID.
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+    return isUuid ? 'Name unavailable' : value
   }
 
   function openRecord(record: ReceivingRecord) {
@@ -433,6 +481,7 @@ export default function ReceivingRecords() {
     setCreatorAvatarUrl(null)
     setCreatorLoading(false)
     setTimelineRows([])
+    setTimelineAccountNames({})
     setTimelineError('')
   }
 
@@ -1545,7 +1594,7 @@ export default function ReceivingRecords() {
                                 {events.length ? <div className="mt-3 space-y-3">{events.map((event, eventIndex) => <div key={`${workflow.id}-${event.label}-${eventIndex}`} className="border-l-2 border-blue-200 pl-3">
                                   <p className="text-xs font-semibold text-slate-800">{event.label}</p>
                                   <p className="mt-0.5 text-xs text-slate-600">{event.detail}</p>
-                                  <p className="mt-1 text-[11px] text-slate-500">{formatDateTime(event.at)}{event.actor ? ` · Account: ${event.actor}` : ''}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">{formatDateTime(event.at)}{displayTimelineActor(event.actor) ? ` · Account: ${displayTimelineActor(event.actor)}` : ''}</p>
                                 </div>)}</div> : <p className="mt-2 text-xs text-slate-500">Forwarding record exists; awaiting the first recorded action.</p>}
                                 {completed && <p className="mt-3 text-xs font-semibold text-green-700">Workflow completed</p>}
                               </div>

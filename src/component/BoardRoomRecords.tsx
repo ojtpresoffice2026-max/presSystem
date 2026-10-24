@@ -10,7 +10,6 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
-  ClipboardCheck,
   FileText,
   LoaderCircle,
   RefreshCw,
@@ -114,19 +113,6 @@ const returnableStatuses: WorkflowStatus[] = [
   'action_completed',
 ]
 
-function formatDate(value: string | null | undefined) {
-  if (!value) return '—'
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-
-  return date.toLocaleString('en-PH', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: 'Asia/Manila',
-  })
-}
-
 function formatDateOnly(value: string | null | undefined) {
   if (!value) return '—'
 
@@ -181,14 +167,6 @@ function getManilaDate() {
   return `${values.year}-${values.month}-${values.day}`
 }
 
-function getManilaTime() {
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Manila',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(new Date())
-}
 
 function getStorageLabel(workflow: WorkflowRecord) {
   return workflow.storage_type === 'folder'
@@ -237,10 +215,9 @@ export default function BoardRoomRecords() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  // Return cart and document picker.
+  // Selected documents for a single return transaction.
   const [cart, setCart] = useState<CartItem[]>([])
   const [cartOpen, setCartOpen] = useState(false)
-  const [documentPickerOpen, setDocumentPickerOpen] = useState(false)
   const [pickerSearch, setPickerSearch] = useState('')
 
   // Shared return checkout details.
@@ -463,8 +440,8 @@ export default function BoardRoomRecords() {
   function openCart() {
     setError('')
     setSuccess('')
+    setPickerSearch('')
     setCartOpen(true)
-    setDocumentPickerOpen(false)
   }
 
   function addToCart(workflowId: string) {
@@ -525,7 +502,6 @@ export default function BoardRoomRecords() {
     if (processing) return
 
     setCartOpen(false)
-    setDocumentPickerOpen(false)
   }
 
   async function submitReturn(event: FormEvent<HTMLFormElement>) {
@@ -537,7 +513,7 @@ export default function BoardRoomRecords() {
     setSuccess('')
 
     if (cartRecords.length === 0) {
-      setError('Add at least one document to the return cart.')
+      setError('Select at least one document to return.')
       return
     }
 
@@ -599,7 +575,6 @@ export default function BoardRoomRecords() {
 
       setCart([])
       setCartOpen(false)
-      setDocumentPickerOpen(false)
       setPickerSearch('')
       setReturnPerson('')
       setSharedReturnRemarks('')
@@ -634,7 +609,7 @@ export default function BoardRoomRecords() {
             Board Room Documents
           </h1>
           <p className="mt-2 text-sm text-slate-500">
-            Confirm document receipt and return documents to their originating offices.
+            Confirm document receipt and return eligible documents to their originating offices.
           </p>
         </div>
 
@@ -645,8 +620,8 @@ export default function BoardRoomRecords() {
             disabled={processing}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-800 disabled:opacity-50"
           >
-            <ShoppingCart size={17} />
-            Return Cart
+            <FileText size={17} />
+            Return Documents
             <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
               {cart.length}
             </span>
@@ -734,7 +709,7 @@ export default function BoardRoomRecords() {
               Forwarded Documents
             </h2>
             <p className="mt-1 text-sm text-slate-500">
-              Confirm Board Room receipt or add received documents to the return cart.
+              Confirm Board Room receipt or select received documents for return.
             </p>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_190px]">
@@ -842,8 +817,8 @@ export default function BoardRoomRecords() {
                             )}
                             {canReturn && (
                               <button type="button" disabled={inCart} onClick={() => addToCart(workflow.id)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50">
-                                {inCart ? <Check size={14} /> : <ShoppingCart size={14} />}
-                                {inCart ? 'Added to Cart' : 'Add to Cart'}
+                                {inCart ? <Check size={14} /> : <FileText size={14} />}
+                                {inCart ? 'Selected' : 'Select for Return'}
                               </button>
                             )}
                             {workflow.workflow_status !== 'forwarded' && !canReturn && <span className="text-xs text-slate-400">No actions</span>}
@@ -918,31 +893,31 @@ export default function BoardRoomRecords() {
         </div>
       )}
 
-      {/* Return cart checkout */}
+      {/* Return documents form */}
       {cartOpen && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
           <section
             role="dialog"
             aria-modal="true"
-            aria-labelledby="return-cart-title"
+            aria-labelledby="return-documents-title"
             className="my-auto w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl"
           >
             <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
               <div>
                 <div className="flex items-center gap-2">
-                  <ShoppingCart size={21} className="text-blue-700" />
+                  <FileText size={21} className="text-blue-700" />
                   <h2
-                    id="return-cart-title"
+                    id="return-documents-title"
                     className="text-lg font-bold text-slate-900"
                   >
-                    Return Documents Cart
+                    Return Documents
                   </h2>
                   <span className="rounded-full bg-blue-700 px-2.5 py-1 text-xs font-bold text-white">
                     {cartRecords.length}
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-slate-500">
-                  Select multiple documents, enter individual remarks if needed, and complete the shared checkout details.
+                  Select eligible documents, add remarks to each paper, and complete the return details below.
                 </p>
               </div>
 
@@ -950,7 +925,7 @@ export default function BoardRoomRecords() {
                 type="button"
                 disabled={processing}
                 onClick={closeCheckout}
-                aria-label="Close return cart"
+                aria-label="Close return documents form"
                 className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
               >
                 <X size={19} />
@@ -958,98 +933,107 @@ export default function BoardRoomRecords() {
             </div>
 
             <form onSubmit={submitReturn} className="space-y-5 p-5 sm:p-6">
-              {/* Selected documents */}
+              {/* Search and select documents directly in this return form */}
               <div>
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <label className="text-xs font-semibold text-slate-600">
-                    Selected Documents
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPickerSearch('')
-                      setDocumentPickerOpen(true)
-                    }}
-                    className="text-sm font-semibold text-blue-700 hover:underline"
-                  >
-                    + Add documents
-                  </button>
+                <label className="mb-2 block text-xs font-semibold text-slate-600">
+                  Documents to Return *
+                </label>
+                <div className="relative">
+                  <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    autoFocus
+                    value={pickerSearch}
+                    onChange={event => setPickerSearch(event.target.value)}
+                    placeholder="Search reference, subject, sender, office, folder or box..."
+                    className="w-full rounded-lg border border-slate-200 py-3 pl-10 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
                 </div>
 
-                {cartRecords.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center">
-                    <ShoppingCart size={32} className="mx-auto text-slate-300" />
-                    <p className="mt-3 font-semibold text-slate-700">
-                      Your return cart is empty
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Add received documents from the Board Room document list.
-                    </p>
+                <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3 py-2">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700">Eligible Board Room documents</p>
+                      <p className="mt-0.5 text-xs text-slate-500">{filteredReturnableRecords.length} matching document(s)</p>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        setPickerSearch('')
-                        setDocumentPickerOpen(true)
-                      }}
-                      className="mt-4 rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+                      disabled={filteredReturnableRecords.length === 0}
+                      onClick={toggleAllVisibleDocuments}
+                      className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                     >
-                      Select Documents
+                      {filteredReturnableRecords.length > 0 && filteredReturnableRecords.every(row => cart.some(item => item.workflowId === row.workflow.id)) ? 'Remove matches' : 'Add all matches'}
                     </button>
                   </div>
-                ) : (
-                  <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
-                    {cartRecords.map(({ workflow, document, cartRemarks }) => (
-                      <div
-                        key={workflow.id}
-                        className="rounded-xl border border-slate-200 p-4"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="font-bold text-slate-900">
-                              {document?.reference_number || 'No reference number'}
-                            </p>
-                            <p className="mt-1 break-words text-sm text-slate-700">
-                              {document?.subject || document?.content || 'No subject'}
-                            </p>
-
-                            <StorageUrgency
-                              workflow={workflow}
-                            />
-
-                            <p className="mt-2 text-xs text-slate-500">
-                              Status: {statusLabels[workflow.workflow_status]}
-                            </p>
-                          </div>
-
-                          <button
-                            type="button"
-                            disabled={processing}
-                            onClick={() => removeFromCart(workflow.id)}
-                            aria-label={`Remove ${document?.reference_number || 'document'} from cart`}
-                            className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                          >
-                            <Trash2 size={17} />
-                          </button>
-                        </div>
-
-                        <label className="mt-4 block">
-                          <span className="text-xs font-semibold text-slate-600">
-                            Document Remarks (Optional)
-                          </span>
-                          <textarea
-                            value={cartRemarks}
-                            onChange={event =>
-                              updateCartRemarks(workflow.id, event.target.value)
-                            }
-                            rows={2}
-                            placeholder="Enter remarks for this document, if needed..."
-                            className={inputClass}
-                          />
-                        </label>
+                  <div className="max-h-48 overflow-y-auto p-2">
+                    {filteredReturnableRecords.length === 0 ? (
+                      <div className="p-5 text-center">
+                        <p className="text-sm font-semibold text-slate-700">No eligible documents found</p>
+                        <p className="mt-1 text-xs text-slate-500">Only documents received by the Board Room and not yet returned can be selected.</p>
                       </div>
-                    ))}
+                    ) : (
+                      filteredReturnableRecords.map(({ workflow, document }) => {
+                        const isSelected = cart.some(item => item.workflowId === workflow.id)
+                        return (
+                          <div key={workflow.id} className="flex items-start gap-3 rounded-lg px-3 py-2.5 hover:bg-slate-50">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => isSelected ? removeFromCart(workflow.id) : addToCart(workflow.id)}
+                              aria-label={`${isSelected ? 'Remove' : 'Select'} ${document?.reference_number || 'document'}`}
+                              className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</p>
+                              <p className="mt-0.5 break-words text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
+                              <p className="mt-1 text-[11px] text-slate-500">{statusLabels[workflow.workflow_status]} · {workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}</p>
+                            </div>
+                            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${isSelected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                              {isSelected ? 'Selected' : 'Select'}
+                            </span>
+                          </div>
+                        )
+                      })
+                    )}
                   </div>
-                )}
+                </div>
+
+                <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-blue-950">Selected Documents</p>
+                      <p className="mt-0.5 text-xs text-slate-600">Add separate remarks for each paper before returning.</p>
+                    </div>
+                    <span className="flex h-7 min-w-7 items-center justify-center rounded-full bg-blue-700 px-2 text-xs font-bold text-white">{cartRecords.length}</span>
+                  </div>
+
+                  {cartRecords.length === 0 ? (
+                    <p className="mt-4 text-sm text-slate-500">No documents selected yet.</p>
+                  ) : (
+                    <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
+                      {cartRecords.map(({ workflow, document, cartRemarks }) => (
+                        <div key={workflow.id} className="rounded-lg border border-blue-100 bg-white p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</p>
+                              <p className="mt-0.5 break-words text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
+                            </div>
+                            <button type="button" onClick={() => removeFromCart(workflow.id)} disabled={processing} className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800 disabled:opacity-50">Remove</button>
+                          </div>
+                          <label className="mt-3 block">
+                            <span className="text-xs font-semibold text-slate-600">Remarks for this paper (Optional)</span>
+                            <textarea
+                              value={cartRemarks}
+                              onChange={event => updateCartRemarks(workflow.id, event.target.value)}
+                              rows={2}
+                              placeholder="Enter remarks specific to this document..."
+                              className={inputClass}
+                            />
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Shared storage and urgency settings */}
@@ -1283,160 +1267,6 @@ export default function BoardRoomRecords() {
         </div>
       )}
 
-      {/* Document picker */}
-      {documentPickerOpen && cartOpen && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/60 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="return-picker-title"
-            className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
-          >
-            <div className="border-b border-slate-200 p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3
-                    id="return-picker-title"
-                    className="text-lg font-bold text-slate-900"
-                  >
-                    Add Documents to Return Cart
-                  </h3>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Select documents already received by the Board Room.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setDocumentPickerOpen(false)}
-                  aria-label="Close document picker"
-                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
-                >
-                  <X size={19} />
-                </button>
-              </div>
-
-              <div className="relative mt-4">
-                <Search
-                  size={17}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  autoFocus
-                  value={pickerSearch}
-                  onChange={event => setPickerSearch(event.target.value)}
-                  placeholder="Search reference, subject, sender, office, folder or box..."
-                  className="w-full rounded-lg border border-slate-200 py-3 pl-10 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                />
-              </div>
-
-              <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-blue-50 p-3">
-                <div>
-                  <p className="text-sm font-semibold text-blue-950">
-                    {cart.length} in cart
-                  </p>
-                  <p className="text-xs text-slate-600">
-                    {filteredReturnableRecords.length} matching eligible documents
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={filteredReturnableRecords.length === 0}
-                  onClick={toggleAllVisibleDocuments}
-                  className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-50"
-                >
-                  {filteredReturnableRecords.length > 0 &&
-                  filteredReturnableRecords.every(row =>
-                    cart.some(item => item.workflowId === row.workflow.id),
-                  )
-                    ? 'Remove Visible'
-                    : 'Add All Visible'}
-                </button>
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {filteredReturnableRecords.length === 0 ? (
-                <div className="p-8 text-center">
-                  <FileText size={34} className="mx-auto text-slate-300" />
-                  <p className="mt-3 font-semibold text-slate-700">
-                    No eligible documents found
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Confirm Board Room receipt first. Returned or completed workflows cannot be added again.
-                  </p>
-                </div>
-              ) : (
-                filteredReturnableRecords.map(({ workflow, document }) => {
-                  const inCart = cart.some(
-                    item => item.workflowId === workflow.id,
-                  )
-
-                  return (
-                    <div
-                      key={workflow.id}
-                      className="mb-2 flex items-start gap-3 rounded-xl border border-slate-200 p-4"
-                    >
-                      <div className="mt-0.5 rounded-lg bg-slate-100 p-2 text-slate-600">
-                        <FileText size={18} />
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <p className="font-semibold text-slate-900">
-                          {document?.reference_number || 'No reference number'}
-                        </p>
-                        <p className="mt-1 break-words text-sm text-slate-700">
-                          {document?.subject || document?.content || 'No subject'}
-                        </p>
-
-                        <StorageUrgency
-                          workflow={workflow}
-                        />
-
-                        <p className="mt-2 text-xs text-slate-500">
-                          {statusLabels[workflow.workflow_status]}
-                        </p>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          inCart
-                            ? removeFromCart(workflow.id)
-                            : addToCart(workflow.id)
-                        }
-                        className={`shrink-0 rounded-lg px-3 py-2 text-xs font-semibold ${
-                          inCart
-                            ? 'border border-slate-200 text-slate-600 hover:bg-slate-100'
-                            : 'bg-blue-700 text-white hover:bg-blue-800'
-                        }`}
-                      >
-                        {inCart ? 'Remove' : 'Add to Cart'}
-                      </button>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 p-4">
-              <p className="text-sm font-semibold text-slate-600">
-                {cart.length} document(s) in cart
-              </p>
-
-              <button
-                type="button"
-                onClick={() => setDocumentPickerOpen(false)}
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
-              >
-                <Check size={16} />
-                Done Selecting
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
     </div>
   )
 }

@@ -55,6 +55,9 @@ type WorkflowRecord = {
   release_instruction?: string | null
   release_forwarded_at?: string | null
   release_forwarded_by?: string | null
+  next_action_system_status?: string | null
+  next_action_release_at?: string | null
+  next_action_date_forwarded?: string | null
 }
 
 type WorkflowWithDocument = {
@@ -331,14 +334,52 @@ export default function ForwardingRecords() {
     void loadData()
   }, [loadData])
 
-  const linkedDocumentIds = useMemo(
-    () => new Set(workflows.map(item => item.workflow.receiving_record_id)),
-    [workflows],
-  )
+  // A document that has already entered a workflow must not be forwarded
+  // to the Board Room again. Explicitly treat a recorded paper release as
+  // completed even if the receiving-record status was not updated consistently.
+  const completedOrReleasedDocumentIds = useMemo(() => {
+    const ids = new Set<string>()
+
+    for (const item of workflows) {
+      const workflow = item.workflow
+      const nextStatus = String(workflow.next_action_system_status ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\\s-]+/g, '_')
+
+      const documentStatus = String(item.document?.status ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\\s-]+/g, '_')
+
+      const paperReleased =
+        Boolean(workflow.next_action_release_at) ||
+        ['released', 'paper_released', 'release_completed', 'completed'].includes(nextStatus) ||
+        ['paper_released', 'released', 'completed'].includes(documentStatus)
+
+      if (paperReleased || workflow.receiving_record_id) {
+        ids.add(workflow.receiving_record_id)
+      }
+    }
+
+    // Also exclude records whose own status already says they are released/done,
+    // even if a workflow row is missing.
+    for (const document of documents) {
+      const status = String(document.status ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\\s-]+/g, '_')
+      if (['paper_released', 'released', 'completed', 'done'].includes(status)) {
+        ids.add(document.id)
+      }
+    }
+
+    return ids
+  }, [workflows, documents])
 
   const availableDocuments = useMemo(
-    () => documents.filter(document => !linkedDocumentIds.has(document.id)),
-    [documents, linkedDocumentIds],
+    () => documents.filter(document => !completedOrReleasedDocumentIds.has(document.id)),
+    [documents, completedOrReleasedDocumentIds],
   )
 
   const filteredPickerDocuments = useMemo(
@@ -465,7 +506,7 @@ export default function ForwardingRecords() {
 
     if (idsStillAvailable.length !== selectedDocumentIds.length) {
       setError(
-        'One or more selected documents have already been forwarded. Refresh and review your selection.',
+        'One or more selected documents have already been forwarded, released, or completed. Refresh and review your selection.',
       )
       return
     }

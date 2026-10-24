@@ -2,7 +2,6 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ClipboardList,
   Eye,
   EyeOff,
   LockKeyhole,
@@ -94,24 +93,36 @@ export default function Login() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
       <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl md:grid-cols-2">
+        {/* Left branding panel */}
         <section className="relative flex min-h-64 flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-950 via-blue-800 to-blue-600 p-8 text-white md:p-12">
+          {/* Decorative circles */}
           <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full border-[35px] border-white/10" />
           <div className="absolute -bottom-20 -left-12 h-64 w-64 rounded-full border-[35px] border-red-500/40" />
 
+          {/* Logo and application name */}
           <div className="relative flex items-center gap-3">
-            <div className="rounded-2xl bg-red-600 p-3">
-              <ClipboardList size={28} />
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white">
+              <img
+                src="/logo.jpg"
+                alt="presSystem Logo"
+                className="h-full w-full object-contain"
+              />
             </div>
+
             <div>
               <h1 className="text-2xl font-bold">presSystem</h1>
-              <p className="text-sm text-blue-100">Management Portal</p>
+              <p className="text-sm text-blue-100">
+                Management Portal
+              </p>
             </div>
           </div>
 
+          {/* Branding message */}
           <div className="relative mt-12">
             <p className="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-red-200">
               Receiving &amp; Tracking
             </p>
+
             <h2 className="text-3xl font-bold leading-tight md:text-4xl">
               Every record.
               <br />
@@ -119,9 +130,10 @@ export default function Login() {
               <br />
               Accounted for.
             </h2>
+
             <p className="mt-4 max-w-sm text-sm leading-6 text-blue-100">
-              Register incoming records, forward them to the right destination,
-              and track progress until completion.
+              Register incoming records, forward them to the right
+              destination, and track progress until completion.
             </p>
           </div>
 
@@ -130,20 +142,24 @@ export default function Login() {
           </p>
         </section>
 
+        {/* Right login panel */}
         <section className="flex items-center p-6 sm:p-10 md:p-12">
           <div className="w-full">
             <div className="mb-8">
               <p className="text-sm font-semibold text-red-600">
                 WELCOME BACK
               </p>
+
               <h2 className="mt-2 text-3xl font-bold text-slate-900">
                 Sign in
               </h2>
+
               <p className="mt-2 text-sm text-slate-500">
                 Enter your authorized staff account credentials.
               </p>
             </div>
 
+            {/* Login error */}
             {error && (
               <div
                 role="alert"
@@ -154,13 +170,16 @@ export default function Login() {
             )}
 
             <form onSubmit={handleLogin} className="space-y-5">
+              {/* Email address */}
               <label className="block text-sm font-semibold text-slate-700">
                 Email address
+
                 <div className="relative mt-2">
                   <Mail
                     size={18}
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                   />
+
                   <input
                     type="email"
                     required
@@ -173,13 +192,16 @@ export default function Login() {
                 </div>
               </label>
 
+              {/* Password */}
               <label className="block text-sm font-semibold text-slate-700">
                 Password
+
                 <div className="relative mt-2">
                   <LockKeyhole
                     size={18}
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                   />
+
                   <input
                     type={showPassword ? 'text' : 'password'}
                     required
@@ -189,17 +211,25 @@ export default function Login() {
                     placeholder="Enter your password"
                     className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-12 font-normal outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
                   />
+
                   <button
                     type="button"
                     onClick={() => setShowPassword(value => !value)}
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-label={
+                      showPassword ? 'Hide password' : 'Show password'
+                    }
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
                   >
-                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    {showPassword ? (
+                      <EyeOff size={18} />
+                    ) : (
+                      <Eye size={18} />
+                    )}
                   </button>
                 </div>
               </label>
 
+              {/* Submit button */}
               <button
                 type="submit"
                 disabled={loading}

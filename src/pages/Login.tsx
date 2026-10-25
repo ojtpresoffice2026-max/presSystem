@@ -8,6 +8,7 @@ import {
   Mail,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import ThemeToggle from '../component/ThemeToggle'
 
 type UserRole = 'admin' | 'staff'
 
@@ -32,7 +33,9 @@ export default function Login() {
           password,
         })
 
-      if (loginError) throw loginError
+      if (loginError) {
+        throw loginError
+      }
 
       if (!data.session || !data.user) {
         throw new Error('Unable to establish a session.')
@@ -55,6 +58,7 @@ export default function Login() {
 
       const role = profile?.role as UserRole | undefined
 
+      // Allow only authorized administrator and staff accounts.
       if (role !== 'admin' && role !== 'staff') {
         await supabase.auth.signOut()
 
@@ -87,14 +91,25 @@ export default function Login() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
-      <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl md:grid-cols-2">
+    <main className="relative flex min-h-screen items-center justify-center bg-slate-100 p-4 transition-colors duration-300">
+      {/* Dark / Light Mode Toggle */}
+      <div className="fixed right-5 top-5 z-50">
+        <ThemeToggle />
+      </div>
+
+      <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl transition-colors duration-300 md:grid-cols-2">
         {/* Branding panel */}
         <section className="relative flex min-h-64 flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-950 via-blue-800 to-blue-600 p-8 text-white md:p-12">
           {/* Decorative background circles */}
-          <div className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full border-[35px] border-white/10" />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full border-[35px] border-white/10"
+          />
 
-          <div className="pointer-events-none absolute -bottom-20 -left-12 h-64 w-64 rounded-full border-[35px] border-red-500/30" />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -bottom-20 -left-12 h-64 w-64 rounded-full border-[35px] border-red-500/30"
+          />
 
           {/* Logo and application name */}
           <div className="relative z-10 flex items-center gap-3">
@@ -140,7 +155,7 @@ export default function Login() {
         </section>
 
         {/* Login form */}
-        <section className="flex items-center p-6 sm:p-10 md:p-12">
+        <section className="flex items-center bg-white p-6 transition-colors duration-300 sm:p-10 md:p-12">
           <div className="w-full">
             <div className="mb-8">
               <p className="text-sm font-semibold text-red-600">
@@ -185,7 +200,7 @@ export default function Login() {
                     value={email}
                     onChange={event => setEmail(event.target.value)}
                     placeholder="staff@example.com"
-                    className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-3 font-normal outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-3 font-normal text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
                   />
                 </div>
               </label>
@@ -208,7 +223,7 @@ export default function Login() {
                     value={password}
                     onChange={event => setPassword(event.target.value)}
                     placeholder="Enter your password"
-                    className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-12 font-normal outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-12 font-normal text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
                   />
 
                   <button

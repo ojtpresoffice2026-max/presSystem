@@ -14,12 +14,11 @@ import {
   Files,
   Users,
   Settings,
-  Bell,
   Clock,
   LogOut,
-  Send,
   UserRound,
   ClipboardCheck,
+  Send,
 } from 'lucide-react'
 
 import {
@@ -48,6 +47,10 @@ import SettingsPage from './pages/Settings'
 import OriginOfficeReturns from './component/OriginOfficeReturns'
 import Dashboard from './pages/Dashboard'
 import MyProfile from './pages/MyProfile'
+import StaffGroupChat from './component/StaffGroupChat'
+import ThemeToggle from './component/ThemeToggle'
+
+import './dark-mode.css'
 
 type HeaderProfile = {
   full_name: string | null
@@ -60,11 +63,34 @@ function isValidRole(
   return role === 'admin' || role === 'staff'
 }
 
+/**
+ * Apply the saved theme before the application renders its pages.
+ */
+function ThemeBootstrap() {
+  useEffect(() => {
+    try {
+      const savedTheme =
+        window.localStorage.getItem('presSystem-theme')
+
+      const theme = savedTheme === 'dark' ? 'dark' : 'light'
+
+      document.documentElement.setAttribute('data-theme', theme)
+      document.documentElement.style.colorScheme = theme
+    } catch {
+      document.documentElement.setAttribute('data-theme', 'light')
+      document.documentElement.style.colorScheme = 'light'
+    }
+  }, [])
+
+  return null
+}
+
 function LoadingScreen() {
   return (
     <div className="flex h-screen items-center justify-center overflow-hidden bg-slate-50">
       <div className="text-center">
         <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-blue-200 border-t-blue-700" />
+
         <p className="mt-4 text-sm font-medium text-slate-600">
           Loading presSystem...
         </p>
@@ -98,11 +124,15 @@ function UnauthorizedScreen() {
   )
 }
 
-// Protect application pages from unauthenticated users.
+/**
+ * Protect application pages from unauthenticated users.
+ */
 function ProtectedRoute() {
   const { session, role, loading } = useAuth()
 
-  if (loading) return <LoadingScreen />
+  if (loading) {
+    return <LoadingScreen />
+  }
 
   if (!session) {
     return <Navigate to="/login" replace />
@@ -115,11 +145,15 @@ function ProtectedRoute() {
   return <Outlet />
 }
 
-// Only administrators can access User Management and Settings.
+/**
+ * Only administrators can access User Management and Settings.
+ */
 function AdminOnly({ children }: { children: ReactNode }) {
   const { session, role, loading } = useAuth()
 
-  if (loading) return <LoadingScreen />
+  if (loading) {
+    return <LoadingScreen />
+  }
 
   if (!session) {
     return <Navigate to="/login" replace />
@@ -136,7 +170,9 @@ function AdminOnly({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-// Both admin and staff can access operational modules and My Profile.
+/**
+ * Both administrators and staff can access operational modules.
+ */
 function OperationalAccess({
   children,
 }: {
@@ -144,7 +180,9 @@ function OperationalAccess({
 }) {
   const { session, role, loading } = useAuth()
 
-  if (loading) return <LoadingScreen />
+  if (loading) {
+    return <LoadingScreen />
+  }
 
   if (!session) {
     return <Navigate to="/login" replace />
@@ -157,11 +195,15 @@ function OperationalAccess({
   return <>{children}</>
 }
 
-// Redirect authenticated users to the shared dashboard.
+/**
+ * Redirect authenticated users to the shared dashboard.
+ */
 function RoleHomeRedirect() {
   const { session, role, loading } = useAuth()
 
-  if (loading) return <LoadingScreen />
+  if (loading) {
+    return <LoadingScreen />
+  }
 
   if (!session) {
     return <Navigate to="/login" replace />
@@ -174,7 +216,9 @@ function RoleHomeRedirect() {
   return <Navigate to="/dashboard" replace />
 }
 
-// Header profile and avatar.
+/**
+ * Header profile and avatar.
+ */
 function HeaderProfileButton() {
   const navigate = useNavigate()
   const { role } = useAuth()
@@ -189,7 +233,9 @@ function HeaderProfileButton() {
         error: authError,
       } = await supabase.auth.getUser()
 
-      if (authError) throw authError
+      if (authError) {
+        throw authError
+      }
 
       if (!user) {
         setProfile(null)
@@ -202,7 +248,9 @@ function HeaderProfileButton() {
         .eq('id', user.id)
         .maybeSingle()
 
-      if (error) throw error
+      if (error) {
+        throw error
+      }
 
       setProfile(data)
       setImageFailed(false)
@@ -284,7 +332,9 @@ function HeaderProfileButton() {
   )
 }
 
-// Shared sidebar and fixed application layout.
+/**
+ * Shared sidebar and fixed application layout.
+ */
 function DashboardLayout() {
   const { role } = useAuth()
 
@@ -355,7 +405,7 @@ function DashboardLayout() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-slate-50 text-slate-800">
+    <div className="pres-system-shell flex h-screen w-full overflow-hidden bg-slate-50 text-slate-800">
       {/* Fixed-width sidebar */}
       <aside className="relative flex h-full w-64 shrink-0 flex-col overflow-x-hidden overflow-y-auto bg-[#172554] p-5 text-white">
         {/* Logo and application name */}
@@ -419,7 +469,7 @@ function DashboardLayout() {
       {/* Main application area */}
       <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Fixed header */}
-        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4 md:px-8">
+        <header className="pres-system-header flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4 md:px-8">
           <div className="min-w-0">
             <p className="text-sm text-slate-500">
               presSystem / Workspace
@@ -433,15 +483,13 @@ function DashboardLayout() {
           </div>
 
           <div className="ml-4 flex shrink-0 items-center gap-3">
-            <button
-              type="button"
-              aria-label="Notifications"
-              title="Notifications"
-              className="rounded-xl border border-slate-200 p-3 transition hover:bg-blue-50"
-            >
-              <Bell size={19} />
-            </button>
+            {/* Shared Dark / Light Mode Toggle */}
+            <ThemeToggle />
 
+            {/* Staff Group Chat */}
+            <StaffGroupChat />
+
+            {/* User Profile */}
             <HeaderProfileButton />
           </div>
         </header>
@@ -458,10 +506,14 @@ function DashboardLayout() {
 export default function App() {
   return (
     <BrowserRouter>
+      <ThemeBootstrap />
+
       <AuthProvider>
         <Routes>
+          {/* Public Login page */}
           <Route path="/login" element={<Login />} />
 
+          {/* Protected application pages */}
           <Route element={<ProtectedRoute />}>
             <Route element={<DashboardLayout />}>
               {/* Shared dashboard */}
@@ -561,6 +613,7 @@ export default function App() {
             </Route>
           </Route>
 
+          {/* Default routes */}
           <Route path="/" element={<RoleHomeRedirect />} />
           <Route path="*" element={<RoleHomeRedirect />} />
         </Routes>

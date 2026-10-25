@@ -275,15 +275,22 @@ export default function Receiving() {
     void loadData()
   }, [])
   function updateField(
-    field: keyof typeof initialForm,
-    value: string | string[],
-  ) {
-    setForm(previous => ({
-      ...previous,
-      [field]: value,
-    }))
-    setError('')
-  }
+  field: keyof typeof initialForm,
+  value: string | string[],
+) {
+  // Convert every text field to uppercase except Content / Document Description.
+  const normalizedValue =
+    field !== 'content' && typeof value === 'string'
+      ? value.toUpperCase()
+      : value
+
+  setForm(previous => ({
+    ...previous,
+    [field]: normalizedValue,
+  }))
+
+  setError('')
+}
   function selectDestination(code: string) {
     updateField('destinationFolder', code)
     setDestinationSearch('')

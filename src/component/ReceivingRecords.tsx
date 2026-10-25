@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Search,
@@ -265,6 +265,7 @@ export default function ReceivingRecords() {
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [success, setSuccess] = useState('')
+  const [copyToast, setCopyToast] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // Creator profile details displayed in the record modal.
   const [creatorName, setCreatorName] = useState('')
@@ -280,6 +281,31 @@ export default function ReceivingRecords() {
     useState<SortField>('date_received')
   const [sortDirection, setSortDirection] =
     useState<'asc' | 'desc'>('desc')
+
+  async function copyRecordValue(
+    event: MouseEvent<HTMLButtonElement>,
+    value: string | null | undefined,
+    label: string,
+  ) {
+    const text = value?.trim()
+    if (!text || text === '—') return
+
+    try {
+      await navigator.clipboard.writeText(text)
+      const x = Math.min(event.clientX + 12, window.innerWidth - 210)
+      const y = Math.min(event.clientY + 14, window.innerHeight - 60)
+      setCopyToast({ text: `Copied ${label}: ${text}`, x: Math.max(8, x), y: Math.max(8, y) })
+      window.setTimeout(() => setCopyToast(null), 1800)
+    } catch (err) {
+      console.error('Unable to copy document value:', err)
+      setCopyToast({
+        text: 'Unable to copy. Check browser clipboard permissions.',
+        x: Math.max(8, Math.min(event.clientX + 12, window.innerWidth - 260)),
+        y: Math.max(8, Math.min(event.clientY + 14, window.innerHeight - 60)),
+      })
+      window.setTimeout(() => setCopyToast(null), 2200)
+    }
+  }
 
   async function loadRecords() {
     setLoading(true)
@@ -786,7 +812,6 @@ export default function ReceivingRecords() {
     const details: ReactNode[] = [
       detail('PresOffice Number', record.reference_number),
       detail('System Code', record.system_code),
-      detail('Record Type', record.record_type),
       detail('Content / Subject', record.content || record.subject),
       detail('Bearer / Sender', record.bearer || record.sender),
       detail('Origin of Document / Office', record.origin_office),
@@ -794,11 +819,12 @@ export default function ReceivingRecords() {
       detail('Inputed by', record.receiving_staff),
       detail('Urgency', record.is_urgent === true || (typeof record.urgency === 'string' && ['urgent', 'high', 'yes', 'true'].includes(record.urgency.trim().toLowerCase())) ? 'Urgent' : ''),
       detail('Destination Folder', record.destination_folder),
-      detail('Date Received', record.date_received, formatDate),
-      detail('Received At', record.received_at, formatDateTime),
+      detail(
+        'Date / Time Received',
+        record.received_at || record.date_received,
+        record.received_at ? formatDateTime : formatDate,
+      ),
       detail('Status', displayStatus(record.status)),
-      detail('Current Office', record.current_office),
-      detail('Description', record.description),
     ]
 
     if (destination === 'LDDAP') {
@@ -816,9 +842,14 @@ export default function ReceivingRecords() {
       )
     }
 
+    // Show the fields associated with the selected destination folder.
+    // DV MAIN and other DV destinations include all DV-related values captured
+    // on the receiving form, in addition to the common document information above.
     if (destination.startsWith('DV')) {
       details.push(
+        detail('Document Type', record.document_type),
         detail('Document Codes', record.document_code),
+        detail('Amount (₱)', record.amount_peso, money),
         detail('ORS / BURS Amount', record.ors_burs_amount, money),
         detail('DV Amount', record.dv_amount, money),
         detail('Check Amount', record.check_amount, money),
@@ -864,11 +895,21 @@ export default function ReceivingRecords() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
+      {copyToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none fixed z-[200] max-w-[min(360px,calc(100vw-16px))] rounded-lg border border-blue-300 bg-blue-700 px-3 py-2 text-xs font-semibold text-white shadow-xl"
+          style={{ left: copyToast.x, top: copyToast.y }}
+        >
+          {copyToast.text}
+        </div>
+      )}
       {/* Page heading */}
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <p className="text-xs font-medium text-slate-500">
-            Workspace / Document Management
+          <p className="text-xs font-medium text-green-500">
+            PRESSYSTEM MANAGEMENT PORTAL
           </p>
 
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
@@ -1223,11 +1264,25 @@ export default function ReceivingRecords() {
                     className="transition-colors hover:bg-slate-50"
                   >
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
-                      {record.reference_number || '—'}
+                      <button
+                        type="button"
+                        onClick={event => void copyRecordValue(event, record.reference_number, 'PresOffice No.')}
+                        title="Click to copy PresOffice Number"
+                        className="cursor-copy rounded px-1 py-0.5 text-left transition hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                      >
+                        {record.reference_number || '—'}
+                      </button>
                     </td>
 
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
-                      {record.system_code || '—'}
+                      <button
+                        type="button"
+                        onClick={event => void copyRecordValue(event, record.system_code, 'System Code')}
+                        title="Click to copy System Code"
+                        className="cursor-copy rounded px-1 py-0.5 text-left transition hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                      >
+                        {record.system_code || '—'}
+                      </button>
                     </td>
 
                     <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">

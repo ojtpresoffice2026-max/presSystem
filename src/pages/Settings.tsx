@@ -322,7 +322,7 @@ export default function SettingsPage() {
 
         <p className="text-sm text-slate-500">Workspace / Settings</p>
 
-        <h1 className="mt-1 text-3xl font-bold text-blue-950">
+        <h1 className="mt-1 text-3xl font-bold text-white-950">
           Profile Settings
         </h1>
 

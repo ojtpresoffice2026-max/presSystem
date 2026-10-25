@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search,
   RefreshCw,
@@ -8,10 +8,6 @@ import {
   Send,
   FileText,
   CheckCircle2,
-  Clock,
-  Files,
-  ClipboardCheck,
-  RotateCcw,
   AlertTriangle,
   Bell,
 } from 'lucide-react'
@@ -94,6 +90,8 @@ export default function ReleasingRecords() {
   const [auditLogs, setAuditLogs] = useState<Array<{ id: string; edited_by_name: string; edited_at: string; change_type: string; previous_values: Record<string, unknown> | null; new_values: Record<string, unknown> | null }>>([])
   const [viewerRole, setViewerRole] = useState<'admin' | 'staff' | null>(null)
   const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
+  const [assignmentNotice, setAssignmentNotice] = useState<{ message: string; urgent: boolean } | null>(null)
+  const knownAssignmentIds = useRef<Set<string> | null>(null)
 
   const [sortField, setSortField] =
     useState<SortField>('release_date')
@@ -167,6 +165,7 @@ export default function ReleasingRecords() {
 
       const workflowRows = assignments ?? []
       if (workflowRows.length === 0) {
+        knownAssignmentIds.current = new Set()
         setRecords([])
         return
       }
@@ -176,6 +175,7 @@ export default function ReleasingRecords() {
       )] as string[]
 
       if (receivingIds.length === 0) {
+        knownAssignmentIds.current = new Set()
         setRecords([])
         return
       }
@@ -183,7 +183,7 @@ export default function ReleasingRecords() {
       const { data: documents, error: documentsError } = await supabase
         .from('receiving_records')
         .select(
-          'id, reference_number, subject, content, sender, bearer, origin_office, date_received, created_at',
+          'id, reference_number, subject, content, sender, bearer, origin_office, date_received, created_at, urgency',
         )
         .in('id', receivingIds)
 
@@ -226,7 +226,7 @@ export default function ReleasingRecords() {
           created_at: document?.created_at || document?.date_received || null,
           release_instruction: workflow.release_instruction || null,
           workflow_status: workflow.workflow_status || null,
-          urgency: workflow.urgency || 'normal',
+          urgency: workflow.urgency || document?.urgency || 'normal',
           release_received_at: workflow.release_received_at || null,
           release_received_by: workflow.release_received_by || null,
           release_received_by_name: workflow.release_received_by_name || null,
@@ -240,6 +240,29 @@ export default function ReleasingRecords() {
         }
       })
 
+      // Notify the assigned staff member and administrators when a new
+      // releasing assignment appears. The first load establishes a baseline.
+      // Admins receive notices for any new assignment; staff only see their own.
+      const previousIds = knownAssignmentIds.current
+      if (previousIds) {
+        const newlyAssigned = mappedRecords.filter(record => !previousIds.has(record.id))
+        if (newlyAssigned.length > 0) {
+          const urgentAssignments = newlyAssigned.filter(
+            record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+          )
+          const latest = urgentAssignments[0] || newlyAssigned[0]
+          const assignedMessage = viewerRole === 'admin'
+            ? `for ${latest.releasing_staff || 'the selected releasing staff'}`
+            : 'to you'
+          setAssignmentNotice({
+            urgent: urgentAssignments.length > 0,
+            message: urgentAssignments.length > 0
+              ? `Urgent document ${latest.reference_number} was assigned ${assignedMessage}. Check the urgent notification bell.`
+              : `Document ${latest.reference_number} was assigned ${assignedMessage}.`,
+          })
+        }
+      }
+      knownAssignmentIds.current = new Set(mappedRecords.map(record => record.id))
       setRecords(mappedRecords)
     } catch (err) {
       setError(
@@ -495,11 +518,6 @@ export default function ReleasingRecords() {
   useEffect(() => {
     void loadRecords()
 
-    // Refresh assignments periodically so urgent notifications update while the page stays open.
-    const refreshInterval = window.setInterval(() => {
-      void loadRecords()
-    }, 30000)
-
     // Supabase realtime updates trigger an immediate refresh when workflow records change.
     const channel = supabase
       .channel('releasing-urgent-workflow-notifications')
@@ -511,7 +529,6 @@ export default function ReleasingRecords() {
       .subscribe()
 
     return () => {
-      window.clearInterval(refreshInterval)
       void supabase.removeChannel(channel)
     }
   }, [])
@@ -633,21 +650,45 @@ export default function ReleasingRecords() {
     return (status || 'unknown').replaceAll('_', ' ')
   }
 
-  // A release is complete if the workflow status or the saved forwarding
-  // fields indicate that the next action has already been forwarded.
+  // Receipt confirmation is not completion. Keep urgent assignments active
+  // through action_in_progress, and hide them only after the current workflow
+  // is explicitly marked completed/forwarded. Returned documents may retain
+  // old forwarding timestamps, so their returned status takes priority.
   function isReleaseCompleted(record: ReleasingRecord) {
-    const workflowStatus = (record.workflow_status || '').trim().toLowerCase()
+    const workflowStatus = (record.workflow_status || '')
+      .trim()
+      .toLowerCase()
+      .replaceAll('-', '_')
+      .replaceAll(' ', '_')
     const systemStatus = (record.next_action_system_status || '').trim().toLowerCase()
 
-    return (
-      workflowStatus === 'action_completed' ||
-      workflowStatus === 'completed' ||
-      systemStatus === 'forwarded' ||
-      Boolean(record.next_action_date_forwarded) ||
-      // A saved release timestamp means the release action was already recorded.
-      // Do not show Continue Release again just because a status field is stale.
-      Boolean(record.next_action_release_at)
-    )
+    // A returned document starts/continues a new active workflow cycle.
+    // Ignore stale forwarding metadata from an earlier cycle in this case.
+    if (workflowStatus === 'returned_to_origin') {
+      return false
+    }
+
+    // Completion indicators take priority over stale/inconsistent in-progress
+    // workflow_status values. Once the saved Next Action is Forwarded, the
+    // release is complete and the Continue Release button must disappear.
+    if (
+      ['action_completed', 'completed', 'forwarded', 'released', 'release_completed'].includes(workflowStatus) ||
+      ['forwarded', 'completed', 'released'].includes(systemStatus) ||
+      Boolean(record.next_action_date_forwarded)
+    ) {
+      return true
+    }
+
+    // Receipt confirmation and a release timestamp alone do NOT mean that
+    // the document has been completely released.
+    if (
+      workflowStatus === 'action_in_progress' ||
+      ['assigned', 'pending', 'awaiting_receipt', 'release_assigned', 'action_pending'].includes(workflowStatus)
+    ) {
+      return false
+    }
+
+    return false
   }
 
   function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
@@ -664,28 +705,12 @@ export default function ReleasingRecords() {
       : { label: 'Not Urgent', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
   }
 
-  const completedCount = records.filter(isReleaseCompleted).length
-  const awaitingReceiptCount = records.filter(record => !record.release_received_at).length
-  const receivedInProgressCount = records.filter(
-    record => Boolean(record.release_received_at) && !isReleaseCompleted(record),
-  ).length
-  const readyToReleaseCount = records.filter(
-    record => Boolean(record.release_received_at) && !isReleaseCompleted(record),
-  ).length
-  // Only active urgent assignments count as notifications; completed/forwarded workflows are excluded.
+  // Show urgent assignments immediately, including those still awaiting staff receipt confirmation.
+  // Only completed/forwarded workflows are excluded from the active notification list.
   const urgentRecords = records.filter(
     record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
   )
   const urgentCount = urgentRecords.length
-
-  const summaryCards = [
-    { label: 'Total Assigned', value: records.length, icon: Files, color: 'text-blue-700', iconBg: 'bg-blue-50' },
-    { label: 'Awaiting Receipt', value: awaitingReceiptCount, icon: Clock, color: 'text-amber-700', iconBg: 'bg-amber-50' },
-    { label: 'Received / In Progress', value: receivedInProgressCount, icon: ClipboardCheck, color: 'text-blue-700', iconBg: 'bg-blue-50' },
-    { label: 'Ready to Release', value: readyToReleaseCount, icon: Send, color: 'text-emerald-700', iconBg: 'bg-emerald-50' },
-    { label: 'Urgent Documents', value: urgentCount, icon: RotateCcw, color: 'text-red-700', iconBg: 'bg-red-50' },
-    { label: 'Workflow Completed', value: completedCount, icon: CheckCircle2, color: 'text-emerald-700', iconBg: 'bg-emerald-50' },
-  ]
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
@@ -707,101 +732,113 @@ export default function ReleasingRecords() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void loadRecords()}
-          disabled={loading}
-          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 hover:shadow disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
-      </header>
+        <div className="flex shrink-0 items-center gap-2">
 
-      {/* Urgent notification bell: count only active urgent assignments. */}
-      <div className="relative flex shrink-0 justify-end">
-        <button
-          type="button"
-          onClick={() => setUrgentNotificationsOpen(open => !open)}
-          aria-label={`Urgent notifications: ${urgentCount}`}
-          aria-expanded={urgentNotificationsOpen}
-          className="relative inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
-        >
-          <Bell size={19} />
-          {urgentCount > 0 && (
-            <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white">
-              {urgentCount > 99 ? '99+' : urgentCount}
-            </span>
-          )}
-        </button>
-
-        {urgentNotificationsOpen && (
-          <div className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-              <div>
-                <p className="text-sm font-bold text-slate-900">Urgent Documents</p>
-                <p className="mt-0.5 text-xs text-slate-500">Active assignments only</p>
-              </div>
-              <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">{urgentCount}</span>
-            </div>
-            {urgentRecords.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-slate-500">No active urgent documents.</p>
-            ) : (
-              <div className="max-h-72 overflow-y-auto">
-                {urgentRecords.map(record => (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUrgentNotificationsOpen(open => !open)}
+              aria-label={`Urgent notifications: ${urgentCount}`}
+              aria-expanded={urgentNotificationsOpen}
+              title="Urgent notifications"
+              className={`relative inline-flex h-10 w-10 items-center justify-center rounded-lg border bg-white shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-100 ${urgentCount > 0 ? 'border-red-200 text-red-700 hover:bg-red-50' : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'}`}
+            >
+              <Bell size={18} />
+              {urgentCount > 0 && (
+                <span className="absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white">
+                  {urgentCount > 99 ? '99+' : urgentCount}
+                </span>
+              )}
+            </button>
+            {urgentNotificationsOpen && (
+              <div className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">Urgent Documents</p>
+                    <p className="mt-0.5 text-xs text-slate-500">Active assignments only</p>
+                  </div>
+                  <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">{urgentCount}</span>
+                </div>
+                {urgentRecords.length === 0 ? (
+                  <p className="px-4 py-6 text-center text-sm text-slate-500">No active urgent documents.</p>
+                ) : (
+                  <div className="max-h-72 overflow-y-auto">
+                    {urgentRecords.map(record => (
+                      <button
+                        key={record.id}
+                        type="button"
+                        onClick={() => {
+                          setUrgencyFilter('URGENT')
+                          setSearch(record.reference_number)
+                          setSelected(record)
+                          setUrgentNotificationsOpen(false)
+                        }}
+                        className="flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left transition last:border-b-0 hover:bg-red-50"
+                      >
+                        <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-600" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold text-slate-900">{record.reference_number}</span>
+                          <span className="mt-0.5 block truncate text-xs text-slate-500">{record.subject || 'No subject'}</span>
+                          <span className="mt-1 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+                            {(record.workflow_status || '').trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_') === 'returned_to_origin'
+                              ? 'Urgent · Returned to origin'
+                              : record.release_received_at
+                                ? 'Urgent · Awaiting release completion'
+                                : 'Urgent · Awaiting receipt confirmation'}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="border-t border-slate-100 p-3">
                   <button
-                    key={record.id}
                     type="button"
-                    onClick={() => {
-                      setUrgencyFilter('URGENT')
-                      setSearch(record.reference_number)
-                      setSelected(record)
-                      setUrgentNotificationsOpen(false)
-                    }}
-                    className="flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left transition last:border-b-0 hover:bg-red-50"
+                    onClick={() => { setUrgencyFilter('URGENT'); setSearch(''); setUrgentNotificationsOpen(false) }}
+                    className="w-full rounded-lg bg-red-700 px-3 py-2 text-xs font-bold text-white transition hover:bg-red-800"
                   >
-                    <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-600" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold text-slate-900">{record.reference_number}</span>
-                      <span className="mt-0.5 block truncate text-xs text-slate-500">{record.subject || 'No subject'}</span>
-                      <span className="mt-1 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">Urgent · Awaiting completion</span>
-                    </span>
+                    View Active Urgent Documents
                   </button>
-                ))}
+                </div>
               </div>
             )}
-            <div className="border-t border-slate-100 p-3">
-              <button
-                type="button"
-                onClick={() => { setUrgencyFilter('URGENT'); setSearch(''); setUrgentNotificationsOpen(false) }}
-                className="w-full rounded-lg bg-red-700 px-3 py-2 text-xs font-bold text-white transition hover:bg-red-800"
-              >
-                View Active Urgent Documents
-              </button>
-            </div>
           </div>
-        )}
-      </div>
-
-      {/* Workflow summary cards */}
-      <section className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-        {summaryCards.map(({ label, value, icon: Icon, color, iconBg }) => (
-          <article
-            key={label}
-            className="group flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-md"
+          <button
+            type="button"
+            onClick={() => void loadRecords()}
+            disabled={loading}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <div className="min-w-0">
-              <p className="text-[10px] leading-4 text-slate-500">{label}</p>
-              <p className="mt-1 text-xl font-bold tabular-nums text-slate-900">
-                {loading ? '—' : value}
-              </p>
-            </div>
-            <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 group-hover:scale-110 ${iconBg} ${color}`}>
-              <Icon size={18} />
-            </div>
-          </article>
-        ))}
-      </section>
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      {assignmentNotice && (
+        <div
+          role="status"
+          className={`flex shrink-0 items-start justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${
+            assignmentNotice.urgent
+              ? 'border-red-200 bg-red-50 text-red-800'
+              : 'border-blue-200 bg-blue-50 text-blue-800'
+          }`}
+        >
+          <div className="flex items-start gap-2">
+            {assignmentNotice.urgent && <AlertTriangle size={16} className="mt-0.5 shrink-0" />}
+            <span>{assignmentNotice.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAssignmentNotice(null)}
+            className="shrink-0 text-xs font-semibold underline"
+            aria-label="Dismiss assignment notification"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
 
       {/* Main table panel */}
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">

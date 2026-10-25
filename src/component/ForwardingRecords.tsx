@@ -13,7 +13,6 @@ import {
   AlertTriangle,
   Bell,
   CheckCircle2,
-  ListChecks,
   Check,
   LoaderCircle,
 } from 'lucide-react'
@@ -453,14 +452,28 @@ export default function ForwardingRecords() {
   )
 
   // Separate notification for urgent papers returned by the Board Room.
-  // These are not counted as new papers awaiting forwarding, and the card
-  // intentionally shows only the source label (no return timestamp/remarks).
+  // Use workflow urgency first because forwarding/return urgency is saved on
+  // document_workflow and may differ from receiving_records. Fall back to the
+  // document urgency for older workflow rows.
   const urgentReturnedWorkflows = useMemo(
     () =>
-      workflows.filter(({ workflow, document }) =>
-        workflow.workflow_status === 'returned_to_origin' &&
-        String(document?.urgency ?? '').trim().toLowerCase() === 'urgent'
-      ),
+      workflows.filter(({ workflow, document }) => {
+        const workflowStatus = String(workflow.workflow_status ?? '')
+          .trim()
+          .toLowerCase()
+          .replace(/[\\s-]+/g, '_')
+        const urgencyValue = String(
+          workflow.urgency ?? document?.urgency ?? '',
+        )
+          .trim()
+          .toLowerCase()
+          .replace(/[\\s-]+/g, '_')
+
+        return (
+          workflowStatus === 'returned_to_origin' &&
+          ['urgent', 'high', 'critical', 'very_urgent'].includes(urgencyValue)
+        )
+      }),
     [workflows],
   )
 
@@ -832,20 +845,12 @@ export default function ForwardingRecords() {
     }
   }
 
-  const completedCount = workflows.filter(
-    item => item.workflow.workflow_status === 'completed',
-  ).length
-
-  const returnedCount = workflows.filter(
-    item => item.workflow.workflow_status === 'returned_to_origin',
-  ).length
-
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <p className="text-xs font-medium text-slate-500">
-            Workspace / Document Management
+          <p className="text-xs font-medium text-green-500">
+            PRESSYSTEM MANAGEMENT PORTAL
           </p>
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Forwarding to Board Room
@@ -983,64 +988,6 @@ export default function ForwardingRecords() {
         </div>
       )}
 
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-blue-50 p-2.5 text-blue-700">
-              <FileText size={21} />
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Forwarded Documents</p>
-              <p className="text-2xl font-bold text-slate-900">
-                {workflows.length}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-amber-50 p-2.5 text-amber-700">
-              <Clock size={21} />
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Eligible to Forward</p>
-              <p className="text-2xl font-bold text-slate-900">
-                {availableDocuments.length}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-orange-50 p-2.5 text-orange-700">
-              <RefreshCw size={21} />
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Awaiting Origin Receipt</p>
-              <p className="text-2xl font-bold text-slate-900">
-                {returnedCount}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-green-50 p-2.5 text-green-700">
-              <ListChecks size={21} />
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Completed Workflows</p>
-              <p className="text-2xl font-bold text-slate-900">
-                {completedCount}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">

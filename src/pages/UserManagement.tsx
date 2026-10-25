@@ -21,6 +21,7 @@ type Profile = {
   full_name: string | null
   role: UserRole
   created_at: string | null
+  avatar_path: string | null
 }
 
 const roles: { value: UserRole; label: string }[] = [
@@ -51,6 +52,8 @@ function formatDateTime(value: string | null | undefined): string {
 export default function UserManagement() {
   const [users, setUsers] = useState<Profile[]>([])
   const [currentUserId, setCurrentUserId] = useState('')
+  const [currentUserRole, setCurrentUserRole] = useState<UserRole | null>(null)
+  const [avatarPreviewUser, setAvatarPreviewUser] = useState<Profile | null>(null)
   const [search, setSearch] = useState('')
 
   // Create-user form
@@ -101,7 +104,7 @@ export default function UserManagement() {
 
       const { data, error: queryError } = await supabase
         .from('profiles')
-        .select('id, full_name, role, created_at')
+        .select('id, full_name, role, created_at, avatar_path')
         .order('full_name', { ascending: true })
 
       if (queryError) throw queryError
@@ -116,8 +119,10 @@ export default function UserManagement() {
           full_name: profile.full_name,
           role: profile.role,
           created_at: profile.created_at,
+          avatar_path: profile.avatar_path ?? null,
         }))
 
+      setCurrentUserRole(profiles.find(profile => profile.id === currentUser.id)?.role ?? null)
       setUsers(profiles)
     } catch (err) {
       console.error('Unable to load registered users:', err)
@@ -434,6 +439,13 @@ export default function UserManagement() {
     }
   }
 
+  function getAvatarUrl(user: Profile): string {
+    if (!user.avatar_path) return ''
+    return supabase.storage.from('avatars').getPublicUrl(user.avatar_path).data.publicUrl
+  }
+
+  const canPreviewAvatars = currentUserRole === 'admin'
+
   const filteredUsers = users.filter(user => {
     const query = search.trim().toLowerCase()
     const roleLabel =
@@ -646,6 +658,9 @@ export default function UserManagement() {
             <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Photo
+                </th>
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Full Name
                 </th>
                 <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
@@ -667,7 +682,7 @@ export default function UserManagement() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={6}
                     className="px-5 py-10 text-center text-slate-500"
                   >
                     Loading registered users...
@@ -676,7 +691,7 @@ export default function UserManagement() {
               ) : filteredUsers.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={6}
                     className="px-5 py-10 text-center text-slate-500"
                   >
                     {users.length === 0
@@ -691,6 +706,39 @@ export default function UserManagement() {
 
                   return (
                     <tr key={user.id} className="hover:bg-slate-50">
+                      <td className="whitespace-nowrap px-5 py-3.5">
+                        {getAvatarUrl(user) ? (
+                          canPreviewAvatars ? (
+                            <button
+                              type="button"
+                              onClick={() => setAvatarPreviewUser(user)}
+                              className="group rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                              title={`View ${user.full_name || 'user'} profile picture`}
+                              aria-label={`View ${user.full_name || 'user'} profile picture`}
+                            >
+                              <img
+                                src={getAvatarUrl(user)}
+                                alt={`${user.full_name || 'User'} profile`}
+                                className="h-11 w-11 rounded-full border border-slate-200 object-cover transition group-hover:scale-105"
+                              />
+                            </button>
+                          ) : (
+                            <img
+                              src={getAvatarUrl(user)}
+                              alt={`${user.full_name || 'User'} profile`}
+                              className="h-11 w-11 rounded-full border border-slate-200 object-cover"
+                            />
+                          )
+                        ) : (
+                          <div
+                            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold text-slate-500"
+                            aria-label="No profile picture"
+                            title="No profile picture"
+                          >
+                            {(user.full_name?.trim().charAt(0) || '?').toUpperCase()}
+                          </div>
+                        )}
+                      </td>
                       <td className="whitespace-nowrap px-5 py-3.5 font-medium text-slate-800">
                         {user.full_name || 'Unnamed User'}
                         {isSelf && (
@@ -769,6 +817,47 @@ export default function UserManagement() {
           </table>
         </div>
       </section>
+
+      {/* Admin-only enlarged profile picture preview */}
+      {canPreviewAvatars && avatarPreviewUser && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget) setAvatarPreviewUser(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Escape') setAvatarPreviewUser(null)
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="avatar-preview-title"
+            className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/20 bg-white p-5 text-center shadow-2xl"
+          >
+            <button
+              type="button"
+              onClick={() => setAvatarPreviewUser(null)}
+              aria-label="Close profile picture preview"
+              className="absolute right-3 top-3 rounded-full p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            >
+              <X size={20} />
+            </button>
+            <h3 id="avatar-preview-title" className="mb-4 pr-8 text-left font-semibold text-slate-900">
+              {avatarPreviewUser.full_name || 'User'} — Profile Picture
+            </h3>
+            {getAvatarUrl(avatarPreviewUser) ? (
+              <img
+                src={getAvatarUrl(avatarPreviewUser)}
+                alt={`${avatarPreviewUser.full_name || 'User'} enlarged profile`}
+                className="mx-auto max-h-[65vh] w-auto max-w-full rounded-xl object-contain"
+              />
+            ) : (
+              <p className="py-12 text-sm text-slate-500">This account has no profile picture.</p>
+            )}
+          </section>
+        </div>
+      )}
 
       {/* Edit user name modal */}
       {editTarget && (

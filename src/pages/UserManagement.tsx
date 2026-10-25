@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
   Search,
@@ -283,7 +282,6 @@ export default function UserManagement() {
     setModalError('')
 
     try {
-      // RLS must authorize the signed-in administrator to update this row.
       const { error: updateError } = await supabase
         .from('profiles')
         .update({ full_name: cleanName })
@@ -310,7 +308,6 @@ export default function UserManagement() {
           : `Name updated successfully to "${cleanName}".`,
       )
 
-      // Refresh the header name if the administrator edited their own name.
       if (isSelf) {
         window.dispatchEvent(new Event('profile-avatar-updated'))
       }
@@ -453,8 +450,9 @@ export default function UserManagement() {
   })
 
   return (
-    <div className="space-y-6">
-      <header>
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
+      {/* Page header */}
+      <header className="shrink-0">
         <p className="text-xs font-medium text-slate-500">
           Workspace / Administration
         </p>
@@ -468,26 +466,31 @@ export default function UserManagement() {
         </p>
       </header>
 
-      {error && (
-        <div
-          role="alert"
-          className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-        >
-          {error}
-        </div>
-      )}
+      {/* Status messages */}
+      {(error || message) && (
+        <div className="shrink-0 space-y-2">
+          {error && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+            >
+              {error}
+            </div>
+          )}
 
-      {message && (
-        <div
-          role="status"
-          className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700"
-        >
-          {message}
+          {message && (
+            <div
+              role="status"
+              className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700"
+            >
+              {message}
+            </div>
+          )}
         </div>
       )}
 
       {/* Create account form */}
-      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="shrink-0 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-5 flex items-center gap-3">
           <div className="rounded-lg bg-blue-50 p-3 text-blue-700">
             <UserPlus size={21} />
@@ -587,9 +590,10 @@ export default function UserManagement() {
         </form>
       </section>
 
-      {/* Registered users table */}
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-3 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between">
+      {/* Registered users table: this section fills the remaining height */}
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        {/* Table toolbar stays fixed */}
+        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <Users size={21} className="text-blue-700" />
 
@@ -636,23 +640,24 @@ export default function UserManagement() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Only this area scrolls vertically and horizontally */}
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
           <table className="w-full min-w-[1150px] text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50">
+            <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
               <tr>
-                <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Full Name
                 </th>
-                <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Role
                 </th>
-                <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Created At (PHT)
                 </th>
-                <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   User ID
                 </th>
-                <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Actions
                 </th>
               </tr>
@@ -686,7 +691,7 @@ export default function UserManagement() {
 
                   return (
                     <tr key={user.id} className="hover:bg-slate-50">
-                      <td className="px-5 py-3.5 font-medium text-slate-800">
+                      <td className="whitespace-nowrap px-5 py-3.5 font-medium text-slate-800">
                         {user.full_name || 'Unnamed User'}
                         {isSelf && (
                           <span className="ml-2 text-xs text-slate-400">
@@ -695,7 +700,7 @@ export default function UserManagement() {
                         )}
                       </td>
 
-                      <td className="px-5 py-3.5">
+                      <td className="whitespace-nowrap px-5 py-3.5">
                         <span
                           className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
                             user.role === 'admin'
@@ -716,7 +721,7 @@ export default function UserManagement() {
                         {user.id}
                       </td>
 
-                      <td className="px-5 py-3.5">
+                      <td className="whitespace-nowrap px-5 py-3.5">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"

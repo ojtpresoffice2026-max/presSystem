@@ -11,6 +11,7 @@ import {
   Eye,
   Clock,
   AlertTriangle,
+  Bell,
   CheckCircle2,
   ListChecks,
   Check,
@@ -22,6 +23,7 @@ import AuditHistory from './AuditHistory'
 type ReceivingRecord = {
   id: string
   reference_number: string
+  system_code?: string | null
   record_type?: string | null
   subject?: string | null
   content?: string | null
@@ -31,6 +33,7 @@ type ReceivingRecord = {
   current_office?: string | null
   destination_folder?: string | null
   date_received?: string | null
+  urgency?: string | null
   status?: string | null
 }
 
@@ -46,11 +49,15 @@ type WorkflowRecord = {
   forwarding_time: string
   forwarded_by: string
   forwarded_at: string
+  board_room_received_at?: string | null
+  board_room_received_by?: string | null
   workflow_status: string
   returned_to_origin_person?: string | null
   returned_to_origin_remarks?: string | null
   returned_to_origin_at?: string | null
   returned_to_origin_by?: string | null
+  origin_office_received_at?: string | null
+  origin_office_received_by?: string | null
   release_assigned_to?: string | null
   release_instruction?: string | null
   release_forwarded_at?: string | null
@@ -100,13 +107,13 @@ function formatDate(value?: string | null) {
 
   const date = new Date(`${value.slice(0, 10)}T00:00:00`)
 
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleDateString('en-PH', {
-        year: 'numeric',
-        month: 'short',
-        day: '2-digit',
-      })
+  if (Number.isNaN(date.getTime())) return value
+
+  // Consistent numeric date format: MM/DD/YYYY.
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const year = date.getFullYear()
+  return `${month}/${day}/${year}`
 }
 
 function formatTime(value?: string | null) {
@@ -128,6 +135,25 @@ function formatTime(value?: string | null) {
     minute: '2-digit',
     hour12: true,
   })
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const datePart = date.toLocaleDateString('en-US', {
+    timeZone: 'Asia/Manila',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  })
+  const timePart = date.toLocaleTimeString('en-PH', {
+    timeZone: 'Asia/Manila',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
+  return `${datePart}, ${timePart}`
 }
 
 function statusClass(status: string) {
@@ -168,17 +194,18 @@ function getStorageLabel(workflow: WorkflowRecord) {
     : `Box: ${workflow.box_number || 'Not specified'}`
 }
 
-function UrgencyBadge({ urgency }: { urgency: WorkflowRecord['urgency'] }) {
+function UrgencyBadge({ urgency }: { urgency?: string | null }) {
+  const isUrgent = String(urgency ?? '').trim().toLowerCase() === 'urgent'
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${
-        urgency === 'urgent'
+        isUrgent
           ? 'bg-red-50 text-red-700'
           : 'bg-slate-100 text-slate-600'
       }`}
     >
-      {urgency === 'urgent' && <AlertTriangle size={12} />}
-      {urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
+      {isUrgent && <AlertTriangle size={12} />}
+      {isUrgent ? 'Urgent' : 'Not Urgent'}
     </span>
   )
 }
@@ -199,6 +226,7 @@ export default function ForwardingRecords() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [showForm, setShowForm] = useState(false)
+  const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
 
   const [documentPickerOpen, setDocumentPickerOpen] = useState(false)
   const [documentSearch, setDocumentSearch] = useState('')
@@ -221,6 +249,8 @@ export default function ForwardingRecords() {
     useState<WorkflowRecord | null>(null)
   const [viewingWorkflow, setViewingWorkflow] =
     useState<WorkflowWithDocument | null>(null)
+  const [viewingUrgentDocument, setViewingUrgentDocument] =
+    useState<ReceivingRecord | null>(null)
   const [releaseAssignment, setReleaseAssignment] =
     useState<WorkflowRecord | null>(null)
   const [releaseStaff, setReleaseStaff] = useState('')
@@ -229,6 +259,7 @@ export default function ForwardingRecords() {
   const [releasingStaffOptions, setReleasingStaffOptions] = useState<string[]>([])
   const [loadingReleasingStaff, setLoadingReleasingStaff] = useState(false)
   const [releaseInstruction, setReleaseInstruction] = useState('For Release')
+  const [releaseUrgency, setReleaseUrgency] = useState<'urgent' | 'not_urgent'>('not_urgent')
   const [releaseCustomInstruction, setReleaseCustomInstruction] = useState('')
   const [savingReleaseAssignment, setSavingReleaseAssignment] = useState(false)
 
@@ -268,8 +299,14 @@ export default function ForwardingRecords() {
       const userIds = [
         ...new Set(
           workflowRecords
-            .map(item => item.forwarded_by)
-            .filter(Boolean),
+            .flatMap(item => [
+              item.forwarded_by,
+              item.board_room_received_by,
+              item.returned_to_origin_by,
+              item.origin_office_received_by,
+              item.release_forwarded_by,
+            ])
+            .filter((id): id is string => Boolean(id)),
         ),
       ]
 
@@ -334,6 +371,28 @@ export default function ForwardingRecords() {
     void loadData()
   }, [loadData])
 
+  // Refresh alerts when a new/updated receiving record is saved or when
+  // the Board Room changes a workflow (for example, returning a paper).
+  useEffect(() => {
+    const channel = supabase
+      .channel('forward-page-urgent-notifications')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'receiving_records' },
+        () => { void loadData() },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'document_workflow' },
+        () => { void loadData() },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [loadData])
+
   // A document that has already entered a workflow must not be forwarded
   // to the Board Room again. Explicitly treat a recorded paper release as
   // completed even if the receiving-record status was not updated consistently.
@@ -381,6 +440,32 @@ export default function ForwardingRecords() {
     () => documents.filter(document => !completedOrReleasedDocumentIds.has(document.id)),
     [documents, completedOrReleasedDocumentIds],
   )
+
+  // Urgent records originate from Receiving. Only show records that have not
+  // entered the forwarding workflow yet, so the alert points to actionable items.
+  const urgentReceivedDocuments = useMemo(
+    () =>
+      availableDocuments.filter(
+        document =>
+          String(document.urgency ?? '').trim().toLowerCase() === 'urgent',
+      ),
+    [availableDocuments],
+  )
+
+  // Separate notification for urgent papers returned by the Board Room.
+  // These are not counted as new papers awaiting forwarding, and the card
+  // intentionally shows only the source label (no return timestamp/remarks).
+  const urgentReturnedWorkflows = useMemo(
+    () =>
+      workflows.filter(({ workflow, document }) =>
+        workflow.workflow_status === 'returned_to_origin' &&
+        String(document?.urgency ?? '').trim().toLowerCase() === 'urgent'
+      ),
+    [workflows],
+  )
+
+  const urgentNotificationCount =
+    urgentReceivedDocuments.length + urgentReturnedWorkflows.length
 
   const filteredPickerDocuments = useMemo(
     () =>
@@ -603,6 +688,20 @@ export default function ForwardingRecords() {
 
       if (receiptError) throw receiptError
 
+      // Persist the authenticated account and the actual confirmation timestamp.
+      // The database must contain origin_office_received_by and
+      // origin_office_received_at columns for this audit trail.
+      const confirmedAt = new Date().toISOString()
+      const { error: auditUpdateError } = await supabase
+        .from('document_workflow')
+        .update({
+          origin_office_received_by: userResult.user.id,
+          origin_office_received_at: confirmedAt,
+        })
+        .eq('id', workflow.id)
+
+      if (auditUpdateError) throw auditUpdateError
+
       setReceiptConfirmation(null)
 
       setSuccess(
@@ -692,6 +791,7 @@ export default function ForwardingRecords() {
         .update({
           release_assigned_to: releaseStaff,
           release_instruction: instruction,
+          urgency: releaseUrgency,
           release_forwarded_at: new Date().toISOString(),
           release_forwarded_by: user.id,
         })
@@ -741,7 +841,7 @@ export default function ForwardingRecords() {
   ).length
 
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-xs font-medium text-slate-500">
@@ -755,19 +855,114 @@ export default function ForwardingRecords() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setError('')
-            setSuccess('')
-            setShowForm(true)
-          }}
-          disabled={availableDocuments.length === 0 || loading}
-          className="inline-flex h-10 items-center justify-center gap-2 self-start rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
-        >
-          <Plus size={17} />
-          Forward Documents
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUrgentNotificationsOpen(open => !open)}
+              aria-label={`Urgent document notifications: ${urgentNotificationCount}`}
+              aria-expanded={urgentNotificationsOpen}
+              className="relative inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-red-50 hover:text-red-700"
+            >
+              <Bell size={19} />
+              {urgentNotificationCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white">
+                  {urgentNotificationCount > 99 ? '99+' : urgentNotificationCount}
+                </span>
+              )}
+            </button>
+
+            {urgentNotificationsOpen && (
+              <div className="absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <div>
+                    <h3 className="font-bold text-slate-900">Urgent Notifications</h3>
+                    <p className="text-xs text-slate-500">
+                      {urgentReceivedDocuments.length} new · {urgentReturnedWorkflows.length} returned by Board Room
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUrgentNotificationsOpen(false)}
+                    aria-label="Close urgent notifications"
+                    className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {urgentNotificationCount === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <CheckCircle2 className="mx-auto text-green-600" size={25} />
+                    <p className="mt-2 text-sm font-semibold text-slate-800">No urgent notifications</p>
+                    <p className="mt-1 text-xs text-slate-500">New urgent papers and urgent papers returned by the Board Room will appear here.</p>
+                  </div>
+                ) : (
+                  <div className="max-h-96 divide-y divide-slate-100 overflow-y-auto">
+                    {urgentReceivedDocuments.map(document => (
+                      <div key={`new-${document.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-red-50/60">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number}>
+                            PresOffice No.: {document.reference_number || '—'}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs text-slate-600" title={document.system_code || ''}>
+                            System Code: {document.system_code || '—'}
+                          </p>
+                          <p className="mt-1 text-[10px] text-red-700">Urgent · Awaiting forwarding</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setViewingUrgentDocument(document); setUrgentNotificationsOpen(false) }}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Eye size={13} /> View
+                        </button>
+                      </div>
+                    ))}
+
+                    {urgentReturnedWorkflows.map(({ workflow, document }) => (
+                      <div key={`returned-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-amber-50/60">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
+                            PresOffice No.: {document?.reference_number || '—'}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
+                            System Code: {document?.system_code || '—'}
+                          </p>
+                          <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent · Returned by Board Room</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setViewingWorkflow({ workflow, document, recordedByName: profiles[workflow.forwarded_by] || workflow.forwarded_by })
+                            setUrgentNotificationsOpen(false)
+                          }}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Eye size={13} /> View
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setError('')
+              setSuccess('')
+              setShowForm(true)
+            }}
+            disabled={availableDocuments.length === 0 || loading}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Plus size={17} />
+            Forward Documents
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -787,6 +982,7 @@ export default function ForwardingRecords() {
           {success}
         </div>
       )}
+
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -846,7 +1042,7 @@ export default function ForwardingRecords() {
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
@@ -935,20 +1131,16 @@ export default function ForwardingRecords() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1700px] border-collapse text-left">
-            <thead>
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
+          <table className="w-full min-w-[1450px] border-collapse text-left">
+            <thead className="sticky top-0 z-10 bg-slate-50">
               <tr className="border-b border-slate-200 bg-slate-50">
                 {[
                   'PresOffice No.',
                   'Content / Subject',
-                  'Origin Office',
-                  'Transaction Person',
-                  'Storage',
+                  'Transaction Person / Storage',
                   'Urgency',
-                  'Forwarding Date',
-                  'Forwarding Time',
-                  'Recorded By',
+                  'Forwarded',
                   'Workflow Status',
                   'Return Remarks',
                   'Releasing Staff',
@@ -969,7 +1161,7 @@ export default function ForwardingRecords() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={14}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Loading forwarding records...
@@ -978,7 +1170,7 @@ export default function ForwardingRecords() {
               ) : filteredWorkflows.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={14}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     {workflows.length === 0
@@ -999,45 +1191,49 @@ export default function ForwardingRecords() {
 
                       <td
                         className="max-w-[240px] px-4 py-3.5 text-xs text-slate-700"
-                        title={document?.content || document?.subject || ''}
+                        title={document?.system_code || ''}
                       >
                         <span className="block truncate">
-                          {document?.content || document?.subject || '—'}
+                          {document?.system_code || '—'}
                         </span>
                       </td>
 
-                      <td className="px-4 py-3.5 text-xs text-slate-600">
-                        {document?.origin_office ||
-                          document?.current_office ||
-                          document?.destination_folder ||
-                          '—'}
-                      </td>
-
-                      <td className="px-4 py-3.5 text-xs text-slate-600">
-                        {workflow.transaction_person}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
-                        {getStorageLabel(workflow)}
+                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600">
+                        <div className="space-y-1.5">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                              Transaction Person
+                            </p>
+                            <p className="mt-0.5 font-medium text-slate-800">
+                              {workflow.transaction_person || '—'}
+                            </p>
+                          </div>
+                          <div className="border-t border-slate-100 pt-1.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                              Storage
+                            </p>
+                            <p className="mt-0.5">{getStorageLabel(workflow)}</p>
+                          </div>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3.5">
-                        <UrgencyBadge urgency={workflow.urgency} />
+                        <UrgencyBadge urgency={workflow.urgency || document?.urgency} />
                       </td>
 
-                      <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
-                        {formatDate(workflow.forwarding_date)}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
-                        <span className="inline-flex items-center gap-1.5">
-                          <Clock size={13} />
-                          {formatTime(workflow.forwarding_time)}
-                        </span>
-                      </td>
-
-                      <td className="px-4 py-3.5 text-xs text-slate-600">
-                        {profiles[workflow.forwarded_by] || recordedByName}
+                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600">
+                        <div className="space-y-1">
+                          <p className="font-medium text-slate-800">
+                            {formatDate(workflow.forwarding_date)}
+                          </p>
+                          <p className="inline-flex items-center gap-1.5 text-slate-500">
+                            <Clock size={12} />
+                            {formatTime(workflow.forwarding_time)}
+                          </p>
+                          <p className="text-[10px] text-slate-500">
+                            Forwarded by: <span className="font-semibold text-slate-700">{profiles[workflow.forwarded_by] || recordedByName || 'Account name unavailable'}</span>
+                          </p>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3.5">
@@ -1049,6 +1245,12 @@ export default function ForwardingRecords() {
                           )}
                           {displayStatus(workflow.workflow_status)}
                         </span>
+                        {workflow.board_room_received_at && (
+                          <div className="mt-2 min-w-[150px] space-y-1 text-[10px] text-slate-500">
+                            <p>Receipt confirmed by: {workflow.board_room_received_by ? (profiles[workflow.board_room_received_by] || workflow.board_room_received_by) : '—'}</p>
+                            <p>At: {formatDateTime(workflow.board_room_received_at)}</p>
+                          </div>
+                        )}
                       </td>
 
                       {/* Return remarks, pickup person, urgency and storage. */}
@@ -1077,8 +1279,35 @@ export default function ForwardingRecords() {
                               </p>
                             )}
 
+                            {workflow.returned_to_origin_by && (
+                              <p className="text-[10px] text-slate-500">
+                                Processed by: {profiles[workflow.returned_to_origin_by] || workflow.returned_to_origin_by}
+                              </p>
+                            )}
+                            {workflow.returned_to_origin_at && (
+                              <p className="text-[10px] text-slate-500">
+                                Returned at: {formatDateTime(workflow.returned_to_origin_at)}
+                              </p>
+                            )}
+
+                            {workflow.origin_office_received_by && (
+                              <p className="text-[10px] text-slate-600">
+                                Receipt confirmed by:{' '}
+                                <span className="font-semibold text-slate-800">
+                                  {profiles[workflow.origin_office_received_by] ||
+                                    workflow.origin_office_received_by}
+                                </span>
+                              </p>
+                            )}
+
+                            {workflow.origin_office_received_at && (
+                              <p className="text-[10px] text-slate-500">
+                                Confirmed at: {formatDateTime(workflow.origin_office_received_at)}
+                              </p>
+                            )}
+
                             <div className="flex flex-wrap gap-1.5 pt-1">
-                              <UrgencyBadge urgency={workflow.urgency} />
+                              <UrgencyBadge urgency={workflow.urgency || document?.urgency} />
                               <StorageBadge workflow={workflow} />
                             </div>
                           </div>
@@ -1168,6 +1397,44 @@ export default function ForwardingRecords() {
         </div>
       </section>
 
+      {/* View full details for an urgent paper that has not entered forwarding yet. */}
+      {viewingUrgentDocument && (
+        <div className="fixed inset-0 z-[75] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="urgent-document-title" className="my-auto max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-200 bg-white px-6 py-5">
+              <div>
+                <h3 id="urgent-document-title" className="text-lg font-bold text-slate-900">Urgent Document Details</h3>
+                <p className="mt-1 text-sm text-slate-500">{viewingUrgentDocument.reference_number || 'Document'}</p>
+              </div>
+              <button type="button" onClick={() => setViewingUrgentDocument(null)} aria-label="Close document details" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={19} /></button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 p-6 sm:grid-cols-2">
+              {[
+                ['PresOffice No.', viewingUrgentDocument.reference_number],
+                ['System Code / Subject', viewingUrgentDocument.content || viewingUrgentDocument.subject],
+                ['Record Type', viewingUrgentDocument.record_type],
+                ['Sender', viewingUrgentDocument.sender],
+                ['Bearer', viewingUrgentDocument.bearer],
+                ['Origin Office', viewingUrgentDocument.origin_office],
+                ['Current Office', viewingUrgentDocument.current_office],
+                ['Destination Folder', viewingUrgentDocument.destination_folder],
+                ['Date Received', viewingUrgentDocument.date_received ? formatDate(viewingUrgentDocument.date_received) : null],
+                ['Urgency', viewingUrgentDocument.urgency],
+                ['Status', viewingUrgentDocument.status],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || '—'}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end border-t border-slate-200 p-5">
+              <button type="button" onClick={() => setViewingUrgentDocument(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* View a forwarding document and its audit history. */}
       {viewingWorkflow && (
         <div className="fixed inset-0 z-[75] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
@@ -1210,9 +1477,18 @@ export default function ForwardingRecords() {
                   ['Date Received', viewingWorkflow.document?.date_received ? formatDate(viewingWorkflow.document.date_received) : null],
                   ['Transaction Person', viewingWorkflow.workflow.transaction_person],
                   ['Storage', getStorageLabel(viewingWorkflow.workflow)],
-                  ['Urgency', displayStatus(viewingWorkflow.workflow.urgency)],
+                  ['Urgency', displayStatus(String(viewingWorkflow.document?.urgency ?? viewingWorkflow.workflow.urgency ?? 'not_urgent'))],
                   ['Forwarding Date', formatDate(viewingWorkflow.workflow.forwarding_date)],
-                  ['Forwarding Time', formatTime(viewingWorkflow.workflow.forwarding_time)],
+                  ['Forwarding Time (Entered)', formatTime(viewingWorkflow.workflow.forwarding_time)],
+                  ['Forwarding Recorded At', viewingWorkflow.workflow.forwarded_at ? formatDateTime(viewingWorkflow.workflow.forwarded_at) : null],
+                  ['Forwarded By', profiles[viewingWorkflow.workflow.forwarded_by] || viewingWorkflow.recordedByName],
+                  ['Board Room Receipt Confirmed By', viewingWorkflow.workflow.board_room_received_by ? (profiles[viewingWorkflow.workflow.board_room_received_by] || viewingWorkflow.workflow.board_room_received_by) : null],
+                  ['Board Room Receipt Confirmed At', viewingWorkflow.workflow.board_room_received_at ? formatDateTime(viewingWorkflow.workflow.board_room_received_at) : null],
+                  ['Return Processed By', viewingWorkflow.workflow.returned_to_origin_by ? (profiles[viewingWorkflow.workflow.returned_to_origin_by] || viewingWorkflow.workflow.returned_to_origin_by) : null],
+                  ['Return Processed At', viewingWorkflow.workflow.returned_to_origin_at ? formatDateTime(viewingWorkflow.workflow.returned_to_origin_at) : null],
+                  ['Origin Office Receipt Confirmed By', viewingWorkflow.workflow.origin_office_received_by ? (profiles[viewingWorkflow.workflow.origin_office_received_by] || viewingWorkflow.workflow.origin_office_received_by) : null],
+                  ['Origin Office Receipt Confirmed At', viewingWorkflow.workflow.origin_office_received_at ? formatDateTime(viewingWorkflow.workflow.origin_office_received_at) : null],
+                  ['Release Forwarded By', viewingWorkflow.workflow.release_forwarded_by ? (profiles[viewingWorkflow.workflow.release_forwarded_by] || viewingWorkflow.workflow.release_forwarded_by) : null],
                   ['Recorded By', profiles[viewingWorkflow.workflow.forwarded_by] || viewingWorkflow.recordedByName],
                   ['Workflow Status', displayStatus(viewingWorkflow.workflow.workflow_status)],
                   ['Returned To Origin Person', viewingWorkflow.workflow.returned_to_origin_person],
@@ -1498,6 +1774,36 @@ export default function ForwardingRecords() {
                   {releaseStaff ? `Selected: ${releaseStaff}` : 'Open the dropdown to search and select any staff member.'}
                 </p>
               </div>
+
+              <fieldset>
+                <legend className="text-xs font-semibold text-slate-600">Urgency *</legend>
+                <div className="mt-2 flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="release-urgency"
+                      checked={releaseUrgency === 'urgent'}
+                      onChange={() => setReleaseUrgency('urgent')}
+                      className="accent-red-600"
+                    />
+                    <AlertTriangle size={15} className="text-red-600" />
+                    Urgent
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="release-urgency"
+                      checked={releaseUrgency === 'not_urgent'}
+                      onChange={() => setReleaseUrgency('not_urgent')}
+                      className="accent-blue-700"
+                    />
+                    Not Urgent
+                  </label>
+                </div>
+                <div className="mt-2">
+                  <UrgencyBadge urgency={releaseUrgency} />
+                </div>
+              </fieldset>
 
               <div>
                 <label htmlFor="release-instruction" className="text-xs font-semibold text-slate-600">
@@ -1993,9 +2299,12 @@ export default function ForwardingRecords() {
                           />
 
                           <div className="min-w-0 flex-1">
-                            <p className="font-semibold text-blue-950">
-                              {document.reference_number || 'No reference number'}
-                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-semibold text-blue-950">
+                                {document.reference_number || 'No reference number'}
+                              </p>
+                              <UrgencyBadge urgency={document.urgency} />
+                            </div>
                             <p className="mt-1 break-words text-sm text-slate-800">
                               {document.content ||
                                 document.subject ||

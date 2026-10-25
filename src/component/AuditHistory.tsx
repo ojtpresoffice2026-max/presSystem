@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Clock, RefreshCw, History } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-
 type AuditLog = {
   id: number
   document_id: string
@@ -15,25 +14,19 @@ type AuditLog = {
   new_values: Record<string, unknown> | null
   created_at: string
 }
-
 type StaffProfile = {
   id: string
   full_name: string | null
 }
-
 type AuditHistoryProps = {
   documentId: string
 }
-
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '—'
-
   const date = new Date(value)
-
   if (Number.isNaN(date.getTime())) {
     return value
   }
-
   return new Intl.DateTimeFormat('en-PH', {
     timeZone: 'Asia/Manila',
     year: 'numeric',
@@ -45,10 +38,8 @@ function formatDateTime(value: string | null | undefined): string {
     hour12: true,
   }).format(date)
 }
-
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
 function collectUuids(
   value: unknown,
   found = new Set<string>(),
@@ -62,10 +53,8 @@ function collectUuids(
       collectUuids(item, found),
     )
   }
-
   return found
 }
-
 function formatValue(
   value: unknown,
   staffNames: Record<string, string>,
@@ -73,37 +62,29 @@ function formatValue(
   if (value === null || value === undefined || value === '') {
     return '—'
   }
-
   if (typeof value === 'string') {
     if (staffNames[value]) return staffNames[value]
-
     // Format ISO date-time strings in Philippine time using a 12-hour clock.
     // Only strings that look like full ISO timestamps are converted.
     const looksLikeIsoDateTime =
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(value)
-
     if (looksLikeIsoDateTime) {
       const formattedDateTime = formatDateTime(value)
       if (formattedDateTime !== value) return formattedDateTime
     }
-
     // Avoid displaying raw UUIDs when the profile cannot be resolved.
     if (UUID_PATTERN.test(value)) {
       return 'Staff member (name unavailable)'
     }
-
     return value
   }
-
   if (Array.isArray(value)) {
     return value
       .map(item => formatValue(item, staffNames))
       .join(', ')
   }
-
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
-
     return entries
       .map(
         ([key, item]) =>
@@ -111,18 +92,14 @@ function formatValue(
       )
       .join('; ')
   }
-
   return String(value)
 }
-
 function getChangedFields(
   previous: Record<string, unknown> | null,
   current: Record<string, unknown> | null,
 ) {
   if (!previous || !current) return []
-
   const ignoredFields = new Set(['updated_at', 'created_at'])
-
   return Object.keys(current)
     .filter(key => !ignoredFields.has(key))
     .filter(
@@ -134,7 +111,6 @@ function getChangedFields(
       after: current[key],
     }))
 }
-
 export default function AuditHistory({
   documentId,
 }: AuditHistoryProps) {
@@ -143,16 +119,13 @@ export default function AuditHistory({
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
-
   async function loadLogs(isRefresh = false) {
     if (isRefresh) {
       setRefreshing(true)
     } else {
       setLoading(true)
     }
-
     setError('')
-
     try {
       const { data, error: queryError } = await supabase
         .from('document_audit_logs')
@@ -171,35 +144,27 @@ export default function AuditHistory({
         `)
         .eq('document_id', documentId)
         .order('created_at', { ascending: false })
-
       if (queryError) throw queryError
-
       const loadedLogs = (data ?? []) as AuditLog[]
       setLogs(loadedLogs)
-
       // Resolve UUIDs in historical before/after values to profile names.
       const ids = new Set<string>()
-
       loadedLogs.forEach(log => {
         collectUuids(log.previous_values, ids)
         collectUuids(log.new_values, ids)
       })
-
       if (ids.size > 0) {
         const { data: profiles, error: profileError } = await supabase
           .from('profiles')
           .select('id, full_name')
           .in('id', Array.from(ids))
-
         if (!profileError && profiles) {
           const resolved: Record<string, string> = {}
-
           ;(profiles as StaffProfile[]).forEach(profile => {
             if (profile.id && profile.full_name?.trim()) {
               resolved[profile.id] = profile.full_name.trim()
             }
           })
-
           setStaffNames(previous => ({
             ...previous,
             ...resolved,
@@ -217,12 +182,9 @@ export default function AuditHistory({
       setRefreshing(false)
     }
   }
-
   useEffect(() => {
     if (!documentId) return
-
     void loadLogs()
-
     const channel = supabase
       .channel(`audit-history-${documentId}`)
       .on(
@@ -238,12 +200,10 @@ export default function AuditHistory({
         },
       )
       .subscribe()
-
     return () => {
       void supabase.removeChannel(channel)
     }
   }, [documentId])
-
   return (
     <section className="mt-5 rounded-xl border border-slate-200 bg-white">
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -252,12 +212,10 @@ export default function AuditHistory({
             <History size={16} />
             Edit History / Audit Log
           </h3>
-
           <p className="mt-1 text-xs text-slate-500">
             Recorded document changes
           </p>
         </div>
-
         <button
           type="button"
           onClick={() => void loadLogs(true)}
@@ -271,40 +229,33 @@ export default function AuditHistory({
           Refresh
         </button>
       </div>
-
       <div className="space-y-3 p-4">
         {loading && (
           <p className="text-sm text-slate-500">
             Loading audit history...
           </p>
         )}
-
         {!loading && error && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
             {error}
           </div>
         )}
-
         {!loading && !error && logs.length === 0 && (
           <div className="rounded-lg border border-dashed border-slate-300 p-5 text-center">
             <History size={22} className="mx-auto mb-2 text-slate-400" />
-
             <p className="text-sm font-medium text-slate-700">
               No history yet
             </p>
-
             <p className="mt-1 text-xs text-slate-500">
               Changes recorded after audit logging was enabled will appear here.
             </p>
           </div>
         )}
-
         {logs.map(log => {
           const changes = getChangedFields(
             log.previous_values,
             log.new_values,
           )
-
           return (
             <article
               key={log.id}
@@ -314,12 +265,10 @@ export default function AuditHistory({
                 <div>
                   <p className="text-sm font-semibold text-slate-800">
                     {log.performed_by_name || 'Unknown User'}
-
                     <span className="font-normal text-slate-500">
                       {' '}· {log.action_type}
                     </span>
                   </p>
-
                   <p className="mt-1 text-xs text-slate-500">
                     {log.module_name}
                     {log.performed_by_role
@@ -327,13 +276,11 @@ export default function AuditHistory({
                       : ''}
                   </p>
                 </div>
-
                 <p className="flex items-center gap-1 text-xs text-slate-500">
                   <Clock size={12} />
                   {formatDateTime(log.created_at)}
                 </p>
               </div>
-
               {changes.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {changes.map(change => (
@@ -344,11 +291,9 @@ export default function AuditHistory({
                       <p className="text-xs font-semibold capitalize text-slate-700">
                         {change.field}
                       </p>
-
                       <p className="mt-1 break-words text-xs text-red-700">
                         Previous: {formatValue(change.before, staffNames)}
                       </p>
-
                       <p className="mt-1 break-words text-xs text-emerald-700">
                         Saved: {formatValue(change.after, staffNames)}
                       </p>
@@ -356,7 +301,6 @@ export default function AuditHistory({
                   ))}
                 </div>
               )}
-
               {changes.length === 0 && (
                 <p className="mt-2 text-xs text-slate-500">
                   {log.action_type === 'INSERT'

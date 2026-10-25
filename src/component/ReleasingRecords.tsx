@@ -8,6 +8,12 @@ import {
   Send,
   FileText,
   CheckCircle2,
+  Clock,
+  Files,
+  ClipboardCheck,
+  RotateCcw,
+  AlertTriangle,
+  Bell,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -87,6 +93,7 @@ export default function ReleasingRecords() {
   const [nextActionMode, setNextActionMode] = useState<'view' | 'edit'>('view')
   const [auditLogs, setAuditLogs] = useState<Array<{ id: string; edited_by_name: string; edited_at: string; change_type: string; previous_values: Record<string, unknown> | null; new_values: Record<string, unknown> | null }>>([])
   const [viewerRole, setViewerRole] = useState<'admin' | 'staff' | null>(null)
+  const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
 
   const [sortField, setSortField] =
     useState<SortField>('release_date')
@@ -487,6 +494,26 @@ export default function ReleasingRecords() {
 
   useEffect(() => {
     void loadRecords()
+
+    // Refresh assignments periodically so urgent notifications update while the page stays open.
+    const refreshInterval = window.setInterval(() => {
+      void loadRecords()
+    }, 30000)
+
+    // Supabase realtime updates trigger an immediate refresh when workflow records change.
+    const channel = supabase
+      .channel('releasing-urgent-workflow-notifications')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'document_workflow' },
+        () => { void loadRecords() },
+      )
+      .subscribe()
+
+    return () => {
+      window.clearInterval(refreshInterval)
+      void supabase.removeChannel(channel)
+    }
   }, [])
 
   function handleSort(field: SortField) {
@@ -637,31 +664,151 @@ export default function ReleasingRecords() {
       : { label: 'Not Urgent', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
   }
 
+  const completedCount = records.filter(isReleaseCompleted).length
+  const awaitingReceiptCount = records.filter(record => !record.release_received_at).length
+  const receivedInProgressCount = records.filter(
+    record => Boolean(record.release_received_at) && !isReleaseCompleted(record),
+  ).length
+  const readyToReleaseCount = records.filter(
+    record => Boolean(record.release_received_at) && !isReleaseCompleted(record),
+  ).length
+  // Only active urgent assignments count as notifications; completed/forwarded workflows are excluded.
+  const urgentRecords = records.filter(
+    record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+  )
+  const urgentCount = urgentRecords.length
+
+  const summaryCards = [
+    { label: 'Total Assigned', value: records.length, icon: Files, color: 'text-blue-700', iconBg: 'bg-blue-50' },
+    { label: 'Awaiting Receipt', value: awaitingReceiptCount, icon: Clock, color: 'text-amber-700', iconBg: 'bg-amber-50' },
+    { label: 'Received / In Progress', value: receivedInProgressCount, icon: ClipboardCheck, color: 'text-blue-700', iconBg: 'bg-blue-50' },
+    { label: 'Ready to Release', value: readyToReleaseCount, icon: Send, color: 'text-emerald-700', iconBg: 'bg-emerald-50' },
+    { label: 'Urgent Documents', value: urgentCount, icon: RotateCcw, color: 'text-red-700', iconBg: 'bg-red-50' },
+    { label: 'Workflow Completed', value: completedCount, icon: CheckCircle2, color: 'text-emerald-700', iconBg: 'bg-emerald-50' },
+  ]
+
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
       {/* Page heading */}
-      <header>
-        <p className="text-xs font-medium text-slate-500">
-          Workspace / Document Management
-        </p>
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+            presSystem Management Portal
+          </p>
 
-        <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
-          Releasing Records
-        </h2>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
+            Releasing Documents
+          </h2>
 
-        <p className="mt-1 text-sm text-slate-500">
-          {viewerRole === 'admin'
-            ? 'View all documents forwarded by Origin Staff, including urgency and receipt confirmations.'
-            : 'View your assigned documents, confirm physical receipt, and check urgency.'}
-        </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {viewerRole === 'admin'
+              ? 'Review release assignments, confirm receipt, and track completed document workflows.'
+              : 'Confirm document receipt, manage release details, and track your assigned documents.'}
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => void loadRecords()}
+          disabled={loading}
+          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 hover:shadow disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
       </header>
 
+      {/* Urgent notification bell: count only active urgent assignments. */}
+      <div className="relative flex shrink-0 justify-end">
+        <button
+          type="button"
+          onClick={() => setUrgentNotificationsOpen(open => !open)}
+          aria-label={`Urgent notifications: ${urgentCount}`}
+          aria-expanded={urgentNotificationsOpen}
+          className="relative inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+        >
+          <Bell size={19} />
+          {urgentCount > 0 && (
+            <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white">
+              {urgentCount > 99 ? '99+' : urgentCount}
+            </span>
+          )}
+        </button>
+
+        {urgentNotificationsOpen && (
+          <div className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Urgent Documents</p>
+                <p className="mt-0.5 text-xs text-slate-500">Active assignments only</p>
+              </div>
+              <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">{urgentCount}</span>
+            </div>
+            {urgentRecords.length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-slate-500">No active urgent documents.</p>
+            ) : (
+              <div className="max-h-72 overflow-y-auto">
+                {urgentRecords.map(record => (
+                  <button
+                    key={record.id}
+                    type="button"
+                    onClick={() => {
+                      setUrgencyFilter('URGENT')
+                      setSearch(record.reference_number)
+                      setSelected(record)
+                      setUrgentNotificationsOpen(false)
+                    }}
+                    className="flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left transition last:border-b-0 hover:bg-red-50"
+                  >
+                    <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-600" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-slate-900">{record.reference_number}</span>
+                      <span className="mt-0.5 block truncate text-xs text-slate-500">{record.subject || 'No subject'}</span>
+                      <span className="mt-1 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">Urgent · Awaiting completion</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="border-t border-slate-100 p-3">
+              <button
+                type="button"
+                onClick={() => { setUrgencyFilter('URGENT'); setSearch(''); setUrgentNotificationsOpen(false) }}
+                className="w-full rounded-lg bg-red-700 px-3 py-2 text-xs font-bold text-white transition hover:bg-red-800"
+              >
+                View Active Urgent Documents
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Workflow summary cards */}
+      <section className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        {summaryCards.map(({ label, value, icon: Icon, color, iconBg }) => (
+          <article
+            key={label}
+            className="group flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-md"
+          >
+            <div className="min-w-0">
+              <p className="text-[10px] leading-4 text-slate-500">{label}</p>
+              <p className="mt-1 text-xl font-bold tabular-nums text-slate-900">
+                {loading ? '—' : value}
+              </p>
+            </div>
+            <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 group-hover:scale-110 ${iconBg} ${color}`}>
+              <Icon size={18} />
+            </div>
+          </article>
+        ))}
+      </section>
+
       {/* Main table panel */}
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         {/* Table title and controls */}
-        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-50 text-red-700">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
               <Send size={20} />
             </div>
 
@@ -690,7 +837,7 @@ export default function ReleasingRecords() {
                 onChange={event => setSearch(event.target.value)}
                 placeholder="Search records..."
                 aria-label="Search releasing records"
-                className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-red-500 focus:ring-2 focus:ring-red-100"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               />
             </div>
 
@@ -698,7 +845,7 @@ export default function ReleasingRecords() {
               value={releaseStatusFilter}
               onChange={event => setReleaseStatusFilter(event.target.value)}
               aria-label="Filter by release status"
-              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100 sm:w-44"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-44"
             >
               <option value="ALL">All Release Statuses</option>
               <option value="AWAITING_RECEIPT">Awaiting Receipt</option>
@@ -710,7 +857,7 @@ export default function ReleasingRecords() {
               value={urgencyFilter}
               onChange={event => setUrgencyFilter(event.target.value)}
               aria-label="Filter by urgency"
-              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100 sm:w-36"
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-36"
             >
               <option value="ALL">All Urgency</option>
               <option value="URGENT">Urgent</option>
@@ -729,17 +876,6 @@ export default function ReleasingRecords() {
               Clear Filters
             </button>
 
-            <button
-              type="button"
-              onClick={() => void loadRecords()}
-              disabled={loading}
-              aria-label="Refresh releasing records"
-              title="Refresh records"
-              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-              <span className="hidden sm:inline">Refresh</span>
-            </button>
           </div>
         </div>
 
@@ -773,9 +909,9 @@ export default function ReleasingRecords() {
         )}
 
         {/* Data table */}
-        <div className="overflow-x-auto">
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
           <table className="w-full min-w-[1650px] border-collapse text-left">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-slate-50">
               <tr className="border-b border-slate-200 bg-slate-50">
                 {tableColumns.map(column => (
                   <th
@@ -785,13 +921,13 @@ export default function ReleasingRecords() {
                     <button
                       type="button"
                       onClick={() => handleSort(column.field)}
-                      className="inline-flex items-center gap-1.5 transition hover:text-red-700"
+                      className="inline-flex items-center gap-1.5 transition hover:text-blue-700"
                       aria-label={`Sort by ${column.label}`}
                     >
                       {column.label}
 
                       {sortField === column.field ? (
-                        <span className="font-bold text-red-700">
+                        <span className="font-bold text-blue-700">
                           {sortDirection === 'asc' ? '↑' : '↓'}
                         </span>
                       ) : (
@@ -861,13 +997,13 @@ export default function ReleasingRecords() {
                 filteredRecords.map(record => (
                   <tr
                     key={record.id}
-                    className="transition-colors hover:bg-slate-50"
+                    className="transition-colors duration-150 hover:bg-blue-50/60"
                   >
-                    <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-800">
                       {record.reference_number || '—'}
                     </td>
 
-                    <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
+                    <td className="max-w-[220px] px-4 py-3 text-xs text-slate-700">
                       <span
                         className="block truncate"
                         title={record.subject || ''}
@@ -876,7 +1012,7 @@ export default function ReleasingRecords() {
                       </span>
                     </td>
 
-                    <td className="whitespace-nowrap px-4 py-3.5 text-xs">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs">
                       {(() => {
                         const badge = urgencyBadge(record.urgency)
                         return (
@@ -887,23 +1023,23 @@ export default function ReleasingRecords() {
                       })()}
                     </td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">
+                    <td className="px-4 py-3 text-xs text-slate-600">
                       {record.destination_office || '—'}
                     </td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.releasing_staff || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{record.releasing_staff || '—'}</td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_office_to_forward || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{record.next_action_office_to_forward || '—'}</td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_release_to || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{record.next_action_release_to || '—'}</td>
 
-                    <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">{record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600">{record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</td>
 
-                    <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">{record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600">{record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">{record.next_action_recorded_by_name || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{record.next_action_recorded_by_name || '—'}</td>
 
-                    <td className="min-w-[210px] px-4 py-3.5 text-xs text-slate-600">
+                    <td className="min-w-[210px] px-4 py-3 text-xs text-slate-600">
                       <span className="font-semibold">{isReleaseCompleted(record) ? 'Forwarded' : (record.next_action_system_status || 'Not Forwarded')}</span>
                       <span className="mt-1 block text-[10px] text-slate-500">Date Forwarded: {record.next_action_date_forwarded || record.next_action_release_at ? formatDateTime(record.next_action_date_forwarded || record.next_action_release_at) : '—'}</span>
                     </td>
@@ -940,7 +1076,7 @@ export default function ReleasingRecords() {
                             setNextActionReleaseTo(record.next_action_release_to || '')
                             
                           }}
-                          className="inline-flex items-center gap-1.5 rounded-md bg-red-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-red-800"
+                          className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-800"
                         >
                           <Send size={13} /> {record.next_action_release_at ? 'Continue Release' : 'Complete Release'}
                         </button>
@@ -1046,7 +1182,7 @@ export default function ReleasingRecords() {
                 ))}
               </dl>
 
-              <section className="mt-6 rounded-xl border border-red-100 bg-red-50/40 p-4">
+              <section className="mt-6 rounded-xl border border-blue-100 bg-blue-50/40 p-4">
                 <h4 className="text-sm font-bold text-slate-900">
                   Physical Receipt Confirmation
                 </h4>
@@ -1105,7 +1241,7 @@ export default function ReleasingRecords() {
           <section role="dialog" aria-modal="true" aria-labelledby="release-panel-title" className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl" onClick={event => event.stopPropagation()}>
             <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
               <div>
-                <p className="text-xs font-medium text-red-700">Document Workflow</p>
+                <p className="text-xs font-medium text-blue-700">Document Workflow</p>
                 <h3 id="release-panel-title" className="mt-1 text-xl font-bold text-slate-900">Release Panel · {releasePanelRecord.reference_number}</h3>
                 <p className="mt-1 text-xs text-slate-500">Record the next destination and release status. Physical receipt must be confirmed first.</p>
               </div>
@@ -1116,11 +1252,11 @@ export default function ReleasingRecords() {
                 <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Subject</p><p className="mt-1 text-sm text-slate-800">{releasePanelRecord.subject || '—'}</p></div>
                 <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Physical Receipt</p><p className="mt-1 text-sm font-semibold">{releasePanelRecord.release_received_at ? `Confirmed · ${formatDateTime(releasePanelRecord.release_received_at)}` : 'Awaiting confirmation'}</p></div>
               </div>
-              <div className="rounded-xl border border-red-100 bg-red-50/40 p-4">
+              <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
                 <h4 className="text-sm font-bold text-slate-900">Release Details</h4>
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <label className="text-xs font-semibold text-slate-600">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100" /></label>
-                  <label className="text-xs font-semibold text-slate-600">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100" /></label>
+                  <label className="text-xs font-semibold text-slate-600">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
+                  <label className="text-xs font-semibold text-slate-600">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
                   <div className="text-xs font-semibold text-slate-600">Date Release<p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_release_at ? formatDate(releasePanelRecord.next_action_release_at) : 'Recorded automatically when saved'}</p></div>
                   <div className="text-xs font-semibold text-slate-600">Time Release<p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_release_at ? formatReleaseTime(releasePanelRecord.next_action_release_at) : 'Recorded automatically when saved'}</p></div>
                   <div className="text-xs font-semibold text-slate-600">Action Done in Unified System
@@ -1132,11 +1268,11 @@ export default function ReleasingRecords() {
                 </div>
                 {releasePanelRecord.next_action_recorded_by && <p className="mt-3 text-xs text-slate-500">Released by: {releasePanelRecord.next_action_recorded_by_name || 'Name unavailable'}</p>}
                 {!releasePanelRecord.release_received_at && <p className="mt-3 text-xs text-amber-700">Confirm physical receipt before releasing this document.</p>}
-                {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{actionError}</p>}
+                {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-blue-700">{actionError}</p>}
                 {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">{actionSuccess}</p>}
                 {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')})</p>}</div>)}</div></div>}
                 <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-red-100 pt-4">
-                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => setNextActionMode('edit')} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50">{savingNextAction ? 'Processing…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
+                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => setNextActionMode('edit')} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Processing…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
                   <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close Panel</button>
                 </div>
               </div>

@@ -38,9 +38,10 @@ export default function Login() {
         throw new Error('Unable to establish a session.')
       }
 
+      // Retrieve the account role and account name.
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, full_name')
         .eq('id', data.user.id)
         .maybeSingle()
 
@@ -61,6 +62,14 @@ export default function Login() {
           'Your account has no authorized presSystem role. Contact your administrator.',
         )
       }
+
+      // Prepare a personalized welcome message.
+      const accountName = profile?.full_name?.trim() || 'there'
+
+      sessionStorage.setItem(
+        'loginWelcome',
+        `Welcome, ${accountName}! Have a good day.`,
+      )
 
       // Both administrators and staff use the shared dashboard.
       navigate('/dashboard', { replace: true })

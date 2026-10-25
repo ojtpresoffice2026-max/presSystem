@@ -62,7 +62,7 @@ function isValidRole(
 
 function LoadingScreen() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50">
+    <div className="flex h-screen items-center justify-center overflow-hidden bg-slate-50">
       <div className="text-center">
         <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-blue-200 border-t-blue-700" />
         <p className="mt-4 text-sm font-medium text-slate-600">
@@ -75,7 +75,7 @@ function LoadingScreen() {
 
 function UnauthorizedScreen() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+    <div className="flex h-screen items-center justify-center overflow-hidden bg-slate-50 p-6">
       <div className="max-w-md rounded-xl border border-red-200 bg-white p-6 text-center shadow-sm">
         <h2 className="text-lg font-bold text-slate-900">
           Access not authorized
@@ -137,7 +137,11 @@ function AdminOnly({ children }: { children: ReactNode }) {
 }
 
 // Both admin and staff can access operational modules and My Profile.
-function OperationalAccess({ children }: { children: ReactNode }) {
+function OperationalAccess({
+  children,
+}: {
+  children: ReactNode
+}) {
   const { session, role, loading } = useAuth()
 
   if (loading) return <LoadingScreen />
@@ -245,7 +249,7 @@ function HeaderProfileButton() {
     profile?.full_name?.trim().charAt(0).toUpperCase() || ''
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex shrink-0 items-center gap-3">
       <div className="hidden text-right sm:block">
         <p className="max-w-40 truncate text-sm font-semibold text-slate-800">
           {profile?.full_name || 'My Account'}
@@ -280,7 +284,7 @@ function HeaderProfileButton() {
   )
 }
 
-// Shared sidebar and application layout.
+// Shared sidebar and fixed application layout.
 function DashboardLayout() {
   const { role } = useAuth()
 
@@ -351,11 +355,11 @@ function DashboardLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 md:flex">
-      {/* Sidebar */}
-      <aside className="relative flex w-full flex-col overflow-hidden bg-[#172554] p-5 text-white md:min-h-screen md:w-64">
+    <div className="flex h-screen w-full overflow-hidden bg-slate-50 text-slate-800">
+      {/* Fixed-width sidebar */}
+      <aside className="relative flex h-full w-64 shrink-0 flex-col overflow-x-hidden overflow-y-auto bg-[#172554] p-5 text-white">
         {/* Logo and application name */}
-        <div className="relative z-10 mb-10 flex items-center gap-3">
+        <div className="relative z-10 mb-10 flex shrink-0 items-center gap-3">
           <div className="relative h-12 w-12 shrink-0 rounded-xl border border-white/20 bg-white p-1">
             <img
               src="/logo.jpg"
@@ -364,7 +368,7 @@ function DashboardLayout() {
             />
           </div>
 
-          <div>
+          <div className="min-w-0">
             <h1 className="text-lg font-bold">presSystem</h1>
             <p className="text-xs text-blue-200">
               Management Portal
@@ -373,7 +377,7 @@ function DashboardLayout() {
         </div>
 
         {/* Navigation */}
-        <div className="relative z-10">
+        <div className="relative z-10 shrink-0">
           <p className="mb-3 text-xs tracking-widest text-blue-200">
             MAIN MENU
           </p>
@@ -392,7 +396,7 @@ function DashboardLayout() {
                   }`
                 }
               >
-                <Icon size={19} />
+                <Icon size={19} className="shrink-0" />
                 <span>{label}</span>
               </NavLink>
             ))}
@@ -400,7 +404,7 @@ function DashboardLayout() {
         </div>
 
         {/* Sign out */}
-        <div className="relative z-10 mt-8 border-t border-white/15 pt-5 md:mt-auto">
+        <div className="relative z-10 mt-auto shrink-0 border-t border-white/15 pt-5">
           <button
             type="button"
             onClick={() => void handleLogout()}
@@ -412,10 +416,11 @@ function DashboardLayout() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="min-w-0 flex-1">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4 md:px-8">
-          <div>
+      {/* Main application area */}
+      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Fixed header */}
+        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4 md:px-8">
+          <div className="min-w-0">
             <p className="text-sm text-slate-500">
               presSystem / Workspace
             </p>
@@ -427,7 +432,7 @@ function DashboardLayout() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="ml-4 flex shrink-0 items-center gap-3">
             <button
               type="button"
               aria-label="Notifications"
@@ -441,7 +446,8 @@ function DashboardLayout() {
           </div>
         </header>
 
-        <div className="p-5 md:p-8">
+        {/* Page viewport: no overall page scrolling */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4 md:p-6">
           <Outlet />
         </div>
       </main>

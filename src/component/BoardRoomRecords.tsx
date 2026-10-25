@@ -1,4 +1,3 @@
-
 import {
   useCallback,
   useEffect,
@@ -8,6 +7,7 @@ import {
 } from 'react'
 import {
   AlertCircle,
+  Bell,
   Check,
   CheckCircle2,
   FileText,
@@ -15,8 +15,6 @@ import {
   RefreshCw,
   Search,
   Send,
-  ShoppingCart,
-  Trash2,
   X,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
@@ -142,6 +140,23 @@ function formatTime(value: string | null | undefined) {
   })
 }
 
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '—'
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  return date.toLocaleString('en-PH', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Manila',
+  })
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message
 
@@ -167,43 +182,15 @@ function getManilaDate() {
   return `${values.year}-${values.month}-${values.day}`
 }
 
-
 function getStorageLabel(workflow: WorkflowRecord) {
   return workflow.storage_type === 'folder'
     ? `Folder — ${workflow.folder_color || 'Not specified'}`
     : `Box — ${workflow.box_number || 'Not specified'}`
 }
 
-function StorageUrgency({
-  workflow,
-}: {
-  workflow: WorkflowRecord
-}) {
-  return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
-        Brought by: {workflow.transaction_person || 'Not specified'}
-      </span>
-
-      <span className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
-        {getStorageLabel(workflow)}
-      </span>
-
-      <span
-        className={`rounded-md px-2 py-1 text-xs font-semibold ${
-          workflow.urgency === 'urgent'
-            ? 'bg-red-100 text-red-700'
-            : 'bg-slate-100 text-slate-600'
-        }`}
-      >
-        {workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
-      </span>
-    </div>
-  )
-}
-
 export default function BoardRoomRecords() {
   const [records, setRecords] = useState<DisplayRecord[]>([])
+  const [accountNames, setAccountNames] = useState<Record<string, string>>({})
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [viewDetailsOpen, setViewDetailsOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -214,6 +201,8 @@ export default function BoardRoomRecords() {
   const [processing, setProcessing] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
+  const [latestUrgentWorkflowId, setLatestUrgentWorkflowId] = useState<string | null>(null)
 
   // Selected documents for a single return transaction.
   const [cart, setCart] = useState<CartItem[]>([])
@@ -226,11 +215,13 @@ export default function BoardRoomRecords() {
   const [returnDate, setReturnDate] = useState(getManilaDate)
   const [returnTime, setReturnTime] = useState('')
 
-  // Shared storage and urgency settings applied to every document in the return cart.
-  const [returnStorageType, setReturnStorageType] = useState<'folder' | 'box'>('folder')
+  // Shared storage and urgency settings.
+  const [returnStorageType, setReturnStorageType] =
+    useState<'folder' | 'box'>('folder')
   const [returnFolderColor, setReturnFolderColor] = useState('')
   const [returnBoxNumber, setReturnBoxNumber] = useState('')
-  const [returnUrgency, setReturnUrgency] = useState<'urgent' | 'not_urgent'>('not_urgent')
+  const [returnUrgency, setReturnUrgency] =
+    useState<'urgent' | 'not_urgent'>('not_urgent')
 
   const loadRecords = useCallback(async () => {
     setLoading(true)
@@ -245,6 +236,37 @@ export default function BoardRoomRecords() {
       if (workflowError) throw workflowError
 
       const workflowRows = (workflows ?? []) as WorkflowRecord[]
+
+      // Resolve the accounts that forwarded, confirmed receipt, or processed returns.
+      const accountIds = [
+        ...new Set(
+          workflowRows.flatMap(workflow =>
+            [
+              workflow.forwarded_by,
+              workflow.board_room_received_by,
+              workflow.returned_to_origin_by,
+            ].filter((id): id is string => Boolean(id)),
+          ),
+        ),
+      ]
+
+      if (accountIds.length > 0) {
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', accountIds)
+
+        if (profilesError) throw profilesError
+
+        const names: Record<string, string> = {}
+        for (const profile of profiles ?? []) {
+          names[profile.id] = profile.full_name?.trim() || 'Unknown account'
+        }
+        setAccountNames(names)
+      } else {
+        setAccountNames({})
+      }
+
       const receivingIds = [
         ...new Set(workflowRows.map(row => row.receiving_record_id)),
       ]
@@ -303,6 +325,33 @@ export default function BoardRoomRecords() {
 
   useEffect(() => {
     void loadRecords()
+  }, [loadRecords])
+
+  // Listen for newly forwarded urgent papers so the Board Room updates without
+  // requiring staff to press Refresh.
+  useEffect(() => {
+    const channel = supabase
+      .channel('board-room-urgent-forwarding-notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'document_workflow',
+        },
+        payload => {
+          const row = payload.new as Partial<WorkflowRecord>
+          if (row.urgency === 'urgent' && row.id) {
+            setLatestUrgentWorkflowId(row.id)
+          }
+          void loadRecords()
+        },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
   }, [loadRecords])
 
   const filteredRecords = useMemo(() => {
@@ -411,6 +460,20 @@ export default function BoardRoomRecords() {
       ).length,
     }),
     [records],
+  )
+
+  const urgentIncomingRecords = useMemo(
+    () =>
+      records.filter(
+        row =>
+          row.workflow.urgency === 'urgent' &&
+          row.workflow.workflow_status === 'forwarded',
+      ),
+    [records],
+  )
+
+  const latestUrgentRecord = records.find(
+    row => row.workflow.id === latestUrgentWorkflowId,
   )
 
   async function receiveDocument(workflowId: string) {
@@ -563,8 +626,10 @@ export default function BoardRoomRecords() {
           p_return_date: returnDate,
           p_return_time: returnTime,
           p_storage_type: returnStorageType,
-          p_folder_color: returnStorageType === 'folder' ? returnFolderColor.trim() : null,
-          p_box_number: returnStorageType === 'box' ? returnBoxNumber.trim() : null,
+          p_folder_color:
+            returnStorageType === 'folder' ? returnFolderColor.trim() : null,
+          p_box_number:
+            returnStorageType === 'box' ? returnBoxNumber.trim() : null,
           p_urgency: returnUrgency,
         },
       )
@@ -596,11 +661,10 @@ export default function BoardRoomRecords() {
       setProcessing(false)
     }
   }
-
-  return (
-    <div className="min-h-screen space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
+    return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden bg-slate-50 p-4 sm:p-6 lg:p-8">
       {/* Page heading */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+      <div className="flex shrink-0 flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-semibold uppercase tracking-wider text-green-700">
             presSystem Management Portal
@@ -614,6 +678,59 @@ export default function BoardRoomRecords() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUrgentNotificationsOpen(open => !open)}
+              aria-label={`Urgent incoming papers: ${urgentIncomingRecords.length}`}
+              aria-expanded={urgentNotificationsOpen}
+              className="relative inline-flex h-10 w-10 items-center justify-center rounded-lg border border-red-200 bg-white text-red-700 shadow-sm hover:bg-red-50"
+            >
+              <Bell size={19} />
+              {urgentIncomingRecords.length > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold text-white ring-2 ring-white">
+                  {urgentIncomingRecords.length > 99 ? '99+' : urgentIncomingRecords.length}
+                </span>
+              )}
+            </button>
+            {urgentNotificationsOpen && (
+              <div className="absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-red-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <div>
+                    <h3 className="font-bold text-slate-900">Urgent Incoming Papers</h3>
+                    <p className="text-xs text-slate-500">{urgentIncomingRecords.length} awaiting Board Room receipt</p>
+                  </div>
+                  <button type="button" onClick={() => setUrgentNotificationsOpen(false)} aria-label="Close urgent notifications" className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100">
+                    <X size={16} />
+                  </button>
+                </div>
+                {urgentIncomingRecords.length === 0 ? (
+                  <div className="px-4 py-7 text-center text-sm text-slate-500">No urgent papers are waiting for receipt.</div>
+                ) : (
+                  <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
+                    {urgentIncomingRecords.map(({ workflow, document }) => (
+                      <button
+                        type="button"
+                        key={workflow.id}
+                        onClick={() => {
+                          setSelectedId(workflow.id)
+                          setUrgentNotificationsOpen(false)
+                        }}
+                        className="block w-full px-4 py-3 text-left hover:bg-red-50"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="break-words text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</span>
+                          <span className="shrink-0 rounded-full bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700">URGENT</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={openCart}
@@ -642,11 +759,27 @@ export default function BoardRoomRecords() {
         </div>
       </div>
 
+      {latestUrgentRecord && (
+        <div role="alert" className="flex shrink-0 items-start gap-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900">
+          <AlertCircle size={20} className="mt-0.5 shrink-0 text-red-700" />
+          <div className="min-w-0 flex-1">
+            <p className="font-bold">Urgent paper forwarded to the Board Room</p>
+            <p className="mt-1 break-words">
+              {latestUrgentRecord.document?.reference_number || 'No reference number'} — {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
+            </p>
+            <p className="mt-1 text-xs text-red-700">Please prioritize this paper and confirm receipt.</p>
+          </div>
+          <button type="button" onClick={() => setLatestUrgentWorkflowId(null)} aria-label="Dismiss urgent paper notification" className="rounded p-1 text-red-700 hover:bg-red-100">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       {/* Alerts */}
       {error && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+          className="flex shrink-0 items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"
         >
           <AlertCircle size={19} className="mt-0.5 shrink-0" />
           <span className="min-w-0 flex-1 break-words">{error}</span>
@@ -663,7 +796,7 @@ export default function BoardRoomRecords() {
       {success && (
         <div
           role="status"
-          className="flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800"
+          className="flex shrink-0 items-start gap-3 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800"
         >
           <CheckCircle2 size={19} className="shrink-0" />
           <span className="flex-1">{success}</span>
@@ -678,7 +811,7 @@ export default function BoardRoomRecords() {
       )}
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-6">
+      <div className="grid shrink-0 grid-cols-2 gap-3 xl:grid-cols-6">
         {[
           { label: 'Total forwarded', value: counts.total },
           { label: 'Awaiting receipt', value: counts.awaiting },
@@ -702,8 +835,8 @@ export default function BoardRoomRecords() {
       </div>
 
       {/* Document list */}
-      <div className="grid grid-cols-1 gap-6">
-        <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-4 sm:p-5">
             <h2 className="text-lg font-bold text-slate-900">
               Forwarded Documents
@@ -744,7 +877,7 @@ export default function BoardRoomRecords() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
             {loading ? (
               <div className="flex items-center justify-center gap-2 p-12 text-sm text-slate-500">
                 <LoaderCircle size={19} className="animate-spin" />
@@ -753,75 +886,226 @@ export default function BoardRoomRecords() {
             ) : filteredRecords.length === 0 ? (
               <div className="px-6 py-14 text-center">
                 <FileText size={34} className="mx-auto text-slate-300" />
-                <p className="mt-3 font-semibold text-slate-700">No documents found</p>
-                <p className="mt-1 text-sm text-slate-500">Try changing your search or status filter.</p>
+                <p className="mt-3 font-semibold text-slate-700">
+                  No documents found
+                </p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Try changing your search or status filter.
+                </p>
               </div>
             ) : (
-              <table className="min-w-[1100px] w-full border-collapse text-left text-sm">
+              <table className="min-w-[1180px] w-full border-collapse text-left text-sm">
                 <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
                   <tr className="border-b border-slate-200">
-                    <th className="px-5 py-3 font-semibold">Document</th>
-                    <th className="px-5 py-3 font-semibold">Transaction Person</th>
-                    <th className="px-5 py-3 font-semibold">Storage</th>
+                    <th className="min-w-[170px] px-5 py-3 font-semibold">PresOffice No.</th>
+                    <th className="min-w-[240px] px-5 py-3 font-semibold">Content / Subject</th>
+                    <th className="min-w-[220px] px-5 py-3 font-semibold">Transaction / Storage</th>
                     <th className="px-5 py-3 font-semibold">Urgency</th>
                     <th className="px-5 py-3 font-semibold">Forwarded</th>
                     <th className="px-5 py-3 font-semibold">Status</th>
+                    <th className="px-5 py-3 font-semibold">Action Account</th>
                     <th className="px-5 py-3 font-semibold">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredRecords.map(({ workflow, document }) => {
                     const active = selectedId === workflow.id
-                    const inCart = cart.some(item => item.workflowId === workflow.id)
-                    const canReturn = returnableStatuses.includes(workflow.workflow_status)
+                    const inCart = cart.some(
+                      item => item.workflowId === workflow.id,
+                    )
+                    const canReturn = returnableStatuses.includes(
+                      workflow.workflow_status,
+                    )
+
                     return (
                       <tr
                         key={workflow.id}
                         onClick={() => setSelectedId(workflow.id)}
-                        className={`cursor-pointer transition-colors ${active ? 'bg-green-50/70' : 'bg-white hover:bg-slate-50'}`}
+                        className={`cursor-pointer transition-colors ${
+                          active
+                            ? 'bg-green-50/70'
+                            : 'bg-white hover:bg-slate-50'
+                        }`}
                       >
-                        <td className="max-w-[300px] px-5 py-4">
-                          <div className="font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</div>
-                          <div className="mt-1 truncate text-xs text-slate-500" title={document?.subject || document?.content || ''}>
-                            {document?.subject || document?.content || 'No subject provided'}
+                        <td className="min-w-[170px] px-5 py-4">
+                          <div className="break-words font-semibold text-slate-900">
+                            {document?.reference_number || 'No reference number'}
                           </div>
                         </td>
-                        <td className="px-5 py-4 text-slate-700">{workflow.transaction_person || '—'}</td>
-                        <td className="px-5 py-4">
-                          <span className="inline-flex rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">{getStorageLabel(workflow)}</span>
+
+                        <td className="min-w-[240px] max-w-[360px] px-5 py-4">
+                          <div
+                            className="break-words text-sm text-slate-700"
+                            title={document?.subject || document?.content || ''}
+                          >
+                            {document?.subject ||
+                              document?.content ||
+                              'No subject provided'}
+                          </div>
                         </td>
+
+                        <td className="min-w-[220px] px-5 py-4">
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              Transaction Person
+                            </div>
+                            <div className="mt-0.5 break-words text-sm font-medium text-slate-800">
+                              {workflow.transaction_person || '—'}
+                            </div>
+                          </div>
+                          <div className="mt-2 border-t border-slate-100 pt-2">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              Storage
+                            </div>
+                            <span className="mt-1 inline-flex max-w-full break-words rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
+                              {getStorageLabel(workflow)}
+                            </span>
+                          </div>
+                        </td>
+
                         <td className="px-5 py-4">
-                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${workflow.urgency === 'urgent' ? 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-200' : 'bg-slate-100 text-slate-600'}`}>
-                            {workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              workflow.urgency === 'urgent'
+                                ? 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-200'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {workflow.urgency === 'urgent'
+                              ? 'Urgent'
+                              : 'Not Urgent'}
                           </span>
                         </td>
-                        <td className="whitespace-nowrap px-5 py-4 text-xs text-slate-600">
-                          <div>{formatDateOnly(workflow.forwarding_date)}</div>
-                          <div className="mt-1 text-slate-400">{formatTime(workflow.forwarding_time)}</div>
+
+                        <td className="min-w-[190px] px-5 py-4 text-xs text-slate-600">
+                          <div className="whitespace-nowrap">
+                            {formatDateOnly(workflow.forwarding_date)}
+                          </div>
+                          <div className="mt-1 whitespace-nowrap text-slate-400">
+                            {formatTime(workflow.forwarding_time)}
+                          </div>
+                          <div className="mt-2 whitespace-normal break-words">
+                            <span className="font-semibold text-slate-500">
+                              Forwarded by:
+                            </span>
+                            <div className="mt-0.5 font-medium text-slate-800">
+                              {workflow.forwarded_by
+                                ? accountNames[workflow.forwarded_by] ||
+                                  'Account name unavailable'
+                                : '—'}
+                            </div>
+                          </div>
+                          {workflow.forwarded_at && (
+                            <div className="mt-1 text-[11px] text-slate-500">
+                              At: {formatDateTime(workflow.forwarded_at)}
+                            </div>
+                          )}
                         </td>
+
                         <td className="px-5 py-4">
-                          <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClasses[workflow.workflow_status]}`}>
+                          <span
+                            className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClasses[workflow.workflow_status]}`}
+                          >
                             {statusLabels[workflow.workflow_status]}
                           </span>
                         </td>
-                        <td className="px-5 py-4" onClick={event => event.stopPropagation()}>
+
+                        <td className="min-w-[220px] px-5 py-4 text-xs text-slate-600">
+                          {workflow.board_room_received_at && (
+                            <div>
+                              <div className="font-semibold text-slate-500">Confirmed by:</div>
+                              <div className="font-medium text-slate-800">
+                                {workflow.board_room_received_by
+                                  ? accountNames[workflow.board_room_received_by] ||
+                                    'Account name unavailable'
+                                  : '—'}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-slate-500">
+                                Confirmed at: {formatDateTime(workflow.board_room_received_at)}
+                              </div>
+                            </div>
+                          )}
+                          {workflow.returned_to_origin_at && (
+                            <div className={workflow.board_room_received_at ? 'mt-2 border-t border-slate-100 pt-2' : ''}>
+                              <div className="font-semibold text-slate-500">Picked up by / Storage:</div>
+                              <div className="mt-0.5 break-words font-medium text-slate-800">
+                                {workflow.returned_to_origin_person?.trim() || 'Person not recorded'}
+                                {' / '}
+                                {getStorageLabel(workflow)}
+                              </div>
+                              <div className="mt-1 font-semibold text-slate-500">Return processed by:</div>
+                              <div className="font-medium text-slate-800">
+                                {workflow.returned_to_origin_by
+                                  ? accountNames[workflow.returned_to_origin_by] ||
+                                    'Account name unavailable'
+                                  : '—'}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-slate-500">
+                                Returned at: {formatDateTime(workflow.returned_to_origin_at)}
+                              </div>
+                            </div>
+                          )}
+                          {!workflow.board_room_received_at &&
+                            !workflow.returned_to_origin_at && '—'}
+                        </td>
+
+                        <td
+                          className="px-5 py-4"
+                          onClick={event => event.stopPropagation()}
+                        >
                           <div className="flex min-w-[170px] flex-wrap gap-2">
-                            <button type="button" onClick={() => { setSelectedId(workflow.id); setViewDetailsOpen(true) }} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedId(workflow.id)
+                                setViewDetailsOpen(true)
+                              }}
+                              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                            >
                               <FileText size={14} /> View
                             </button>
+
                             {workflow.workflow_status === 'forwarded' && (
-                              <button type="button" disabled={processing} onClick={() => void receiveDocument(workflow.id)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-green-800 disabled:opacity-50">
-                                {processing ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                              <button
+                                type="button"
+                                disabled={processing}
+                                onClick={() => void receiveDocument(workflow.id)}
+                                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-green-800 disabled:opacity-50"
+                              >
+                                {processing ? (
+                                  <LoaderCircle
+                                    size={14}
+                                    className="animate-spin"
+                                  />
+                                ) : (
+                                  <CheckCircle2 size={14} />
+                                )}
                                 Confirm Receipt
                               </button>
                             )}
+
                             {canReturn && (
-                              <button type="button" disabled={inCart} onClick={() => addToCart(workflow.id)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50">
-                                {inCart ? <Check size={14} /> : <FileText size={14} />}
+                              <button
+                                type="button"
+                                disabled={inCart}
+                                onClick={() => addToCart(workflow.id)}
+                                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {inCart ? (
+                                  <Check size={14} />
+                                ) : (
+                                  <FileText size={14} />
+                                )}
                                 {inCart ? 'Selected' : 'Select for Return'}
                               </button>
                             )}
-                            {workflow.workflow_status !== 'forwarded' && !canReturn && <span className="text-xs text-slate-400">No actions</span>}
+
+                            {workflow.workflow_status !== 'forwarded' &&
+                              !canReturn && (
+                                <span className="text-xs text-slate-400">
+                                  No actions
+                                </span>
+                              )}
                           </div>
                         </td>
                       </tr>
@@ -836,29 +1120,71 @@ export default function BoardRoomRecords() {
             Showing {filteredRecords.length} of {records.length} records
           </div>
         </section>
-
-
       </div>
 
-      {/* Document details modal — opened only when View is clicked */}
+      {/* Document details modal */}
       {viewDetailsOpen && selected && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
-          <section role="dialog" aria-modal="true" aria-labelledby="document-details-title" className="my-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="document-details-title"
+            className="my-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl"
+          >
             <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
               <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-blue-700">Document details</p>
-                <h2 id="document-details-title" className="mt-1 text-xl font-bold text-slate-900">{selected.document?.reference_number || 'No reference number'}</h2>
-                <p className="mt-1 text-sm text-slate-500">{selected.document?.subject || selected.document?.content || 'No subject provided'}</p>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-blue-700">
+                  Document details
+                </p>
+                <h2
+                  id="document-details-title"
+                  className="mt-1 text-xl font-bold text-slate-900"
+                >
+                  {selected.document?.reference_number || 'No reference number'}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {selected.document?.subject ||
+                    selected.document?.content ||
+                    'No subject provided'}
+                </p>
+
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[selected.workflow.workflow_status]}`}>{statusLabels[selected.workflow.workflow_status]}</span>
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{getStorageLabel(selected.workflow)}</span>
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${selected.workflow.urgency === 'urgent' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{selected.workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}</span>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[selected.workflow.workflow_status]}`}
+                  >
+                    {statusLabels[selected.workflow.workflow_status]}
+                  </span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                    {getStorageLabel(selected.workflow)}
+                  </span>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      selected.workflow.urgency === 'urgent'
+                        ? 'bg-red-50 text-red-700'
+                        : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {selected.workflow.urgency === 'urgent'
+                      ? 'Urgent'
+                      : 'Not Urgent'}
+                  </span>
                 </div>
               </div>
-              <button type="button" onClick={() => setViewDetailsOpen(false)} aria-label="Close document details" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={19} /></button>
+
+              <button
+                type="button"
+                onClick={() => setViewDetailsOpen(false)}
+                aria-label="Close document details"
+                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+              >
+                <X size={19} />
+              </button>
             </div>
+
             <div className="p-6">
-              <h3 className="mb-3 text-sm font-bold text-slate-900">Document information</h3>
+              <h3 className="mb-3 text-sm font-bold text-slate-900">
+                Document information
+              </h3>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {[
                   ['Record type', selected.document?.record_type],
@@ -867,33 +1193,90 @@ export default function BoardRoomRecords() {
                   ['Originating office', selected.document?.origin_office],
                   ['Destination folder', selected.document?.destination_folder],
                   ['Storage location', getStorageLabel(selected.workflow)],
-                  ['Urgency', selected.workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'],
-                  ['Forwarding date', formatDateOnly(selected.workflow.forwarding_date)],
-                  ['Forwarding time', formatTime(selected.workflow.forwarding_time)],
-                  ['Forwarded at', selected.workflow.forwarded_at ? new Date(selected.workflow.forwarded_at).toLocaleString() : null],
-                  ['Board Room receipt', selected.workflow.board_room_received_at ? new Date(selected.workflow.board_room_received_at).toLocaleString() : null],
+                  [
+                    'Urgency',
+                    selected.workflow.urgency === 'urgent'
+                      ? 'Urgent'
+                      : 'Not Urgent',
+                  ],
+                  [
+                    'Forwarding date',
+                    formatDateOnly(selected.workflow.forwarding_date),
+                  ],
+                  [
+                    'Forwarding time',
+                    formatTime(selected.workflow.forwarding_time),
+                  ],
+                  [
+                    'Forwarded at',
+                    formatDateTime(selected.workflow.forwarded_at),
+                  ],
+                  [
+                    'Forwarded by',
+                    selected.workflow.forwarded_by
+                      ? accountNames[selected.workflow.forwarded_by] ||
+                        'Account name unavailable'
+                      : null,
+                  ],
+                  [
+                    'Board Room receipt',
+                    formatDateTime(selected.workflow.board_room_received_at),
+                  ],
+                  [
+                    'Confirmed by',
+                    selected.workflow.board_room_received_by
+                      ? accountNames[selected.workflow.board_room_received_by] ||
+                        'Account name unavailable'
+                      : null,
+                  ],
                   ['President action', selected.workflow.president_action_status],
                   ['Action remarks', selected.workflow.president_action_remarks],
-                  ['Returned to origin', selected.workflow.returned_to_origin_at ? new Date(selected.workflow.returned_to_origin_at).toLocaleString() : null],
+                  [
+                    'Returned to origin',
+                    formatDateTime(selected.workflow.returned_to_origin_at),
+                  ],
                   ['Returned by', selected.workflow.returned_to_origin_person],
+                  [
+                    'Return processed by',
+                    selected.workflow.returned_to_origin_by
+                      ? accountNames[selected.workflow.returned_to_origin_by] ||
+                        'Account name unavailable'
+                      : null,
+                  ],
                   ['Return remarks', selected.workflow.returned_to_origin_remarks],
-                  ['Origin office receipt', selected.workflow.origin_office_received_at ? new Date(selected.workflow.origin_office_received_at).toLocaleString() : null],
+                  [
+                    'Origin office receipt',
+                    formatDateTime(selected.workflow.origin_office_received_at),
+                  ],
                 ].map(([label, value]) => (
-                  <div key={label as string} className="min-w-0 rounded-lg bg-slate-50 p-3">
-                    <p className="text-xs font-medium text-slate-500">{label}</p>
-                    <p className="mt-1 break-words text-sm font-medium text-slate-900">{value ? String(value) : '—'}</p>
+                  <div
+                    key={label as string}
+                    className="min-w-0 rounded-lg bg-slate-50 p-3"
+                  >
+                    <p className="text-xs font-medium text-slate-500">
+                      {label}
+                    </p>
+                    <p className="mt-1 break-words text-sm font-medium text-slate-900">
+                      {value ? String(value) : '—'}
+                    </p>
                   </div>
                 ))}
               </div>
             </div>
+
             <div className="flex justify-end border-t border-slate-200 px-6 py-4">
-              <button type="button" onClick={() => setViewDetailsOpen(false)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Close</button>
+              <button
+                type="button"
+                onClick={() => setViewDetailsOpen(false)}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                Close
+              </button>
             </div>
           </section>
         </div>
       )}
-
-      {/* Return documents form */}
+            {/* Return documents form */}
       {cartOpen && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
           <section
@@ -933,13 +1316,17 @@ export default function BoardRoomRecords() {
             </div>
 
             <form onSubmit={submitReturn} className="space-y-5 p-5 sm:p-6">
-              {/* Search and select documents directly in this return form */}
+              {/* Search and select documents */}
               <div>
                 <label className="mb-2 block text-xs font-semibold text-slate-600">
                   Documents to Return *
                 </label>
+
                 <div className="relative">
-                  <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Search
+                    size={17}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  />
                   <input
                     autoFocus
                     value={pickerSearch}
@@ -952,42 +1339,86 @@ export default function BoardRoomRecords() {
                 <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
                   <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3 py-2">
                     <div>
-                      <p className="text-xs font-semibold text-slate-700">Eligible Board Room documents</p>
-                      <p className="mt-0.5 text-xs text-slate-500">{filteredReturnableRecords.length} matching document(s)</p>
+                      <p className="text-xs font-semibold text-slate-700">
+                        Eligible Board Room documents
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {filteredReturnableRecords.length} matching document(s)
+                      </p>
                     </div>
+
                     <button
                       type="button"
                       disabled={filteredReturnableRecords.length === 0}
                       onClick={toggleAllVisibleDocuments}
                       className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                     >
-                      {filteredReturnableRecords.length > 0 && filteredReturnableRecords.every(row => cart.some(item => item.workflowId === row.workflow.id)) ? 'Remove matches' : 'Add all matches'}
+                      {filteredReturnableRecords.length > 0 &&
+                      filteredReturnableRecords.every(row =>
+                        cart.some(item => item.workflowId === row.workflow.id),
+                      )
+                        ? 'Remove matches'
+                        : 'Add all matches'}
                     </button>
                   </div>
+
                   <div className="max-h-48 overflow-y-auto p-2">
                     {filteredReturnableRecords.length === 0 ? (
                       <div className="p-5 text-center">
-                        <p className="text-sm font-semibold text-slate-700">No eligible documents found</p>
-                        <p className="mt-1 text-xs text-slate-500">Only documents received by the Board Room and not yet returned can be selected.</p>
+                        <p className="text-sm font-semibold text-slate-700">
+                          No eligible documents found
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Only documents received by the Board Room and not yet returned can be selected.
+                        </p>
                       </div>
                     ) : (
                       filteredReturnableRecords.map(({ workflow, document }) => {
-                        const isSelected = cart.some(item => item.workflowId === workflow.id)
+                        const isSelected = cart.some(
+                          item => item.workflowId === workflow.id,
+                        )
+
                         return (
-                          <div key={workflow.id} className="flex items-start gap-3 rounded-lg px-3 py-2.5 hover:bg-slate-50">
+                          <div
+                            key={workflow.id}
+                            className="flex items-start gap-3 rounded-lg px-3 py-2.5 hover:bg-slate-50"
+                          >
                             <input
                               type="checkbox"
                               checked={isSelected}
-                              onChange={() => isSelected ? removeFromCart(workflow.id) : addToCart(workflow.id)}
+                              onChange={() =>
+                                isSelected
+                                  ? removeFromCart(workflow.id)
+                                  : addToCart(workflow.id)
+                              }
                               aria-label={`${isSelected ? 'Remove' : 'Select'} ${document?.reference_number || 'document'}`}
                               className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
                             />
+
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</p>
-                              <p className="mt-0.5 break-words text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
-                              <p className="mt-1 text-[11px] text-slate-500">{statusLabels[workflow.workflow_status]} · {workflow.urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}</p>
+                              <p className="text-sm font-semibold text-slate-900">
+                                {document?.reference_number || 'No reference number'}
+                              </p>
+                              <p className="mt-0.5 break-words text-xs text-slate-600">
+                                {document?.subject ||
+                                  document?.content ||
+                                  'No subject provided'}
+                              </p>
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                {statusLabels[workflow.workflow_status]} ·{' '}
+                                {workflow.urgency === 'urgent'
+                                  ? 'Urgent'
+                                  : 'Not Urgent'}
+                              </p>
                             </div>
-                            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${isSelected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+
+                            <span
+                              className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${
+                                isSelected
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : 'bg-slate-100 text-slate-500'
+                              }`}
+                            >
                               {isSelected ? 'Selected' : 'Select'}
                             </span>
                           </div>
@@ -997,33 +1428,67 @@ export default function BoardRoomRecords() {
                   </div>
                 </div>
 
+                {/* Selected documents and individual remarks */}
                 <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-blue-950">Selected Documents</p>
-                      <p className="mt-0.5 text-xs text-slate-600">Add separate remarks for each paper before returning.</p>
+                      <p className="text-sm font-semibold text-blue-950">
+                        Selected Documents
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-600">
+                        Add separate remarks for each paper before returning.
+                      </p>
                     </div>
-                    <span className="flex h-7 min-w-7 items-center justify-center rounded-full bg-blue-700 px-2 text-xs font-bold text-white">{cartRecords.length}</span>
+                    <span className="flex h-7 min-w-7 items-center justify-center rounded-full bg-blue-700 px-2 text-xs font-bold text-white">
+                      {cartRecords.length}
+                    </span>
                   </div>
 
                   {cartRecords.length === 0 ? (
-                    <p className="mt-4 text-sm text-slate-500">No documents selected yet.</p>
+                    <p className="mt-4 text-sm text-slate-500">
+                      No documents selected yet.
+                    </p>
                   ) : (
                     <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
                       {cartRecords.map(({ workflow, document, cartRemarks }) => (
-                        <div key={workflow.id} className="rounded-lg border border-blue-100 bg-white p-3">
+                        <div
+                          key={workflow.id}
+                          className="rounded-lg border border-blue-100 bg-white p-3"
+                        >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <p className="text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</p>
-                              <p className="mt-0.5 break-words text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
+                              <p className="text-sm font-semibold text-slate-900">
+                                {document?.reference_number || 'No reference number'}
+                              </p>
+                              <p className="mt-0.5 break-words text-xs text-slate-600">
+                                {document?.subject ||
+                                  document?.content ||
+                                  'No subject provided'}
+                              </p>
                             </div>
-                            <button type="button" onClick={() => removeFromCart(workflow.id)} disabled={processing} className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800 disabled:opacity-50">Remove</button>
+
+                            <button
+                              type="button"
+                              onClick={() => removeFromCart(workflow.id)}
+                              disabled={processing}
+                              className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800 disabled:opacity-50"
+                            >
+                              Remove
+                            </button>
                           </div>
+
                           <label className="mt-3 block">
-                            <span className="text-xs font-semibold text-slate-600">Remarks for this paper (Optional)</span>
+                            <span className="text-xs font-semibold text-slate-600">
+                              Remarks for this paper (Optional)
+                            </span>
                             <textarea
                               value={cartRemarks}
-                              onChange={event => updateCartRemarks(workflow.id, event.target.value)}
+                              onChange={event =>
+                                updateCartRemarks(
+                                  workflow.id,
+                                  event.target.value,
+                                )
+                              }
                               rows={2}
                               placeholder="Enter remarks specific to this document..."
                               className={inputClass}
@@ -1050,6 +1515,7 @@ export default function BoardRoomRecords() {
                     <span className="text-xs font-semibold text-slate-600">
                       Document Storage Location *
                     </span>
+
                     <div className="mt-2 flex flex-wrap gap-5">
                       <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                         <input
@@ -1064,6 +1530,7 @@ export default function BoardRoomRecords() {
                         />
                         Folder (Color)
                       </label>
+
                       <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                         <input
                           type="radio"
@@ -1088,7 +1555,9 @@ export default function BoardRoomRecords() {
                       <select
                         required
                         value={returnFolderColor}
-                        onChange={event => setReturnFolderColor(event.target.value)}
+                        onChange={event =>
+                          setReturnFolderColor(event.target.value)
+                        }
                         className={inputClass}
                       >
                         <option value="">Select folder color...</option>
@@ -1112,7 +1581,9 @@ export default function BoardRoomRecords() {
                       <input
                         required
                         value={returnBoxNumber}
-                        onChange={event => setReturnBoxNumber(event.target.value)}
+                        onChange={event =>
+                          setReturnBoxNumber(event.target.value)
+                        }
                         placeholder="Enter box number"
                         className={inputClass}
                       />
@@ -1123,6 +1594,7 @@ export default function BoardRoomRecords() {
                     <span className="text-xs font-semibold text-slate-600">
                       Urgency *
                     </span>
+
                     <div className="mt-2 flex flex-wrap gap-5">
                       <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                         <input
@@ -1135,6 +1607,7 @@ export default function BoardRoomRecords() {
                         <AlertCircle size={15} className="text-red-600" />
                         Urgent
                       </label>
+
                       <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                         <input
                           type="radio"
@@ -1179,7 +1652,9 @@ export default function BoardRoomRecords() {
                     </span>
                     <textarea
                       value={sharedReturnRemarks}
-                      onChange={event => setSharedReturnRemarks(event.target.value)}
+                      onChange={event =>
+                        setSharedReturnRemarks(event.target.value)
+                      }
                       rows={2}
                       placeholder="Enter remarks that apply to all returned documents..."
                       className={inputClass}
@@ -1266,7 +1741,6 @@ export default function BoardRoomRecords() {
           </section>
         </div>
       )}
-
     </div>
   )
 }

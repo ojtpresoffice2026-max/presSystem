@@ -306,7 +306,9 @@ export default function SettingsPage() {
     profile?.full_name?.trim().charAt(0).toUpperCase() || ''
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-4">
+        <div className="mx-auto max-w-4xl space-y-6">
       {/* Page header */}
       <header>
         <button
@@ -463,6 +465,8 @@ export default function SettingsPage() {
 
       {/* Seasonal animation controls */}
       <SeasonalAnimationSettings />
+        </div>
+      </div>
     </div>
   )
 }

@@ -53,10 +53,10 @@ export default function DashboardLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 md:flex">
-      <aside className="relative flex w-full flex-col overflow-hidden bg-[#172554] p-5 text-white md:min-h-screen md:w-64">
-        <div className="relative z-10 mb-10 flex items-center gap-3">
-          <div className="relative h-12 w-12 shrink-0 rounded-xl border border-white/20 bg-white p-1">
+    <div className="flex h-screen min-h-0 overflow-hidden bg-slate-50 text-slate-800">
+      <aside className="flex h-full w-64 shrink-0 flex-col overflow-y-auto bg-[#172554] p-5 text-white">
+        <div className="mb-10 flex shrink-0 items-center gap-3">
+          <div className="h-12 w-12 shrink-0 rounded-xl border border-white/20 bg-white p-1">
             <img
               src="/logo.jpg"
               alt="presSystem logo"
@@ -64,15 +64,13 @@ export default function DashboardLayout() {
             />
           </div>
 
-          <div>
+          <div className="min-w-0">
             <h1 className="text-lg font-bold">presSystem</h1>
-            <p className="text-xs text-blue-200">
-              Management Portal
-            </p>
+            <p className="text-xs text-blue-200">Management Portal</p>
           </div>
         </div>
 
-        <div className="relative z-10">
+        <div className="shrink-0">
           <p className="mb-3 text-xs tracking-widest text-blue-200">
             MAIN MENU
           </p>
@@ -91,14 +89,14 @@ export default function DashboardLayout() {
                   }`
                 }
               >
-                <Icon size={19} />
+                <Icon size={19} className="shrink-0" />
                 <span>{label}</span>
               </NavLink>
             ))}
           </nav>
         </div>
 
-        <div className="relative z-10 mt-8 border-t border-white/15 pt-5 md:mt-auto">
+        <div className="mt-auto shrink-0 border-t border-white/15 pt-5">
           <button
             type="button"
             onClick={() => void handleLogout()}
@@ -110,8 +108,8 @@ export default function DashboardLayout() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4 md:px-8">
+      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4 md:px-8">
           <div>
             <p className="text-sm text-slate-500">
               presSystem / Workspace
@@ -128,7 +126,7 @@ export default function DashboardLayout() {
           </button>
         </header>
 
-        <div className="p-5 md:p-8">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-5 md:p-8">
           <Outlet />
         </div>
       </main>

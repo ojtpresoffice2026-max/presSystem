@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -36,6 +35,8 @@ type ReceivingRecord = {
   remarks: string | null
   created_at: string | null
   created_by: string | null
+  urgency?: string | boolean | null
+  is_urgent?: boolean | null
   office_designation: string | null
   date_of_letter: string | null
   other_notes_remarks: string | null
@@ -57,7 +58,6 @@ type ReceivingRecord = {
   adjusted_amount: number | string | null
   [key: string]: unknown
 }
-
 
 type WorkflowTimelineRow = {
   id: string
@@ -87,6 +87,7 @@ type EditableRecord = {
   date_received: string
   status: string
   remarks: string
+  urgency: string
 }
 
 type SortField =
@@ -98,6 +99,7 @@ type SortField =
   | 'destination_folder'
   | 'date_received'
   | 'status'
+  | 'urgency'
 
 const DESTINATION_FOLDERS = [
   'CAFF',
@@ -143,10 +145,10 @@ const tableColumns: { label: string; field: SortField }[] = [
   { label: 'PresOffice No.', field: 'reference_number' },
   { label: 'Code', field: 'system_code' },
   { label: 'Content / Subject', field: 'content' },
-  { label: 'Bearer', field: 'bearer' },
-  { label: 'Receiving Staff', field: 'receiving_staff' },
+  { label: 'Bearer / Datetime / Received by', field: 'bearer' },
+  { label: 'Inputed by', field: 'receiving_staff' },
+  { label: 'Urgency', field: 'urgency' },
   { label: 'Destination', field: 'destination_folder' },
-  { label: 'Date Received', field: 'date_received' },
   { label: 'Status', field: 'status' },
 ]
 
@@ -266,6 +268,7 @@ export default function ReceivingRecords() {
 
   // Creator profile details displayed in the record modal.
   const [creatorName, setCreatorName] = useState('')
+  const [accountNames, setAccountNames] = useState<Record<string, string>>({})
   const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | null>(null)
   const [creatorLoading, setCreatorLoading] = useState(false)
   const [timelineRows, setTimelineRows] = useState<WorkflowTimelineRow[]>([])
@@ -290,7 +293,34 @@ export default function ReceivingRecords() {
 
       if (queryError) throw queryError
 
-      setRecords((data ?? []) as ReceivingRecord[])
+      const loadedRecords = (data ?? []) as ReceivingRecord[]
+      setRecords(loadedRecords)
+
+      // Resolve each record creator's account name from their profile.
+      const accountIds = [...new Set(loadedRecords
+        .map(record => record.created_by)
+        .filter((id): id is string => typeof id === 'string' && id.trim() !== ''))]
+
+      if (accountIds.length > 0) {
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', accountIds)
+
+        if (profilesError) {
+          console.error('Unable to load bearer account names:', profilesError)
+        } else {
+          const names: Record<string, string> = {}
+          for (const profile of profiles ?? []) {
+            if (profile.id && profile.full_name?.trim()) {
+              names[profile.id] = profile.full_name.trim()
+            }
+          }
+          setAccountNames(names)
+        }
+      } else {
+        setAccountNames({})
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -362,6 +392,7 @@ export default function ReceivingRecords() {
       date_received: record.date_received ?? '',
       status: record.status ?? 'received',
       remarks: record.remarks ?? '',
+      urgency: typeof record.urgency === 'string' ? record.urgency : record.is_urgent ? 'Urgent' : '',
     }
   }
 
@@ -516,7 +547,7 @@ export default function ReceivingRecords() {
     }
 
     if (!draft.receiving_staff.trim()) {
-      setSaveError('Receiving Staff is required.')
+      setSaveError('Inputed by is required.')
       return
     }
 
@@ -550,6 +581,7 @@ export default function ReceivingRecords() {
           date_received: draft.date_received,
           status: draft.status,
           remarks: draft.remarks.trim() || null,
+          urgency: draft.urgency.trim() || null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', selected.id)
@@ -602,6 +634,9 @@ export default function ReceivingRecords() {
 
       case 'bearer':
         return record.bearer || record.sender || ''
+
+      case 'urgency':
+        return String(record.urgency ?? (record.is_urgent ? 'Urgent' : ''))
 
       case 'destination_folder':
         return record.destination_folder || record.current_office || ''
@@ -756,7 +791,8 @@ export default function ReceivingRecords() {
       detail('Bearer / Sender', record.bearer || record.sender),
       detail('Origin of Document / Office', record.origin_office),
       detail('Payee', record.payee),
-      detail('Receiving Staff', record.receiving_staff),
+      detail('Inputed by', record.receiving_staff),
+      detail('Urgency', record.is_urgent === true || (typeof record.urgency === 'string' && ['urgent', 'high', 'yes', 'true'].includes(record.urgency.trim().toLowerCase())) ? 'Urgent' : ''),
       detail('Destination Folder', record.destination_folder),
       detail('Date Received', record.date_received, formatDate),
       detail('Received At', record.received_at, formatDateTime),
@@ -827,7 +863,7 @@ export default function ReceivingRecords() {
   }
 
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
       {/* Page heading */}
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
@@ -855,7 +891,7 @@ export default function ReceivingRecords() {
       </header>
 
       {/* Records table */}
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
@@ -1117,9 +1153,9 @@ export default function ReceivingRecords() {
         )}
 
         {/* Records list */}
-        <div className="overflow-x-auto">
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
           <table className="w-full min-w-[1150px] border-collapse text-left">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-slate-50">
               <tr className="border-b border-slate-200 bg-slate-50">
                 {tableColumns.map(column => (
                   <th
@@ -1203,22 +1239,31 @@ export default function ReceivingRecords() {
                       </span>
                     </td>
 
-                    <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.bearer || record.sender || '—'}
-                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-600">
+  <div>Bearer: {record.bearer || record.sender || '—'}</div>
+  <div>Datetime: {formatDateTime(record.received_at || record.date_received || record.created_at)}</div>
+  <div>Received by: {(record.created_by && accountNames[record.created_by]) || 'Unknown account'}</div>
+</td>
 
                     <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.receiving_staff || '—'}
+                      <div>Inputed by: {record.receiving_staff || '—'}</div>
+                      <div>Created: {formatDateTime(record.created_at || record.received_at || record.date_received)}</div>
+                    </td>
+
+                    <td className="px-4 py-3.5">
+                      {record.is_urgent === true ||
+                      (typeof record.urgency === 'string' &&
+                        ['urgent', 'high', 'yes', 'true'].includes(record.urgency.trim().toLowerCase())) ? (
+                        <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[10px] font-semibold text-red-600">
+                          Urgent
+                        </span>
+                      ) : null}
                     </td>
 
                     <td className="px-4 py-3.5 text-xs text-slate-600">
                       {record.destination_folder ||
                         record.current_office ||
                         '—'}
-                    </td>
-
-                    <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
-                      {formatDate(record.date_received)}
                     </td>
 
                     <td className="px-4 py-3.5">
@@ -1371,7 +1416,7 @@ export default function ReceivingRecords() {
                   </label>
 
                   <label className="text-xs font-semibold text-slate-600">
-                    Receiving Staff *
+                    Inputed by *
                     <input
                       required
                       value={draft.receiving_staff}
@@ -1380,6 +1425,18 @@ export default function ReceivingRecords() {
                       }
                       className={inputClass}
                     />
+                  </label>
+
+                  <label className="text-xs font-semibold text-slate-600">
+                    Urgency
+                    <select
+                      value={draft.urgency}
+                      onChange={event => updateDraft('urgency', event.target.value)}
+                      className={inputClass}
+                    >
+                      <option value="">Not urgent / Leave blank</option>
+                      <option value="Urgent">Urgent</option>
+                    </select>
                   </label>
 
                   <div className="relative sm:col-span-2">

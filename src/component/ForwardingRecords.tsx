@@ -1083,6 +1083,7 @@ export default function ForwardingRecords() {
             <thead className="sticky top-0 z-10 bg-slate-50">
               <tr className="border-b border-slate-200 bg-slate-50">
                 {[
+                  'No.',
                   'PresOffice No.',
                   'Content / Subject',
                   'Transaction Person / Storage',
@@ -1108,7 +1109,7 @@ export default function ForwardingRecords() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={11}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Loading forwarding records...
@@ -1117,7 +1118,7 @@ export default function ForwardingRecords() {
               ) : filteredWorkflows.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={11}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     {workflows.length === 0
@@ -1127,11 +1128,14 @@ export default function ForwardingRecords() {
                 </tr>
               ) : (
                 filteredWorkflows.map(
-                  ({ workflow, document, recordedByName }) => (
+                  ({ workflow, document, recordedByName }, index) => (
                     <tr
                       key={workflow.id}
                       className="transition-colors hover:bg-slate-50"
                     >
+                      <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-500">
+                        {filteredWorkflows.length - index}
+                      </td>
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                         {document?.reference_number || '—'}
                       </td>

@@ -3,7 +3,6 @@ import { NavLink } from 'react-router-dom'
 import {
   Files,
   Clock,
-  CheckCircle2,
   Users,
   Send,
   ArrowRight,
@@ -111,30 +110,6 @@ export default function Dashboard() {
       accent: 'group-hover:bg-blue-600 group-hover:text-white',
     },
     {
-      title: 'Pending Requests',
-      value: records.filter((record) =>
-        [
-          'received',
-          'forwarded',
-          'in_progress',
-          'returned',
-        ].includes((record.status || '').toLowerCase()),
-      ).length,
-      icon: Clock,
-      color: 'bg-amber-50 text-amber-700',
-      accent: 'group-hover:bg-amber-500 group-hover:text-white',
-    },
-    {
-      title: 'Completed',
-      value: records.filter(
-        (record) =>
-          (record.status || '').toLowerCase() === 'completed',
-      ).length,
-      icon: CheckCircle2,
-      color: 'bg-green-50 text-green-700',
-      accent: 'group-hover:bg-green-600 group-hover:text-white',
-    },
-    {
       title: 'Total Users',
       value: totalUsers,
       icon: Users,
@@ -206,7 +181,7 @@ export default function Dashboard() {
   const accountName = welcomeMessage
     ? welcomeMessage
         .replace(/^Welcome,\s*/i, '')
-        .replace(/!\s*Have a good day\.?$/i, '')
+        .replace(/\s*!?\s*Have a good day\.?$/i, '')
         .trim()
     : ''
   return (
@@ -252,10 +227,10 @@ export default function Dashboard() {
                   Welcome,
                 </span>
                 <span className="inline-block text-2xl font-extrabold text-white drop-shadow-md motion-safe:animate-[welcomeName_0.8s_ease-out_both] md:text-4xl">
-                  {accountName}
+                  {accountName}!
                 </span>
                 <span className="text-sm font-medium text-blue-100 md:text-base">
-                  ! Have a good day.
+                  Have a good day.
                 </span>
               </h3>
             ) : (
@@ -271,7 +246,7 @@ export default function Dashboard() {
         </div>
       </section>
       {/* Main dashboard content */}
-      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-5 overflow-y-auto overscroll-contain pb-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.9fr)]">
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-5 overflow-y-auto overscroll-contain pb-1 xl:grid-cols-[minmax(0,1.4fr)\_minmax(300px,0.9fr)]">
         {/* Operational modules */}
         <section className="flex min-w-0 flex-col">
           <div className="mb-3 shrink-0">
@@ -366,11 +341,7 @@ export default function Dashboard() {
                     className={`h-full w-1/3 rounded-full transition-all duration-500 group-hover:w-full ${
                       title === 'Total Records'
                         ? 'bg-blue-500'
-                        : title === 'Pending Requests'
-                          ? 'bg-amber-500'
-                          : title === 'Completed'
-                            ? 'bg-green-500'
-                            : 'bg-red-500'
+                        : 'bg-red-500'
                     }`}
                   />
                 </div>

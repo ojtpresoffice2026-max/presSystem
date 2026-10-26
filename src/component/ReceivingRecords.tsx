@@ -100,6 +100,7 @@ type SortField =
   | 'date_received'
   | 'status'
   | 'urgency'
+  | 'created_at'
 
 const DESTINATION_FOLDERS = [
   'CAFF',
@@ -278,7 +279,7 @@ export default function ReceivingRecords() {
   const [timelineError, setTimelineError] = useState('')
 
   const [sortField, setSortField] =
-    useState<SortField>('date_received')
+    useState<SortField>('created_at')
   const [sortDirection, setSortDirection] =
     useState<'asc' | 'desc'>('desc')
 
@@ -923,7 +924,14 @@ export default function ReceivingRecords() {
 
         <button
           type="button"
-          onClick={() => navigate('/receiving/new')}
+          onClick={() => {
+            // Authorize this in-app action through the navigation guard.
+            sessionStorage.setItem(
+              'presSystem-sidebar-intent',
+              '/receiving/new',
+            )
+            navigate('/receiving/new')
+          }}
           className="inline-flex h-10 items-center justify-center gap-2 self-start rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 sm:self-auto"
         >
           <Plus size={17} />
@@ -1198,6 +1206,9 @@ export default function ReceivingRecords() {
           <table className="w-full min-w-[1150px] border-collapse text-left">
             <thead className="sticky top-0 z-10 bg-slate-50">
               <tr className="border-b border-slate-200 bg-slate-50">
+                <th className="w-16 whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  No.
+                </th>
                 {tableColumns.map(column => (
                   <th
                     key={column.field}
@@ -1231,7 +1242,7 @@ export default function ReceivingRecords() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Loading incoming documents...
@@ -1240,7 +1251,7 @@ export default function ReceivingRecords() {
               ) : error && records.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Records could not be loaded. Check the error above.
@@ -1249,7 +1260,7 @@ export default function ReceivingRecords() {
               ) : filteredRecords.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     {appliedSearch || selectedFolder !== 'ALL'
@@ -1258,11 +1269,14 @@ export default function ReceivingRecords() {
                   </td>
                 </tr>
               ) : (
-                filteredRecords.map(record => (
+                filteredRecords.map((record, index) => (
                   <tr
                     key={record.id}
                     className="transition-colors hover:bg-slate-50"
                   >
+                    <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-500">
+                      {filteredRecords.length - index}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                       <button
                         type="button"

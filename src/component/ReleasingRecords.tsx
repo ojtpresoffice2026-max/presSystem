@@ -950,6 +950,9 @@ export default function ReleasingRecords() {
           <table className="w-full min-w-[1650px] border-collapse text-left">
             <thead className="sticky top-0 z-10 bg-slate-50">
               <tr className="border-b border-slate-200 bg-slate-50">
+                <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  No.
+                </th>
                 {tableColumns.map(column => (
                   <th
                     key={column.field}
@@ -987,7 +990,7 @@ export default function ReleasingRecords() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={12}
+                    colSpan={13}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     <RefreshCw
@@ -1000,7 +1003,7 @@ export default function ReleasingRecords() {
               ) : error && records.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={12}
+                    colSpan={13}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Records could not be loaded. Check the error above.
@@ -1009,7 +1012,7 @@ export default function ReleasingRecords() {
               ) : filteredRecords.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={12}
+                    colSpan={13}
                     className="px-4 py-14 text-center"
                   >
                     <FileText
@@ -1031,11 +1034,14 @@ export default function ReleasingRecords() {
                   </td>
                 </tr>
               ) : (
-                filteredRecords.map(record => (
+                filteredRecords.map((record, index) => (
                   <tr
                     key={record.id}
                     className="transition-colors duration-150 hover:bg-blue-50/60"
                   >
+                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-500">
+                      {filteredRecords.length - index}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-800">
                       {record.reference_number || '—'}
                     </td>

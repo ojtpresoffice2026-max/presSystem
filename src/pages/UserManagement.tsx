@@ -11,10 +11,13 @@ import {
   X,
   ShieldAlert,
   Pencil,
+  Power,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 type UserRole = 'admin' | 'staff'
+
+const DEFAULT_OFFICE = 'Office of the President - NORSU'
 
 type Profile = {
   id: string
@@ -22,6 +25,8 @@ type Profile = {
   role: UserRole
   created_at: string | null
   avatar_path: string | null
+  office: string | null
+  is_active: boolean
 }
 
 const roles: { value: UserRole; label: string }[] = [
@@ -66,6 +71,7 @@ export default function UserManagement() {
   // Page state
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [statusChangingUserId, setStatusChangingUserId] = useState('')
   const [actionUserId, setActionUserId] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -74,6 +80,7 @@ export default function UserManagement() {
   const [resetTarget, setResetTarget] = useState<Profile | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null)
   const [editTarget, setEditTarget] = useState<Profile | null>(null)
+  const [statusTarget, setStatusTarget] = useState<Profile | null>(null)
 
   const [editFullName, setEditFullName] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -82,7 +89,7 @@ export default function UserManagement() {
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
 
-  const modalOpen = Boolean(resetTarget || deleteTarget || editTarget)
+  const modalOpen = Boolean(resetTarget || deleteTarget || editTarget || statusTarget)
 
   const loadUsers = useCallback(async () => {
     setLoading(true)
@@ -104,8 +111,8 @@ export default function UserManagement() {
 
       const { data, error: queryError } = await supabase
         .from('profiles')
-        .select('id, full_name, role, created_at, avatar_path')
-        .order('full_name', { ascending: true })
+        .select('id, full_name, role, created_at, avatar_path, office, is_active')
+        .order('created_at', { ascending: false, nullsFirst: false })
 
       if (queryError) throw queryError
 
@@ -120,6 +127,8 @@ export default function UserManagement() {
           role: profile.role,
           created_at: profile.created_at,
           avatar_path: profile.avatar_path ?? null,
+          office: profile.office ?? DEFAULT_OFFICE,
+          is_active: profile.is_active === true,
         }))
 
       setCurrentUserRole(profiles.find(profile => profile.id === currentUser.id)?.role ?? null)
@@ -155,6 +164,7 @@ export default function UserManagement() {
     setResetTarget(null)
     setDeleteTarget(null)
     setEditTarget(null)
+    setStatusTarget(null)
     setEditFullName('')
     setNewPassword('')
     setConfirmPassword('')
@@ -168,6 +178,7 @@ export default function UserManagement() {
     setModalError('')
     setResetTarget(null)
     setDeleteTarget(null)
+    setStatusTarget(null)
     setEditTarget(user)
     setEditFullName(user.full_name ?? '')
   }
@@ -181,6 +192,7 @@ export default function UserManagement() {
     setShowResetPassword(false)
     setDeleteTarget(null)
     setEditTarget(null)
+    setStatusTarget(null)
     setResetTarget(user)
   }
 
@@ -227,6 +239,7 @@ export default function UserManagement() {
             email: cleanEmail,
             password,
             role,
+            office: DEFAULT_OFFICE,
           },
         })
 
@@ -439,6 +452,80 @@ export default function UserManagement() {
     }
   }
 
+  function openStatusModal(user: Profile) {
+    if (user.id === currentUserId) {
+      setError('You cannot change your own account status.')
+      return
+    }
+
+    setError('')
+    setMessage('')
+    setModalError('')
+    setResetTarget(null)
+    setDeleteTarget(null)
+    setEditTarget(null)
+    setStatusTarget(user)
+  }
+
+  async function confirmUserStatusChange() {
+    if (!statusTarget) return
+
+    if (statusTarget.id === currentUserId) {
+      setModalError('You cannot change your own account status.')
+      return
+    }
+
+    const user = statusTarget
+    const nextStatus = !user.is_active
+    const action = nextStatus ? 'activate' : 'deactivate'
+    const name = user.full_name || 'this user'
+
+    setModalLoading(true)
+    setStatusChangingUserId(user.id)
+    setModalError('')
+    setError('')
+    setMessage('')
+
+    try {
+      // Request the updated row back so an RLS-blocked or unmatched update
+      // cannot be reported as successful.
+      const { data: updatedProfile, error: updateError } = await supabase
+        .from('profiles')
+        .update({ is_active: nextStatus })
+        .eq('id', user.id)
+        .select('id, is_active')
+        .maybeSingle()
+
+      if (updateError) throw updateError
+
+      if (!updatedProfile) {
+        throw new Error(
+          'Supabase did not update this profile. Check the profiles table UPDATE policy and confirm that your signed-in account is an administrator.',
+        )
+      }
+
+      if (updatedProfile.is_active !== nextStatus) {
+        throw new Error(
+          'The database returned a different account status than requested. Refresh the page and check your Supabase policies.',
+        )
+      }
+
+      // Reload from Supabase so the table reflects the persisted database value.
+      await loadUsers()
+
+      setStatusTarget(null)
+      setMessage(
+        `${name}'s account was ${updatedProfile.is_active ? 'activated' : 'deactivated'} successfully.`,
+      )
+    } catch (err) {
+      console.error('Unable to change account status:', err)
+      setModalError(`Unable to ${action} this account. ${getErrorMessage(err)}`)
+    } finally {
+      setModalLoading(false)
+      setStatusChangingUserId('')
+    }
+  }
+
   function getAvatarUrl(user: Profile): string {
     if (!user.avatar_path) return ''
     return supabase.storage.from('avatars').getPublicUrl(user.avatar_path).data.publicUrl
@@ -457,7 +544,9 @@ export default function UserManagement() {
       user.role.toLowerCase().includes(query) ||
       roleLabel.toLowerCase().includes(query) ||
       user.id.toLowerCase().includes(query) ||
-      createdAt.includes(query)
+      (user.office ?? '').toLowerCase().includes(query) ||
+      createdAt.includes(query) ||
+      (user.is_active ? 'active' : 'inactive').includes(query)
     )
   })
 
@@ -474,7 +563,7 @@ export default function UserManagement() {
         </h2>
 
         <p className="mt-1 text-sm text-slate-500">
-          Create accounts, edit names, reset passwords, and manage users.
+          Create accounts, edit names, reset passwords, and activate or deactivate users.
         </p>
       </header>
 
@@ -654,9 +743,12 @@ export default function UserManagement() {
 
         {/* Only this area scrolls vertically and horizontally */}
         <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
-          <table className="w-full min-w-[1150px] text-left text-sm">
+          <table className="w-full min-w-[1450px] text-left text-sm">
             <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
               <tr>
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  No.
+                </th>
                 <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Photo
                 </th>
@@ -665,6 +757,12 @@ export default function UserManagement() {
                 </th>
                 <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Role
+                </th>
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Office
+                </th>
+                <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Account Status
                 </th>
                 <th className="whitespace-nowrap bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Created At (PHT)
@@ -682,7 +780,7 @@ export default function UserManagement() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={9}
                     className="px-5 py-10 text-center text-slate-500"
                   >
                     Loading registered users...
@@ -691,7 +789,7 @@ export default function UserManagement() {
               ) : filteredUsers.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={9}
                     className="px-5 py-10 text-center text-slate-500"
                   >
                     {users.length === 0
@@ -700,12 +798,15 @@ export default function UserManagement() {
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map(user => {
+                filteredUsers.map((user, index) => {
                   const isSelf = user.id === currentUserId
                   const isBusy = actionUserId === user.id
 
                   return (
                     <tr key={user.id} className="hover:bg-slate-50">
+                      <td className="whitespace-nowrap px-5 py-3.5 text-xs font-semibold text-slate-500">
+                        {filteredUsers.length - index}
+                      </td>
                       <td className="whitespace-nowrap px-5 py-3.5">
                         {getAvatarUrl(user) ? (
                           canPreviewAvatars ? (
@@ -762,6 +863,22 @@ export default function UserManagement() {
                       </td>
 
                       <td className="whitespace-nowrap px-5 py-3.5 text-xs text-slate-600">
+                        {user.office || '—'}
+                      </td>
+
+                      <td className="whitespace-nowrap px-5 py-3.5">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            user.is_active
+                              ? 'bg-green-50 text-green-700'
+                              : 'bg-red-50 text-red-700'
+                          }`}
+                        >
+                          {user.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+
+                      <td className="whitespace-nowrap px-5 py-3.5 text-xs text-slate-600">
                         {formatDateTime(user.created_at)}
                       </td>
 
@@ -791,6 +908,31 @@ export default function UserManagement() {
                           >
                             <KeyRound size={14} />
                             Reset Password
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => openStatusModal(user)}
+                            disabled={isSelf || isBusy || modalLoading || statusChangingUserId === user.id}
+                            title={
+                              isSelf
+                                ? 'You cannot change your own account status'
+                                : user.is_active
+                                  ? 'Deactivate account'
+                                  : 'Activate account'
+                            }
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${
+                              user.is_active
+                                ? 'border-amber-200 text-amber-700 hover:bg-amber-50'
+                                : 'border-green-200 text-green-700 hover:bg-green-50'
+                            }`}
+                          >
+                            <Power size={14} />
+                            {statusChangingUserId === user.id
+                              ? 'Saving...'
+                              : user.is_active
+                                ? 'Deactivate'
+                                : 'Activate'}
                           </button>
 
                           <button
@@ -1094,6 +1236,94 @@ export default function UserManagement() {
                 </button>
               </div>
             </form>
+          </section>
+        </div>
+      )}
+
+      {/* In-system account status confirmation modal */}
+      {statusTarget && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget && !modalLoading) {
+              closeModals()
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="status-modal-title"
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-start justify-between border-b border-slate-100 p-5">
+              <div className="flex items-center gap-3">
+                <div className={`rounded-xl p-3 ${statusTarget.is_active ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
+                  <Power size={23} />
+                </div>
+                <div>
+                  <h3 id="status-modal-title" className="font-bold text-slate-900">
+                    {statusTarget.is_active ? 'Deactivate Account?' : 'Activate Account?'}
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Confirm this account status change.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeModals}
+                disabled={modalLoading}
+                aria-label="Close dialog"
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+              >
+                <X size={19} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <p className="text-sm leading-6 text-slate-600">
+                Are you sure you want to {statusTarget.is_active ? 'deactivate' : 'activate'}{' '}
+                <strong className="text-slate-900">
+                  {statusTarget.full_name || 'this user'}
+                </strong>
+                's account?
+              </p>
+              <div className={`rounded-lg border p-3 text-sm leading-5 ${statusTarget.is_active ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-green-200 bg-green-50 text-green-800'}`}>
+                {statusTarget.is_active
+                  ? 'The account will be marked inactive. The user should be prevented from signing in by the login and session authorization checks.'
+                  : 'The account will be marked active and may sign in again, subject to the system’s authorization checks.'}
+              </div>
+              {modalError && (
+                <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {modalError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 p-5">
+              <button
+                type="button"
+                onClick={closeModals}
+                disabled={modalLoading}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmUserStatusChange()}
+                disabled={modalLoading}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${statusTarget.is_active ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-700 hover:bg-green-800'}`}
+              >
+                <Power size={15} />
+                {modalLoading
+                  ? 'Saving...'
+                  : statusTarget.is_active
+                    ? 'Deactivate Account'
+                    : 'Activate Account'}
+              </button>
+            </div>
           </section>
         </div>
       )}

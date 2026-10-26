@@ -888,9 +888,10 @@ export default function BoardRoomRecords() {
  </p>
  </div>
  ) : (
- <table className="min-w-[1180px] w-full border-collapse text-left text-sm">
+ <table className="min-w-[1240px] w-full border-collapse text-left text-sm">
  <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
  <tr className="border-b border-slate-200">
+ <th className="w-16 px-5 py-3 font-semibold">No.</th>
  <th className="min-w-[170px] px-5 py-3 font-semibold">PresOffice No.</th>
  <th className="min-w-[240px] px-5 py-3 font-semibold">Content / Subject</th>
  <th className="min-w-[220px] px-5 py-3 font-semibold">Transaction / Storage</th>
@@ -902,7 +903,7 @@ export default function BoardRoomRecords() {
  </tr>
  </thead>
  <tbody className="divide-y divide-slate-100">
- {filteredRecords.map(({ workflow, document }) => {
+ {filteredRecords.map(({ workflow, document }, index) => {
  const inCart = cart.some(
  item => item.workflowId === workflow.id,
  )
@@ -916,6 +917,9 @@ export default function BoardRoomRecords() {
  onClick={() => setSelectedId(workflow.id)}
  className="cursor-pointer bg-white transition-colors hover:bg-slate-50"
  >
+ <td className="px-5 py-4 font-semibold tabular-nums text-slate-600">
+ {filteredRecords.length - index}
+ </td>
  <td className="min-w-[170px] px-5 py-4">
  <button type="button" onClick={(event) => { event.stopPropagation(); void copyDocumentCode(document?.reference_number, event) }} title="Click to copy reference number" className="break-words text-left font-semibold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline">
  {document?.reference_number || 'No reference number'}

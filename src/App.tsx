@@ -7,6 +7,7 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
 } from 'react-router-dom'
 
 import {
@@ -346,7 +347,9 @@ function DashboardLayout() {
       return
     }
 
-    window.location.href = '/login'
+    sessionStorage.removeItem('presSystem-allowed-route')
+    sessionStorage.removeItem('presSystem-sidebar-intent')
+    window.location.replace('/login')
   }
 
   const sharedNavigation = [
@@ -438,6 +441,10 @@ function DashboardLayout() {
                 key={path}
                 to={path}
                 end
+                onClick={() => {
+                  // Only sidebar clicks authorize a route change.
+                  sessionStorage.setItem('presSystem-sidebar-intent', path)
+                }}
                 className={({ isActive }) =>
                   `flex items-center gap-3 rounded-xl px-4 py-3 text-sm transition-colors ${
                     isActive
@@ -503,12 +510,62 @@ function DashboardLayout() {
   )
 }
 
+
+/**
+ * Prevent deep links from opening an operational page on a fresh page load,
+ * and send browser Back/Forward navigation to the shared dashboard.
+ * Route-level authentication and role checks remain in place below.
+ */
+function NavigationGuard() {
+  const { session, loading } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (loading) return
+
+    if (!session) {
+      sessionStorage.removeItem('presSystem-allowed-route')
+      sessionStorage.removeItem('presSystem-sidebar-intent')
+      return
+    }
+
+    const currentPath = location.pathname
+    const sidebarIntent = sessionStorage.getItem('presSystem-sidebar-intent')
+    const allowedPath = sessionStorage.getItem('presSystem-allowed-route')
+
+    // Accept a route change only when the user clicked its sidebar item.
+    if (sidebarIntent && sidebarIntent === currentPath) {
+      sessionStorage.setItem('presSystem-allowed-route', currentPath)
+      sessionStorage.removeItem('presSystem-sidebar-intent')
+      return
+    }
+
+    // On the first authenticated visit, start at the dashboard.
+    if (!allowedPath) {
+      sessionStorage.setItem('presSystem-allowed-route', '/dashboard')
+      if (currentPath !== '/dashboard') {
+        navigate('/dashboard', { replace: true })
+      }
+      return
+    }
+
+    // Revert URL typing, refresh/deep links, Back/Forward, and non-sidebar route changes.
+    if (currentPath !== allowedPath) {
+      navigate(allowedPath, { replace: true })
+    }
+  }, [loading, session, location.pathname, navigate])
+
+  return null
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <ThemeBootstrap />
 
       <AuthProvider>
+        <NavigationGuard />
         <Routes>
           {/* Public Login page */}
           <Route path="/login" element={<Login />} />

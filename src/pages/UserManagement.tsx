@@ -7,11 +7,10 @@ import {
   Eye,
   EyeOff,
   KeyRound,
-  Trash2,
   X,
-  ShieldAlert,
   Pencil,
   Power,
+  Trash2,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -78,9 +77,9 @@ export default function UserManagement() {
 
   // Modal state
   const [resetTarget, setResetTarget] = useState<Profile | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null)
   const [editTarget, setEditTarget] = useState<Profile | null>(null)
   const [statusTarget, setStatusTarget] = useState<Profile | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null)
 
   const [editFullName, setEditFullName] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -88,8 +87,7 @@ export default function UserManagement() {
   const [showResetPassword, setShowResetPassword] = useState(false)
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
-
-  const modalOpen = Boolean(resetTarget || deleteTarget || editTarget || statusTarget)
+  const modalOpen = Boolean(resetTarget || editTarget || statusTarget || deleteTarget)
 
   const loadUsers = useCallback(async () => {
     setLoading(true)
@@ -162,9 +160,9 @@ export default function UserManagement() {
     if (modalLoading) return
 
     setResetTarget(null)
-    setDeleteTarget(null)
     setEditTarget(null)
     setStatusTarget(null)
+    setDeleteTarget(null)
     setEditFullName('')
     setNewPassword('')
     setConfirmPassword('')
@@ -177,8 +175,8 @@ export default function UserManagement() {
     setMessage('')
     setModalError('')
     setResetTarget(null)
-    setDeleteTarget(null)
     setStatusTarget(null)
+    setDeleteTarget(null)
     setEditTarget(user)
     setEditFullName(user.full_name ?? '')
   }
@@ -190,25 +188,12 @@ export default function UserManagement() {
     setNewPassword('')
     setConfirmPassword('')
     setShowResetPassword(false)
-    setDeleteTarget(null)
     setEditTarget(null)
     setStatusTarget(null)
+    setDeleteTarget(null)
     setResetTarget(user)
   }
 
-  function openDeleteModal(user: Profile) {
-    if (user.id === currentUserId) {
-      setError('You cannot delete your own account.')
-      return
-    }
-
-    setError('')
-    setMessage('')
-    setModalError('')
-    setResetTarget(null)
-    setEditTarget(null)
-    setDeleteTarget(user)
-  }
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -400,57 +385,6 @@ export default function UserManagement() {
     }
   }
 
-  async function confirmDeleteUser() {
-    if (!deleteTarget) return
-
-    if (deleteTarget.id === currentUserId) {
-      setModalError('You cannot delete your own account.')
-      return
-    }
-
-    setModalLoading(true)
-    setActionUserId(deleteTarget.id)
-    setModalError('')
-
-    try {
-      const { data, error: functionError } =
-        await supabase.functions.invoke('admin-delete-user', {
-          body: { user_id: deleteTarget.id },
-        })
-
-      if (functionError) {
-        let details = functionError.message
-
-        try {
-          const context = functionError.context
-
-          if (context instanceof Response) {
-            const responseBody = await context.clone().json()
-            details = responseBody.error || responseBody.message || details
-          }
-        } catch {
-          // Keep the original error message.
-        }
-
-        throw new Error(details)
-      }
-
-      if (data?.error) throw new Error(data.error)
-
-      const name = deleteTarget.full_name || 'Unnamed User'
-
-      setDeleteTarget(null)
-      setMessage(`Account for ${name} was deleted.`)
-
-      await loadUsers()
-    } catch (err) {
-      console.error('Unable to delete user:', err)
-      setModalError(getErrorMessage(err))
-    } finally {
-      setModalLoading(false)
-      setActionUserId('')
-    }
-  }
 
   function openStatusModal(user: Profile) {
     if (user.id === currentUserId) {
@@ -462,9 +396,9 @@ export default function UserManagement() {
     setMessage('')
     setModalError('')
     setResetTarget(null)
-    setDeleteTarget(null)
     setEditTarget(null)
     setStatusTarget(user)
+    setDeleteTarget(null)
   }
 
   async function confirmUserStatusChange() {
@@ -487,30 +421,63 @@ export default function UserManagement() {
     setMessage('')
 
     try {
-      // Request the updated row back so an RLS-blocked or unmatched update
-      // cannot be reported as successful.
-      const { data: updatedProfile, error: updateError } = await supabase
-        .from('profiles')
-        .update({ is_active: nextStatus })
-        .eq('id', user.id)
-        .select('id, is_active')
-        .maybeSingle()
+      let updatedProfile: { id: string; is_active: boolean } | null = null
 
-      if (updateError) throw updateError
+      if (!nextStatus) {
+        // Deactivation goes through the protected Edge Function.
+        // It updates profiles.is_active without deleting auth.users,
+        // preserving receiving records and other historical references.
+        const { data, error: functionError } =
+          await supabase.functions.invoke('admin-delete-user', {
+            body: { user_id: user.id },
+          })
 
-      if (!updatedProfile) {
-        throw new Error(
-          'Supabase did not update this profile. Check the profiles table UPDATE policy and confirm that your signed-in account is an administrator.',
-        )
+        if (functionError) {
+          let details = functionError.message
+
+          try {
+            const context = functionError.context
+            if (context instanceof Response) {
+              const responseBody = await context.clone().json()
+              details = responseBody.error || responseBody.message || details
+            }
+          } catch {
+            // Keep the original function error.
+          }
+
+          throw new Error(details)
+        }
+
+        if (data?.error) throw new Error(data.error)
+        if (data?.success !== true || data?.is_active !== false) {
+          throw new Error('The server did not confirm account deactivation.')
+        }
+
+        updatedProfile = { id: user.id, is_active: false }
+      } else {
+        // Activation updates the existing profile; it does not recreate the Auth user.
+        const { data, error: updateError } = await supabase
+          .from('profiles')
+          .update({ is_active: true })
+          .eq('id', user.id)
+          .select('id, is_active')
+          .maybeSingle()
+
+        if (updateError) throw updateError
+
+        if (!data) {
+          throw new Error(
+            'Supabase did not update this profile. Check the profiles table UPDATE policy and confirm that your signed-in account is an administrator.',
+          )
+        }
+
+        if (data.is_active !== true) {
+          throw new Error('The database did not confirm account activation.')
+        }
+
+        updatedProfile = data
       }
 
-      if (updatedProfile.is_active !== nextStatus) {
-        throw new Error(
-          'The database returned a different account status than requested. Refresh the page and check your Supabase policies.',
-        )
-      }
-
-      // Reload from Supabase so the table reflects the persisted database value.
       await loadUsers()
 
       setStatusTarget(null)
@@ -523,6 +490,135 @@ export default function UserManagement() {
     } finally {
       setModalLoading(false)
       setStatusChangingUserId('')
+    }
+  }
+
+  function openDeleteModal(user: Profile) {
+    if (user.id === currentUserId) {
+      setError('You cannot delete your own account.')
+      return
+    }
+
+    setError('')
+    setMessage('')
+    setModalError('')
+    setResetTarget(null)
+    setEditTarget(null)
+    setStatusTarget(null)
+    setDeleteTarget(user)
+  }
+
+  async function confirmPermanentDelete() {
+    if (!deleteTarget) return
+
+    if (deleteTarget.id === currentUserId) {
+      setModalError('You cannot delete your own account.')
+      return
+    }
+
+    const user = deleteTarget
+    const name = user.full_name || 'this user'
+
+    setModalLoading(true)
+    setActionUserId(user.id)
+    setModalError('')
+    setError('')
+    setMessage('')
+
+    try {
+      const { data, error: functionError } =
+        await supabase.functions.invoke('admin-permanently-delete-user', {
+          body: { user_id: user.id },
+        })
+
+      if (functionError || data?.success !== true) {
+        let details =
+          data?.error ||
+          functionError?.message ||
+          'The server did not confirm permanent deletion.'
+        let diagnostic: Record<string, unknown> | null =
+          data?.diagnostic && typeof data.diagnostic === 'object'
+            ? data.diagnostic as Record<string, unknown>
+            : null
+
+        if (functionError?.context instanceof Response) {
+          try {
+            const responseBody = await functionError.context.clone().json()
+            details = responseBody.error || responseBody.message || details
+
+            if (responseBody.diagnostic && typeof responseBody.diagnostic === 'object') {
+              diagnostic = responseBody.diagnostic as Record<string, unknown>
+            }
+          } catch {
+            // Keep the existing error details if the response is not JSON.
+          }
+        }
+
+        // Include the underlying Supabase/Postgres error in the modal.
+        // This helps identify the exact remaining foreign-key constraint.
+        if (diagnostic) {
+          const diagnosticText = [
+            diagnostic.message,
+            diagnostic.code ? `Code: ${diagnostic.code}` : null,
+            diagnostic.details ? `Details: ${diagnostic.details}` : null,
+            diagnostic.hint ? `Hint: ${diagnostic.hint}` : null,
+          ]
+            .filter(Boolean)
+            .map(String)
+            .join(' | ')
+
+          if (diagnosticText) {
+            details = `${details} ${diagnosticText}`
+          }
+        }
+
+        // The Auth account may already have been deleted by an earlier attempt.
+        // Check the profile before leaving a stale user in the UI.
+        const {
+          data: remainingProfile,
+          error: profileCheckError,
+        } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('id', user.id)
+          .maybeSingle()
+
+        if (profileCheckError) {
+          throw new Error(
+            `${details} Could not verify whether the profile still exists: ${profileCheckError.message}`,
+          )
+        }
+
+        if (!remainingProfile) {
+          setUsers(currentUsers =>
+            currentUsers.filter(profile => profile.id !== user.id),
+          )
+          setDeleteTarget(null)
+          setModalError('')
+          setMessage(
+            `The profile for "${name}" no longer exists and has been removed from the displayed user list. The latest deletion request was not confirmed by the server.`,
+          )
+          await loadUsers()
+          return
+        }
+
+        throw new Error(details)
+      }
+
+      // The Edge Function explicitly confirmed successful permanent deletion.
+      setUsers(currentUsers =>
+        currentUsers.filter(profile => profile.id !== user.id),
+      )
+      setDeleteTarget(null)
+      setModalError('')
+      setMessage(`Account "${name}" was permanently deleted.`)
+      await loadUsers()
+    } catch (err) {
+      console.error('Unable to delete user:', err)
+      setModalError(`Permanent deletion failed: ${getErrorMessage(err)}`)
+    } finally {
+      setModalLoading(false)
+      setActionUserId('')
     }
   }
 
@@ -563,7 +659,7 @@ export default function UserManagement() {
         </h2>
 
         <p className="mt-1 text-sm text-slate-500">
-          Create accounts, edit names, reset passwords, and activate or deactivate users.
+          Create accounts, edit names, reset passwords, and activate or deactivate accounts while preserving procurement history.
         </p>
       </header>
 
@@ -942,13 +1038,14 @@ export default function UserManagement() {
                             title={
                               isSelf
                                 ? 'You cannot delete your own account'
-                                : 'Delete user account'
+                                : 'Permanently delete account'
                             }
                             className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <Trash2 size={14} />
                             Delete
                           </button>
+
                         </div>
                       </td>
                     </tr>
@@ -1328,15 +1425,12 @@ export default function UserManagement() {
         </div>
       )}
 
-      {/* Delete confirmation modal */}
+      {/* Permanent delete confirmation modal */}
       {deleteTarget && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
           onMouseDown={event => {
-            if (
-              event.target === event.currentTarget &&
-              !modalLoading
-            ) {
+            if (event.target === event.currentTarget && !modalLoading) {
               closeModals()
             }
           }}
@@ -1349,28 +1443,24 @@ export default function UserManagement() {
           >
             <div className="flex items-start justify-between border-b border-slate-100 p-5">
               <div className="flex items-center gap-3">
-                <div className="rounded-xl bg-red-50 p-3 text-red-600">
-                  <ShieldAlert size={23} />
+                <div className="rounded-xl bg-red-50 p-3 text-red-700">
+                  <Trash2 size={23} />
                 </div>
                 <div>
-                  <h3
-                    id="delete-modal-title"
-                    className="font-bold text-slate-900"
-                  >
-                    Delete User Account?
+                  <h3 id="delete-modal-title" className="font-bold text-slate-900">
+                    Permanently Delete Account?
                   </h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    This action requires confirmation.
+                    This action cannot be undone.
                   </p>
                 </div>
               </div>
-
               <button
                 type="button"
                 onClick={closeModals}
                 disabled={modalLoading}
                 aria-label="Close dialog"
-                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
               >
                 <X size={19} />
               </button>
@@ -1378,14 +1468,18 @@ export default function UserManagement() {
 
             <div className="space-y-4 p-5">
               <p className="text-sm leading-6 text-slate-600">
-                You are about to delete{' '}
+                Are you sure you want to permanently delete the account for{' '}
                 <strong className="text-slate-900">
                   {deleteTarget.full_name || 'this user'}
                 </strong>
-                . This action may permanently remove the account. Check
-                associated records before proceeding.
+                ?
               </p>
-
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-800">
+                This permanently removes the user's authentication account.
+                Existing procurement and receiving records will be preserved where
+                the database relationships allow it. If a database constraint blocks
+                deletion, the error details will be shown below.
+              </div>
               {modalError && (
                 <div
                   role="alert"
@@ -1396,7 +1490,7 @@ export default function UserManagement() {
               )}
             </div>
 
-            <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 p-5">
+            <div className="flex flex-wrap justify-end gap-3 border-t border-slate-100 bg-slate-50 p-5">
               <button
                 type="button"
                 onClick={closeModals}
@@ -1405,20 +1499,20 @@ export default function UserManagement() {
               >
                 Cancel
               </button>
-
               <button
                 type="button"
-                onClick={() => void confirmDeleteUser()}
+                onClick={() => void confirmPermanentDelete()}
                 disabled={modalLoading}
                 className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Trash2 size={15} />
-                {modalLoading ? 'Deleting...' : 'Delete Account'}
+                {modalLoading ? 'Deleting...' : 'Permanently Delete'}
               </button>
             </div>
           </section>
         </div>
       )}
+
     </div>
   )
 }

@@ -56,6 +56,7 @@ type ReceivingRecord = {
   serial_number: string | null
   amount_to_adjust: number | string | null
   adjusted_amount: number | string | null
+  scan_file_url?: string | null
   [key: string]: unknown
 }
 
@@ -88,6 +89,7 @@ type EditableRecord = {
   status: string
   remarks: string
   urgency: string
+  scan_file_url: string
 }
 
 type SortField =
@@ -217,6 +219,15 @@ function formatDateTime(value: string | null | undefined) {
 
 function displayStatus(status: string | null) {
   return (status || 'unknown').replaceAll('_', ' ')
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:'
+  } catch {
+    return false
+  }
 }
 
 export default function ReceivingRecords() {
@@ -420,6 +431,7 @@ export default function ReceivingRecords() {
       status: record.status ?? 'received',
       remarks: record.remarks ?? '',
       urgency: typeof record.urgency === 'string' ? record.urgency : record.is_urgent ? 'Urgent' : '',
+      scan_file_url: record.scan_file_url ?? '',
     }
   }
 
@@ -588,6 +600,11 @@ export default function ReceivingRecords() {
       return
     }
 
+    if (draft.scan_file_url.trim() && !isValidHttpUrl(draft.scan_file_url.trim())) {
+      setSaveError('Scan/File must be a valid Google Drive or HTTPS link.')
+      return
+    }
+
     setSaving(true)
     setSaveError('')
     setSuccess('')
@@ -609,6 +626,7 @@ export default function ReceivingRecords() {
           status: draft.status,
           remarks: draft.remarks.trim() || null,
           urgency: draft.urgency.trim() || null,
+          scan_file_url: draft.scan_file_url.trim() || null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', selected.id)
@@ -1658,6 +1676,31 @@ export default function ReceivingRecords() {
                       className={inputClass}
                     />
                   </label>
+
+                  <label className="text-xs font-semibold text-slate-600 sm:col-span-2">
+                    Scan/File — Google Drive link
+                    <input
+                      type="url"
+                      inputMode="url"
+                      value={draft.scan_file_url}
+                      onChange={event => updateDraft('scan_file_url', event.target.value)}
+                      placeholder="Paste the Google Drive file link here (https://drive.google.com/...)"
+                      className={inputClass}
+                    />
+                    <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                      Upload the scanned document to Google Drive first, then paste its share link here. The Drive file must be shared with the staff who need access.
+                    </span>
+                    {draft.scan_file_url.trim() && isValidHttpUrl(draft.scan_file_url.trim()) && (
+                      <a
+                        href={draft.scan_file_url.trim()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 underline"
+                      >
+                        Preview Google Drive link
+                      </a>
+                    )}
+                  </label>
                 </div>
               ) : (
                 <>
@@ -1683,6 +1726,41 @@ export default function ReceivingRecords() {
                   <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {renderRecordDetails(selected)}
                   </dl>
+
+                  <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">Scan/File</h4>
+                        <p className="mt-1 text-xs text-slate-500">Scanned document stored in Google Drive.</p>
+                      </div>
+                      {selected.scan_file_url && isValidHttpUrl(selected.scan_file_url) ? (
+                        <a
+                          href={selected.scan_file_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800"
+                        >
+                          <FileText size={14} />
+                          Open scanned file
+                        </a>
+                      ) : (
+                        <span className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                          No scanned file linked
+                        </span>
+                      )}
+                    </div>
+                    {selected.scan_file_url && isValidHttpUrl(selected.scan_file_url) && (
+                      <a
+                        href={selected.scan_file_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 block break-all text-xs text-blue-700 underline"
+                      >
+                        {selected.scan_file_url}
+                      </a>
+                    )}
+                  </section>
+
                   <AuditHistory documentId={selected.id} />
 
                   {/* Document workflow timeline */}

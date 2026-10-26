@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   Search,
@@ -240,6 +240,12 @@ export default function ForwardingRecords() {
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
+  // Urgent-notification sound state. The first urgent snapshot alerts once;
+  // later alerts only play for newly urgent notification items, not each refresh.
+  const urgentAudioContextRef = useRef<AudioContext | null>(null)
+  const seenUrgentKeysRef = useRef<Set<string> | null>(null)
+  const pendingUrgentSoundRef = useRef(false)
   const [confirmingReceiptId, setConfirmingReceiptId] = useState<string | null>(
     null,
   )
@@ -479,6 +485,114 @@ export default function ForwardingRecords() {
 
   const urgentNotificationCount =
     urgentReceivedDocuments.length + urgentReturnedWorkflows.length
+
+  const playUrgentNotificationSound = useCallback(async () => {
+    try {
+      const AudioContextConstructor =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+      if (!AudioContextConstructor) {
+        pendingUrgentSoundRef.current = true
+        return false
+      }
+
+      if (!urgentAudioContextRef.current) {
+        urgentAudioContextRef.current = new AudioContextConstructor()
+      }
+
+      const audioContext = urgentAudioContextRef.current
+      if (audioContext.state !== 'running') {
+        try {
+          await audioContext.resume()
+        } catch {
+          // Browsers may require a user gesture before audio can start.
+        }
+      }
+
+      if (audioContext.state !== 'running') {
+        pendingUrgentSoundRef.current = true
+        return false
+      }
+
+      pendingUrgentSoundRef.current = false
+      const now = audioContext.currentTime
+      const notes = [
+        { frequency: 880, start: 0, duration: 0.18 },
+        { frequency: 1046.5, start: 0.2, duration: 0.22 },
+      ]
+
+      for (const note of notes) {
+        const oscillator = audioContext.createOscillator()
+        const gain = audioContext.createGain()
+        oscillator.type = 'sine'
+        oscillator.frequency.setValueAtTime(note.frequency, now + note.start)
+        gain.gain.setValueAtTime(0.0001, now + note.start)
+        gain.gain.exponentialRampToValueAtTime(0.18, now + note.start + 0.02)
+        gain.gain.exponentialRampToValueAtTime(
+          0.0001,
+          now + note.start + note.duration,
+        )
+        oscillator.connect(gain)
+        gain.connect(audioContext.destination)
+        oscillator.start(now + note.start)
+        oscillator.stop(now + note.start + note.duration)
+      }
+
+      return true
+    } catch (error) {
+      pendingUrgentSoundRef.current = true
+      console.warn('Unable to play urgent notification sound:', error)
+      return false
+    }
+  }, [])
+
+  // Browsers can block autoplay until the first ordinary user interaction.
+  // If an urgent alert was blocked on page load, retry it on that interaction.
+  useEffect(() => {
+    const resumePendingUrgentSound = () => {
+      if (pendingUrgentSoundRef.current) {
+        void playUrgentNotificationSound()
+      }
+    }
+
+    window.addEventListener('pointerdown', resumePendingUrgentSound)
+    window.addEventListener('keydown', resumePendingUrgentSound)
+
+    return () => {
+      window.removeEventListener('pointerdown', resumePendingUrgentSound)
+      window.removeEventListener('keydown', resumePendingUrgentSound)
+    }
+  }, [playUrgentNotificationSound])
+
+  // Play once when the page first loads with active urgent items, and again
+  // only when a new urgent document/returned workflow appears. Routine
+  // Supabase realtime refreshes do not replay alerts for the same items.
+  useEffect(() => {
+    if (loading) return
+
+    const currentKeys = new Set<string>([
+      ...urgentReceivedDocuments.map(document => `received:${document.id}`),
+      ...urgentReturnedWorkflows.map(({ workflow }) => `returned:${workflow.id}`),
+    ])
+
+    const previousKeys = seenUrgentKeysRef.current
+    const hasNewUrgentItem =
+      previousKeys === null
+        ? currentKeys.size > 0
+        : [...currentKeys].some(key => !previousKeys.has(key))
+
+    seenUrgentKeysRef.current = currentKeys
+
+    if (hasNewUrgentItem) {
+      void playUrgentNotificationSound()
+    }
+  }, [
+    loading,
+    urgentReceivedDocuments,
+    urgentReturnedWorkflows,
+    playUrgentNotificationSound,
+  ])
 
   const filteredPickerDocuments = useMemo(
     () =>

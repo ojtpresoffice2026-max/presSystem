@@ -2,6 +2,7 @@ import {
  useCallback,
  useEffect,
  useMemo,
+ useRef,
  useState,
  type FormEvent,
 } from 'react'
@@ -246,6 +247,70 @@ export default function BoardRoomRecords() {
  const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
  const [latestUrgentWorkflowId, setLatestUrgentWorkflowId] = useState<string | null>(null)
 
+ // Play urgent alerts automatically. If browser autoplay is blocked, retry on
+ // the first ordinary click/key press instead of requiring a separate button.
+ const urgentAudioContext = useRef<AudioContext | null>(null)
+ const pendingUrgentSound = useRef(false)
+ const previousUrgentIds = useRef<Set<string> | null>(null)
+
+ const playUrgentSound = useCallback(async () => {
+  try {
+   if (!window.AudioContext) return
+
+   if (!urgentAudioContext.current) {
+    urgentAudioContext.current = new window.AudioContext()
+   }
+
+   const context = urgentAudioContext.current
+   if (context.state !== 'running') {
+    await context.resume()
+   }
+
+   if (context.state !== 'running') {
+    pendingUrgentSound.current = true
+    return
+   }
+
+   pendingUrgentSound.current = false
+   const now = context.currentTime
+
+   ;[880, 1174.66].forEach((frequency, index) => {
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    const startAt = now + index * 0.16
+
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(frequency, startAt)
+    gain.gain.setValueAtTime(0.0001, startAt)
+    gain.gain.exponentialRampToValueAtTime(0.16, startAt + 0.025)
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.22)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start(startAt)
+    oscillator.stop(startAt + 0.24)
+   })
+  } catch (audioError) {
+   pendingUrgentSound.current = true
+   console.debug('Urgent notification sound is waiting for browser permission.', audioError)
+  }
+ }, [])
+
+ useEffect(() => {
+  const resumePendingSound = () => {
+   if (pendingUrgentSound.current) void playUrgentSound()
+  }
+
+  window.addEventListener('pointerdown', resumePendingSound)
+  window.addEventListener('keydown', resumePendingSound)
+
+  return () => {
+   window.removeEventListener('pointerdown', resumePendingSound)
+   window.removeEventListener('keydown', resumePendingSound)
+   void urgentAudioContext.current?.close()
+   urgentAudioContext.current = null
+  }
+ }, [playUrgentSound])
+
  // Selected documents for a single return transaction.
  const [cart, setCart] = useState<CartItem[]>([])
  const [cartOpen, setCartOpen] = useState(false)
@@ -377,13 +442,17 @@ export default function BoardRoomRecords() {
  .on(
  'postgres_changes',
  {
- event: 'INSERT',
+ event: '*',
  schema: 'public',
  table: 'document_workflow',
  },
  payload => {
  const row = payload.new as Partial<WorkflowRecord>
- if (row.urgency === 'urgent' && row.id) {
+ if (
+ row.urgency === 'urgent' &&
+ row.workflow_status === 'forwarded' &&
+ row.id
+ ) {
  setLatestUrgentWorkflowId(row.id)
  }
  void loadRecords()
@@ -493,6 +562,26 @@ export default function BoardRoomRecords() {
  const latestUrgentRecord = records.find(
  row => row.workflow.id === latestUrgentWorkflowId,
  )
+
+ // Alert once on page load if urgent papers are waiting, then only when
+ // a new urgent workflow appears. Routine refreshes do not repeat the sound.
+ useEffect(() => {
+ if (loading) return
+
+ const currentUrgentIds = new Set(
+ urgentIncomingRecords.map(row => row.workflow.id),
+ )
+ const previousIds = previousUrgentIds.current
+
+ if (previousIds === null) {
+ if (currentUrgentIds.size > 0) void playUrgentSound()
+ } else {
+ const hasNewUrgent = [...currentUrgentIds].some(id => !previousIds.has(id))
+ if (hasNewUrgent) void playUrgentSound()
+ }
+
+ previousUrgentIds.current = currentUrgentIds
+ }, [loading, urgentIncomingRecords, playUrgentSound])
 
  async function receiveDocument(workflowId: string) {
  if (processing) return

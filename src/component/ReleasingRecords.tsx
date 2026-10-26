@@ -92,6 +92,78 @@ export default function ReleasingRecords() {
   const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
   const [assignmentNotice, setAssignmentNotice] = useState<{ message: string; urgent: boolean } | null>(null)
   const knownAssignmentIds = useRef<Set<string> | null>(null)
+  const knownUrgencyById = useRef<Map<string, boolean> | null>(null)
+  const recordsLoadInProgress = useRef(false)
+  const notificationAudioContext = useRef<AudioContext | null>(null)
+  const openSoundPlayed = useRef(false)
+  const urgentCountForAudio = useRef(0)
+
+  // Try to start audio automatically when this page mounts. Browsers may keep
+  // audio suspended until the user interacts with the page; the first normal
+  // interaction resumes it and plays any pending urgent alert without a button.
+  useEffect(() => {
+    const resumeAudio = () => {
+      const audioContext = notificationAudioContext.current
+      if (!audioContext) return
+      if (audioContext.state !== 'running') {
+        void audioContext.resume().then(() => {
+          if (audioContext.state === 'running' && urgentCountForAudio.current > 0 && !openSoundPlayed.current) {
+            const played = playUrgentNotificationSound()
+            if (played) openSoundPlayed.current = true
+          }
+        }).catch(() => {})
+      } else if (urgentCountForAudio.current > 0 && !openSoundPlayed.current) {
+        const played = playUrgentNotificationSound()
+        if (played) openSoundPlayed.current = true
+      }
+    }
+
+    try {
+      const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (AudioContextClass) {
+        notificationAudioContext.current = new AudioContextClass()
+        if (notificationAudioContext.current.state === 'suspended') {
+          void notificationAudioContext.current.resume().catch(() => {})
+        }
+      }
+    } catch (error) {
+      console.warn('Urgent notification sound is unavailable in this browser.', error)
+    }
+
+    window.addEventListener('pointerdown', resumeAudio)
+    window.addEventListener('keydown', resumeAudio)
+    return () => {
+      window.removeEventListener('pointerdown', resumeAudio)
+      window.removeEventListener('keydown', resumeAudio)
+    }
+  }, [])
+
+  function playUrgentNotificationSound(): boolean {
+    const audioContext = notificationAudioContext.current
+    if (!audioContext || audioContext.state !== 'running') return false
+
+    try {
+      const startAt = audioContext.currentTime
+      // Two short, clear tones; no external audio file is required.
+      ;[0, 0.22].forEach((offset, index) => {
+        const oscillator = audioContext.createOscillator()
+        const gain = audioContext.createGain()
+        oscillator.type = 'sine'
+        oscillator.frequency.setValueAtTime(index === 0 ? 880 : 1046.5, startAt + offset)
+        gain.gain.setValueAtTime(0.0001, startAt + offset)
+        gain.gain.exponentialRampToValueAtTime(0.16, startAt + offset + 0.015)
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + offset + 0.16)
+        oscillator.connect(gain)
+        gain.connect(audioContext.destination)
+        oscillator.start(startAt + offset)
+        oscillator.stop(startAt + offset + 0.17)
+      })
+      return true
+    } catch (error) {
+      console.warn('Unable to play urgent notification sound.', error)
+      return false
+    }
+  }
 
   const [sortField, setSortField] =
     useState<SortField>('release_date')
@@ -99,9 +171,16 @@ export default function ReleasingRecords() {
   const [sortDirection, setSortDirection] =
     useState<'desc' | 'asc'>('desc')
 
-  async function loadRecords() {
-    setLoading(true)
-    setError('')
+  async function loadRecords(options: { showLoading?: boolean } = {}) {
+    // Realtime and polling can fire close together; allow only one request at a time.
+    if (recordsLoadInProgress.current) return
+    recordsLoadInProgress.current = true
+    const showLoading = options.showLoading ?? true
+
+    if (showLoading) {
+      setLoading(true)
+      setError('')
+    }
 
     try {
       // Resolve the signed-in user's profile so each releasing staff member
@@ -165,7 +244,14 @@ export default function ReleasingRecords() {
 
       const workflowRows = assignments ?? []
       if (workflowRows.length === 0) {
-        knownAssignmentIds.current = new Set()
+        const previousIds = knownAssignmentIds.current
+        if (previousIds && previousIds.size > 0) {
+          knownAssignmentIds.current = new Set()
+          knownUrgencyById.current = new Map()
+        } else {
+          knownAssignmentIds.current ??= new Set()
+          knownUrgencyById.current ??= new Map()
+        }
         setRecords([])
         return
       }
@@ -175,7 +261,8 @@ export default function ReleasingRecords() {
       )] as string[]
 
       if (receivingIds.length === 0) {
-        knownAssignmentIds.current = new Set()
+        knownAssignmentIds.current ??= new Set()
+        knownUrgencyById.current ??= new Map()
         setRecords([])
         return
       }
@@ -240,39 +327,77 @@ export default function ReleasingRecords() {
         }
       })
 
-      // Notify the assigned staff member and administrators when a new
-      // releasing assignment appears. The first load establishes a baseline.
-      // Admins receive notices for any new assignment; staff only see their own.
+      // On every page mount, play once if active urgent documents already exist.
+      // The first successful fetch is still the baseline for assignment-change alerts.
       const previousIds = knownAssignmentIds.current
-      if (previousIds) {
-        const newlyAssigned = mappedRecords.filter(record => !previousIds.has(record.id))
-        if (newlyAssigned.length > 0) {
-          const urgentAssignments = newlyAssigned.filter(
-            record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
-          )
-          const latest = urgentAssignments[0] || newlyAssigned[0]
-          const assignedMessage = viewerRole === 'admin'
-            ? `for ${latest.releasing_staff || 'the selected releasing staff'}`
-            : 'to you'
-          setAssignmentNotice({
-            urgent: urgentAssignments.length > 0,
-            message: urgentAssignments.length > 0
-              ? `Urgent document ${latest.reference_number} was assigned ${assignedMessage}. Check the urgent notification bell.`
-              : `Document ${latest.reference_number} was assigned ${assignedMessage}.`,
-          })
-        }
+      const previousUrgency = knownUrgencyById.current
+      const activeUrgentRecords = mappedRecords.filter(
+        record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+      )
+      if (previousIds === null && activeUrgentRecords.length > 0) {
+        urgentCountForAudio.current = activeUrgentRecords.length
+        if (playUrgentNotificationSound()) openSoundPlayed.current = true
       }
+      const newlyAssigned = previousIds
+        ? mappedRecords.filter(record => !previousIds.has(record.id))
+        : []
+      const newlyUrgent = previousUrgency
+        ? mappedRecords.filter(record =>
+            normalizeUrgency(record.urgency) === 'urgent' &&
+            !isReleaseCompleted(record) &&
+            previousUrgency.get(record.id) === false,
+          )
+        : []
+
+      if (newlyAssigned.length > 0) {
+        const urgentAssignments = newlyAssigned.filter(
+          record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+        )
+        const latest = urgentAssignments[0] || newlyAssigned[0]
+        const assignedMessage = isAdmin
+          ? `for ${latest.releasing_staff || 'the assigned releasing staff'}`
+          : 'to you'
+        if (urgentAssignments.length > 0) {
+          playUrgentNotificationSound()
+        }
+        setAssignmentNotice({
+          urgent: urgentAssignments.length > 0,
+          message: urgentAssignments.length > 0
+            ? `Urgent document ${latest.reference_number} was assigned ${assignedMessage}. Check the urgent notification bell.`
+            : `Document ${latest.reference_number} was assigned ${assignedMessage}.`,
+        })
+      } else if (newlyUrgent.length > 0) {
+        const latest = newlyUrgent[0]
+        playUrgentNotificationSound()
+        setAssignmentNotice({
+          urgent: true,
+          message: `Document ${latest.reference_number} is now marked urgent. Check the urgent notification bell.`,
+        })
+      }
+
+      urgentCountForAudio.current = activeUrgentRecords.length
       knownAssignmentIds.current = new Set(mappedRecords.map(record => record.id))
+      knownUrgencyById.current = new Map(
+        mappedRecords.map(record => [
+          record.id,
+          normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+        ]),
+      )
       setRecords(mappedRecords)
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to load releasing records.',
-      )
-      setRecords([])
+      const message = err instanceof Error
+        ? err.message
+        : 'Unable to load releasing records.'
+      if (showLoading) {
+        setError(message)
+        setRecords([])
+      } else {
+        // Keep current rows visible if a background refresh temporarily fails.
+        console.warn('Background releasing-notification refresh failed:', message)
+      }
     } finally {
-      setLoading(false)
+      recordsLoadInProgress.current = false
+      if (showLoading) setLoading(false)
     }
   }
 
@@ -516,19 +641,41 @@ export default function ReleasingRecords() {
   }
 
   useEffect(() => {
+    let mounted = true
+
+    // Initial load establishes a baseline and does not alert for old assignments.
     void loadRecords()
 
-    // Supabase realtime updates trigger an immediate refresh when workflow records change.
+    const refreshInBackground = () => {
+      if (mounted) void loadRecords({ showLoading: false })
+    }
+
     const channel = supabase
       .channel('releasing-urgent-workflow-notifications')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'document_workflow' },
-        () => { void loadRecords() },
+        refreshInBackground,
       )
-      .subscribe()
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'receiving_records' },
+        refreshInBackground,
+      )
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.info('Releasing notifications: Realtime connected.')
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          console.warn('Releasing notifications: Realtime connection issue.', status, err)
+        }
+      })
+
+    // Fallback for missed/unavailable Realtime events; updates while this page is open.
+    const pollingId = window.setInterval(refreshInBackground, 15_000)
 
     return () => {
+      mounted = false
+      window.clearInterval(pollingId)
       void supabase.removeChannel(channel)
     }
   }, [])
@@ -650,45 +797,25 @@ export default function ReleasingRecords() {
     return (status || 'unknown').replaceAll('_', ' ')
   }
 
-  // Receipt confirmation is not completion. Keep urgent assignments active
-  // through action_in_progress, and hide them only after the current workflow
-  // is explicitly marked completed/forwarded. Returned documents may retain
-  // old forwarding timestamps, so their returned status takes priority.
+  // A document cannot be considered fully released before physical receipt is confirmed.
+  // After receipt, it leaves the active urgent list only when the workflow is saved
+  // as completed. Old release statuses must not hide an unconfirmed assignment.
   function isReleaseCompleted(record: ReleasingRecord) {
     const workflowStatus = (record.workflow_status || '')
       .trim()
       .toLowerCase()
       .replaceAll('-', '_')
       .replaceAll(' ', '_')
-    const systemStatus = (record.next_action_system_status || '').trim().toLowerCase()
 
-    // A returned document starts/continues a new active workflow cycle.
-    // Ignore stale forwarding metadata from an earlier cycle in this case.
-    if (workflowStatus === 'returned_to_origin') {
-      return false
-    }
+    // Returned documents begin/continue a new active workflow cycle.
+    if (workflowStatus === 'returned_to_origin') return false
 
-    // Completion indicators take priority over stale/inconsistent in-progress
-    // workflow_status values. Once the saved Next Action is Forwarded, the
-    // release is complete and the Continue Release button must disappear.
-    if (
-      ['action_completed', 'completed', 'forwarded', 'released', 'release_completed'].includes(workflowStatus) ||
-      ['forwarded', 'completed', 'released'].includes(systemStatus) ||
-      Boolean(record.next_action_date_forwarded)
-    ) {
-      return true
-    }
+    // Critical guard: an unconfirmed document is still active even if stale status
+    // data says Forwarded/action_completed. This keeps urgent document 27 counted.
+    if (!record.release_received_at) return false
 
-    // Receipt confirmation and a release timestamp alone do NOT mean that
-    // the document has been completely released.
-    if (
-      workflowStatus === 'action_in_progress' ||
-      ['assigned', 'pending', 'awaiting_receipt', 'release_assigned', 'action_pending'].includes(workflowStatus)
-    ) {
-      return false
-    }
-
-    return false
+    // Only the completion status written when Next Action is saved can remove it.
+    return ['action_completed', 'completed', 'forwarded', 'released', 'release_completed'].includes(workflowStatus)
   }
 
   function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
@@ -711,6 +838,15 @@ export default function ReleasingRecords() {
     record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
   )
   const urgentCount = urgentRecords.length
+
+  // Attempt an alert once after the initial records load if urgent items exist.
+  // If autoplay is blocked, the first ordinary page interaction resumes audio
+  // and plays the pending alert; background refreshes do not repeat it.
+  useEffect(() => {
+    urgentCountForAudio.current = urgentCount
+    if (loading || urgentCount === 0 || openSoundPlayed.current) return
+    if (playUrgentNotificationSound()) openSoundPlayed.current = true
+  }, [loading, urgentCount])
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden">

@@ -23,6 +23,8 @@ type ChatMessage = {
   sender_id: string
   body: string
   created_at: string
+  deleted_at: string | null
+  deleted_by: string | null
 }
 
 type ProfileRow = {
@@ -260,7 +262,7 @@ export default function StaffGroupChat() {
       try {
         const { data, error: messageError } = await supabase
           .from('staff_chat_messages')
-          .select('id, sender_id, body, created_at')
+          .select('id, sender_id, body, created_at, deleted_at, deleted_by')
           .order('created_at', { ascending: true })
           .limit(200)
 
@@ -270,7 +272,10 @@ export default function StaffGroupChat() {
         setMessages(rows)
 
         const senderIds = [
-          ...new Set(rows.map((message) => message.sender_id)),
+          ...new Set(
+            rows.flatMap((message) => [message.sender_id, message.deleted_by])
+              .filter((id): id is string => Boolean(id)),
+          ),
         ]
 
         if (senderIds.length > 0) {
@@ -399,6 +404,41 @@ export default function StaffGroupChat() {
           }
         },
       )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'staff_chat_messages',
+        },
+        async (payload) => {
+          const updatedMessage = payload.new as ChatMessage
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === updatedMessage.id ? updatedMessage : item,
+            ),
+          )
+
+          // Load the deleting user's name so every connected client can show it.
+          if (updatedMessage.deleted_by) {
+            const { data: person } = await supabase
+              .from('profiles')
+              .select('id, full_name, avatar_path')
+              .eq('id', updatedMessage.deleted_by)
+              .maybeSingle()
+
+            if (person) {
+              setProfiles((current) => ({
+                ...current,
+                [person.id]: {
+                  name: person.full_name?.trim() || 'Administrator',
+                  avatarUrl: getAvatarUrl(person.avatar_path ?? null),
+                },
+              }))
+            }
+          }
+        },
+      )
       .subscribe((status) => {
         if (status === 'CHANNEL_ERROR') {
           setError(
@@ -478,8 +518,8 @@ export default function StaffGroupChat() {
     }
   }
 
-  // Only administrators can delete chat messages from the UI.
-  // Supabase RLS must also enforce this permission server-side.
+  // Soft-delete a message so everyone can see who deleted it.
+  // Supabase RLS must authorize this UPDATE for admins.
   async function deleteMessage(message: ChatMessage) {
     if (!isAdmin || deletingId) return
 
@@ -488,24 +528,47 @@ export default function StaffGroupChat() {
     setError('')
 
     try {
-      const { error: deleteError } = await supabase
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError) throw authError
+      if (!user) throw new Error('Your session has expired. Please sign in again.')
+
+      const { data: updatedMessage, error: deleteError } = await supabase
         .from('staff_chat_messages')
-        .delete()
+        .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
         .eq('id', message.id)
+        .is('deleted_at', null)
+        .select('id, sender_id, body, created_at, deleted_at, deleted_by')
+        .maybeSingle()
 
       if (deleteError) throw deleteError
+      if (!updatedMessage) {
+        throw new Error('No message was marked as deleted. Check the admin UPDATE RLS policy and confirm your profiles.role is admin.')
+      }
 
-      setMessages((current) =>
-        current.filter((item) => item.id !== message.id),
-      )
-    } catch (e) {
+      setMessages((current) => current.map((item) =>
+        item.id === message.id ? updatedMessage as ChatMessage : item,
+      ))
+
+      const { data: deleterProfile } = await supabase
+        .from('profiles')
+        .select('id, full_name, avatar_path')
+        .eq('id', user.id)
+        .maybeSingle()
+
+      setProfiles((current) => ({
+        ...current,
+        [user.id]: {
+          name: deleterProfile?.full_name?.trim() || myName,
+          avatarUrl: getAvatarUrl(deleterProfile?.avatar_path ?? null),
+        },
+      }))
+    } catch (e: unknown) {
       const messageText =
-        e instanceof Error
+        typeof e === 'object' && e !== null && 'message' in e && typeof e.message === 'string'
           ? e.message
-          : 'Unable to delete this message.'
-
-      console.error('Staff chat delete error:', e)
-      setError(`Unable to delete message: ${messageText}`)
+          : String(e)
+      console.error('Staff chat soft-delete error:', e)
+      setError(`Unable to mark message as deleted: ${messageText}`)
     } finally {
       setDeletingId(null)
     }
@@ -634,6 +697,10 @@ export default function StaffGroupChat() {
               const avatarUrl = own
                 ? myAvatar
                 : profile?.avatarUrl || null
+              const deletedByProfile = message.deleted_by ? profiles[message.deleted_by] : null
+              const deletedByName = message.deleted_by === userId
+                ? myName
+                : deletedByProfile?.name || 'An administrator'
 
               return (
                 <div
@@ -667,27 +734,25 @@ export default function StaffGroupChat() {
                     <div className="flex items-start gap-2">
                       <div
                         className={`rounded-2xl px-4 py-3 ${
-                          own
-                            ? 'rounded-br-md bg-blue-600 text-white'
-                            : 'rounded-bl-md border border-slate-200 bg-white text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
+                          message.deleted_at
+                            ? 'border border-dashed border-slate-300 bg-slate-100 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400'
+                            : own
+                              ? 'rounded-br-md bg-blue-600 text-white'
+                              : 'rounded-bl-md border border-slate-200 bg-white text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
                         }`}
                       >
-                        <p className="whitespace-pre-wrap break-words text-sm">
-                          {message.body}
-                        </p>
+                        {message.deleted_at ? (
+                          <p className="text-sm italic">{deletedByName} deleted a message</p>
+                        ) : (
+                          <p className="whitespace-pre-wrap break-words text-sm">{message.body}</p>
+                        )}
 
-                        <p
-                          className={`mt-2 text-right text-[10px] ${
-                            own
-                              ? 'text-blue-100'
-                              : 'text-slate-500'
-                          }`}
-                        >
+                        <p className={`mt-2 text-right text-[10px] ${own && !message.deleted_at ? 'text-blue-100' : 'text-slate-500'}`}>
                           {displayTime(message.created_at)}
                         </p>
                       </div>
 
-                      {isAdmin && (
+                      {isAdmin && !message.deleted_at && (
                         <button
                           type="button"
                           onClick={() => setMessagePendingDelete(message)}
@@ -795,7 +860,7 @@ export default function StaffGroupChat() {
                   Delete this message?
                 </h3>
                 <p id="delete-chat-message-description" className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                  This message will be deleted for everyone. This action cannot be undone.
+                  The message text will be replaced with a notice showing who deleted it. This cannot be undone.
                 </p>
                 <div className="mt-5 flex justify-end gap-3">
                   <button

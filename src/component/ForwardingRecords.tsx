@@ -204,7 +204,7 @@ function UrgencyBadge({ urgency }: { urgency?: string | null }) {
       }`}
     >
       {isUrgent && <AlertTriangle size={12} />}
-      {isUrgent ? 'Urgent' : 'Not Urgent'}
+      {isUrgent ? 'Urgent' : ''}
     </span>
   )
 }
@@ -806,33 +806,38 @@ export default function ForwardingRecords() {
         throw new Error('Your session has expired. Please sign in again.')
       }
 
-      const { error: receiptError } = await supabase.rpc(
-        'origin_office_confirm_receipt',
-        {
-          p_workflow_id: workflow.id,
-        },
-      )
-
-      if (receiptError) throw receiptError
-
-      // Persist the authenticated account and the actual confirmation timestamp.
-      // The database must contain origin_office_received_by and
-      // origin_office_received_at columns for this audit trail.
+      // Confirm only the originating office's physical receipt here.
+      // Do NOT assign a releasing staff member during receipt confirmation.
+      // Staff assignment is a separate action handled by
+      // handleForwardToReleasingStaff after the user selects a staff member.
       const confirmedAt = new Date().toISOString()
-      const { error: auditUpdateError } = await supabase
+      const { data: confirmedWorkflow, error: receiptError } = await supabase
         .from('document_workflow')
         .update({
+          workflow_status: 'completed',
           origin_office_received_by: userResult.user.id,
           origin_office_received_at: confirmedAt,
+          release_assigned_to: null,
+          release_instruction: null,
+          release_forwarded_at: null,
+          release_forwarded_by: null,
         })
         .eq('id', workflow.id)
+        .eq('workflow_status', 'returned_to_origin')
+        .select('id')
+        .maybeSingle()
 
-      if (auditUpdateError) throw auditUpdateError
+      if (receiptError) throw receiptError
+      if (!confirmedWorkflow) {
+        throw new Error(
+          'The document status has changed or receipt was already confirmed. Refresh the records and try again.',
+        )
+      }
 
       setReceiptConfirmation(null)
 
       setSuccess(
-        `Physical receipt confirmed for ${reference}. Workflow completed.`,
+        `Physical receipt confirmed for ${reference}. Next, select “Forward to Releasing Staff” and choose the staff member.`,
       )
 
       await loadData()

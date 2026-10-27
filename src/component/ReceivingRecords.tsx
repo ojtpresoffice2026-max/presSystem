@@ -76,6 +76,7 @@ type WorkflowTimelineRow = {
   next_action_date_forwarded: string | null
   next_action_recorded_by: string | null
   next_action_recorded_by_name: string | null
+  [key: string]: unknown
 }
 
 type EditableRecord = {
@@ -528,9 +529,9 @@ export default function ReceivingRecords() {
     try {
       const { data, error: timelineQueryError } = await supabase
         .from('document_workflow')
-        .select('id, release_assigned_to, release_instruction, release_forwarded_at, release_forwarded_by, workflow_status, release_received_at, release_received_by, next_action_office_to_forward, next_action_release_to, next_action_release_at, next_action_system_status, next_action_date_forwarded, next_action_recorded_by, next_action_recorded_by_name')
+        .select('*')
         .eq('receiving_record_id', record.id)
-        .order('release_forwarded_at', { ascending: true })
+        .order('forwarded_at', { ascending: false })
 
       if (timelineQueryError) throw timelineQueryError
 
@@ -542,10 +543,14 @@ export default function ReceivingRecords() {
       const actorIds = Array.from(
         new Set(
           rows.flatMap(workflow => [
+            workflow.forwarded_by,
+            workflow.board_room_received_by,
+            workflow.returned_to_origin_by,
+            workflow.origin_office_received_by,
             workflow.release_forwarded_by,
             workflow.release_received_by,
             workflow.next_action_recorded_by,
-          ]).filter((value): value is string => Boolean(value && uuidPattern.test(value))),
+          ]).filter((value): value is string => typeof value === 'string' && uuidPattern.test(value)),
         ),
       )
 
@@ -1852,45 +1857,230 @@ export default function ReceivingRecords() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <h4 className="text-sm font-bold text-slate-900">Document Progress</h4>
-                        <p className="mt-1 text-xs text-slate-500">Chronological tracking of forwarding, receipt, release, and completion.</p>
+                        <p className="mt-1 text-xs text-slate-500">Latest workflow activity appears first.</p>
                       </div>
-                      <button type="button" onClick={() => void loadDocumentTimeline(selected)} disabled={timelineLoading} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                      <button
+                        type="button"
+                        onClick={() => void loadDocumentTimeline(selected)}
+                        disabled={timelineLoading}
+                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                      >
                         {timelineLoading ? 'Refreshing…' : 'Refresh progress'}
                       </button>
                     </div>
 
-                    {timelineError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">{timelineError}</p>}
-                    {timelineLoading ? <p className="mt-4 text-sm text-slate-500">Loading document progress…</p> : timelineRows.length === 0 ? <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No forwarding workflow has been recorded for this document yet.</p> : (
-                      <div className="mt-5 space-y-0">
-                        {timelineRows.map((workflow, index) => {
-                          const events = [
-                            { label: 'Document forwarded', at: workflow.release_forwarded_at, actor: workflow.release_forwarded_by, detail: workflow.release_instruction || 'Forwarded to ' + (workflow.release_assigned_to || 'staff') },
-                            { label: 'Receipt confirmed', at: workflow.release_received_at, actor: workflow.release_received_by, detail: 'Physical receipt confirmed' },
-                            { label: 'Next action released', at: workflow.next_action_release_at, actor: workflow.next_action_recorded_by_name || workflow.next_action_recorded_by, detail: [workflow.next_action_office_to_forward, workflow.next_action_release_to].filter(Boolean).join(' · ') || 'Next action recorded' },
-                            { label: 'Forwarded to next office', at: workflow.next_action_date_forwarded, actor: workflow.next_action_recorded_by_name || workflow.next_action_recorded_by, detail: workflow.next_action_system_status || 'Next step forwarded' },
-                          ].filter(event => event.at)
-                          const completed = (workflow.workflow_status || '').toLowerCase() === 'completed' || (workflow.next_action_system_status || '').toLowerCase() === 'completed'
-                          return <div key={workflow.id} className="relative pb-5 last:pb-0">
-                            {index < timelineRows.length - 1 && <span className="absolute left-[9px] top-5 h-full w-px bg-slate-200" />}
-                            <div className="relative flex gap-3">
-                              <span className={`mt-1 h-5 w-5 shrink-0 rounded-full border-2 ${completed ? 'border-green-600 bg-green-100' : 'border-blue-500 bg-blue-50'}`} />
-                              <div className="min-w-0 flex-1 rounded-lg border border-slate-100 bg-slate-50 p-3">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="text-sm font-semibold text-slate-800">Workflow #{index + 1}</p>
-                                  <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold capitalize text-slate-600">{displayStatus(workflow.workflow_status)}</span>
+                    {timelineError && (
+                      <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">
+                        {timelineError}
+                      </p>
+                    )}
+
+                    {timelineLoading ? (
+                      <p className="mt-4 text-sm text-slate-500">Loading document progress…</p>
+                    ) : (() => {
+                      type TimelineEvent = {
+                        key: string
+                        title: string
+                        at: string
+                        actor: string | null
+                        detail: string
+                      }
+
+                      const events: TimelineEvent[] = []
+                      const getText = (value: unknown): string | null =>
+                        typeof value === 'string' && value.trim() ? value.trim() : null
+
+                      const addEvent = (
+                        key: string,
+                        title: string,
+                        timestamp: unknown,
+                        actor: unknown,
+                        detail: string,
+                      ) => {
+                        if (typeof timestamp !== 'string' || !timestamp.trim()) return
+                        if (Number.isNaN(new Date(timestamp).getTime())) return
+                        events.push({
+                          key,
+                          title,
+                          at: timestamp,
+                          actor: typeof actor === 'string' ? actor : null,
+                          detail,
+                        })
+                      }
+
+                      // Add the creation event once only. Do not add it again from workflow rows.
+                      addEvent(
+                        'document-created',
+                        'Document Created',
+                        selected.created_at,
+                        creatorName || selected.created_by,
+                        `Document entered the Receiving Records system${selected.origin_office ? ` · Origin: ${selected.origin_office}` : ''}.`,
+                      )
+
+                      for (const workflow of timelineRows) {
+                        const row = workflow as WorkflowTimelineRow & Record<string, unknown>
+                        const origin = getText(row.origin_office) || getText(selected.origin_office) || 'Origin office'
+                        const assignedStaff = getText(workflow.release_assigned_to) || 'Selected releasing staff'
+
+                        // Step 2: Origin forwards the document to the Boardroom.
+                        addEvent(
+                          `${workflow.id}-forwarded-to-boardroom`,
+                          'Document Forwarded to Boardroom',
+                          row.forwarded_at,
+                          row.forwarded_by,
+                          `Forwarded from ${origin} to the Boardroom.`,
+                        )
+
+                        // Step 3: Boardroom confirms physical receipt.
+                        addEvent(
+                          `${workflow.id}-boardroom-received`,
+                          'Boardroom — Receipt Confirmed',
+                          row.board_room_received_at || row.boardroom_received_at,
+                          row.board_room_received_by || row.boardroom_received_by,
+                          'Boardroom confirmed receipt of the physical document.',
+                        )
+
+                        // Step 4: Boardroom returns the paper to its origin.
+                        addEvent(
+                          `${workflow.id}-returned-origin`,
+                          'Boardroom — Returned to Origin',
+                          row.returned_to_origin_at,
+                          row.returned_to_origin_by,
+                          [
+                            `Returned to: ${getText(row.returned_to_origin_person) || origin}`,
+                            getText(row.returned_to_origin_remarks) ? `Remarks: ${getText(row.returned_to_origin_remarks)}` : null,
+                          ].filter(Boolean).join(' · '),
+                        )
+
+                        // Step 5: Origin confirms the returned physical document.
+                        addEvent(
+                          `${workflow.id}-origin-confirmed`,
+                          'Origin — Returned Document Confirmed',
+                          row.origin_office_received_at,
+                          row.origin_office_received_by,
+                          `Origin office ${origin} confirmed receipt of the returned document.`,
+                        )
+
+                        // Step 6: Origin assigns/forwards it to selected releasing staff.
+                        // These are the real fields written by handleForwardToReleasingStaff.
+                        addEvent(
+                          `${workflow.id}-assigned`,
+                          'Origin — Forwarded to Selected Releasing Staff',
+                          workflow.release_forwarded_at,
+                          workflow.release_forwarded_by,
+                          `Assigned to: ${assignedStaff}. ${getText(workflow.release_instruction) || ''}`.trim(),
+                        )
+
+                        // Step 7a: Assigned releasing staff confirms physical receipt.
+                        addEvent(
+                          `${workflow.id}-release-received`,
+                          'Releasing Staff — Receipt Confirmed',
+                          workflow.release_received_at,
+                          workflow.release_received_by,
+                          `Physical receipt confirmed by ${assignedStaff}.`,
+                        )
+
+                        // Step 7b: Staff records forwarding for filing/release.
+                        // next_action_release_at is the action-record timestamp, not proof
+                        // that the paper was actually released, so do not label it completed.
+                        addEvent(
+                          `${workflow.id}-next-action`,
+                          'Releasing Staff — Forwarded for Filing/Release',
+                          workflow.next_action_date_forwarded || workflow.next_action_release_at,
+                          workflow.next_action_recorded_by_name || workflow.next_action_recorded_by,
+                          [
+                            getText(workflow.next_action_system_status),
+                            getText(workflow.next_action_office_to_forward) ? `Forwarded to: ${getText(workflow.next_action_office_to_forward)}` : null,
+                            getText(workflow.next_action_release_to) ? `Next recipient: ${getText(workflow.next_action_release_to)}` : null,
+                          ].filter(Boolean).join(' · ') || 'Filing or release action recorded.',
+                        )
+
+                        // Only show completion when a release-specific status says the
+                        // document was actually released. workflow_status='completed'
+                        // alone means the Origin receipt step was completed in the
+                        // current workflow and must not imply the entire paper journey ended.
+                        const releaseStatus = normalize(workflow.next_action_system_status)
+                          .replace(/[\s-]+/g, '_')
+                        const documentStatus = normalize(selected.status)
+                          .replace(/[\s-]+/g, '_')
+                        const actuallyReleased = [
+                          'released',
+                          'paper_released',
+                          'release_completed',
+                        ].includes(releaseStatus) || [
+                          'released',
+                          'paper_released',
+                          'release_completed',
+                        ].includes(documentStatus)
+
+                        if (actuallyReleased) {
+                          addEvent(
+                            `${workflow.id}-completed`,
+                            'COMPLETED',
+                            row.workflow_completed_at || row.completed_at || workflow.next_action_release_at,
+                            row.workflow_completed_by || row.completed_by || workflow.next_action_recorded_by_name || workflow.next_action_recorded_by,
+                            'The document was marked as released/completed.',
+                          )
+                        }
+                      }
+
+                      // Enforce the real workflow sequence. Timestamps are displayed as recorded,
+                      // but must never move a later workflow step above an earlier one.
+                      // COMPLETED is always last and only exists when release is confirmed.
+                      const workflowOrder: Record<string, number> = {
+                        'Document Created': 1,
+                        'Document Forwarded to Boardroom': 2,
+                        'Boardroom — Receipt Confirmed': 3,
+                        'Boardroom — Returned to Origin': 4,
+                        'Origin — Returned Document Confirmed': 5,
+                        'Origin — Forwarded to Selected Releasing Staff': 6,
+                        'Releasing Staff — Receipt Confirmed': 7,
+                        'Releasing Staff — Forwarded for Filing/Release': 8,
+                        'COMPLETED': 9,
+                      }
+                      const uniqueEvents = events
+                        .filter((event, index, all) => all.findIndex(item => item.key === event.key) === index)
+                        .sort((a, b) => {
+                          const rankA = workflowOrder[a.title] ?? 99
+                          const rankB = workflowOrder[b.title] ?? 99
+                          if (rankA !== rankB) return rankA - rankB
+                          return new Date(a.at).getTime() - new Date(b.at).getTime()
+                        })
+
+                      if (uniqueEvents.length === 0) {
+                        return (
+                          <div className="mt-4 rounded-lg border border-dashed border-slate-300 p-5 text-center">
+                            <p className="text-sm font-medium text-slate-700">No document progress recorded</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              Workflow events appear here after the corresponding actions are recorded.
+                            </p>
+                          </div>
+                        )
+                      }
+
+                      return (
+                        <div className="mt-5 space-y-0">
+                          {uniqueEvents.map((event, index) => (
+                            <div key={event.key} className="relative pb-4 last:pb-0">
+                              {index < uniqueEvents.length - 1 && (
+                                <span className="absolute left-[9px] top-5 h-full w-px bg-slate-200" />
+                              )}
+                              <div className="relative flex gap-3">
+                                <span className="mt-1 h-5 w-5 shrink-0 rounded-full border-2 border-green-600 bg-green-100" />
+                                <div className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                  <p className="text-sm font-semibold text-slate-800">{event.title}</p>
+                                  <p className="mt-1 text-xs text-slate-600">{event.detail}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {formatDateTime(event.at)}
+                                    {displayTimelineActor(event.actor) ? ` · Account: ${displayTimelineActor(event.actor)}` : ''}
+                                  </p>
                                 </div>
-                                {events.length ? <div className="mt-3 space-y-3">{events.map((event, eventIndex) => <div key={`${workflow.id}-${event.label}-${eventIndex}`} className="border-l-2 border-blue-200 pl-3">
-                                  <p className="text-xs font-semibold text-slate-800">{event.label}</p>
-                                  <p className="mt-0.5 text-xs text-slate-600">{event.detail}</p>
-                                  <p className="mt-1 text-[11px] text-slate-500">{formatDateTime(event.at)}{displayTimelineActor(event.actor) ? ` · Account: ${displayTimelineActor(event.actor)}` : ''}</p>
-                                </div>)}</div> : <p className="mt-2 text-xs text-slate-500">Forwarding record exists; awaiting the first recorded action.</p>}
-                                {completed && <p className="mt-3 text-xs font-semibold text-green-700">Workflow completed</p>}
                               </div>
                             </div>
-                          </div>
-                        })}
-                      </div>
-                    )}
+                          ))}
+                        </div>
+                      )
+                    })()}
                   </section>
                 </>
               )}

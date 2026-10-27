@@ -74,7 +74,7 @@ const tableColumns: { label: string; field: SortField }[] = [
 export default function ReleasingRecords() {
   const [records, setRecords] = useState<ReleasingRecord[]>([])
   const [search, setSearch] = useState('')
-  const [releaseStatusFilter, setReleaseStatusFilter] = useState('ALL')
+  const [releaseStatusFilter, setReleaseStatusFilter] = useState('ACTIVE')
   const [urgencyFilter, setUrgencyFilter] = useState('ALL')
   const [selected, setSelected] = useState<ReleasingRecord | null>(null)
   const [releasePanelRecord, setReleasePanelRecord] = useState<ReleasingRecord | null>(null)
@@ -227,22 +227,35 @@ export default function ReleasingRecords() {
         .select(
           'id, receiving_record_id, release_assigned_to, release_instruction, release_forwarded_at, release_forwarded_by, workflow_status, urgency, release_received_at, release_received_by, release_received_by_name, next_action_office_to_forward, next_action_release_to, next_action_release_at, next_action_system_status, next_action_date_forwarded, next_action_recorded_by, next_action_recorded_by_name',
         )
-        .not('release_instruction', 'is', null)
         .order('release_forwarded_at', { ascending: false })
-
-      if (isReleasingStaff) {
-        assignmentsQuery = assignmentsQuery.eq(
-          'release_assigned_to',
-          profile.full_name,
-        )
-      }
 
       const { data: assignments, error: assignmentError } =
         await assignmentsQuery
 
       if (assignmentError) throw assignmentError
 
-      const workflowRows = assignments ?? []
+      // Match staff names case-insensitively. Supabase .eq() is case-sensitive,
+      // which can hide older assignments when capitalization or spaces differ.
+      const normalizeStaffName = (value: unknown) =>
+        String(value ?? '').trim().replace(/\\s+/g, ' ').toLocaleLowerCase()
+
+      const accountAssignments = isReleasingStaff
+        ? (assignments ?? []).filter(row =>
+            normalizeStaffName(row.release_assigned_to) === normalizeStaffName(profile.full_name),
+          )
+        : (assignments ?? [])
+
+      // A document returned to its originating office is no longer an active
+      // releasing assignment. Exclude it from this page and from urgent alerts.
+      const workflowRows = accountAssignments.filter(row => {
+        const normalizedStatus = String(row.workflow_status ?? '')
+          .trim()
+          .toLowerCase()
+          .replaceAll('-', '_')
+          .replaceAll(' ', '_')
+
+        return normalizedStatus !== 'returned_to_origin'
+      })
       if (workflowRows.length === 0) {
         const previousIds = knownAssignmentIds.current
         if (previousIds && previousIds.size > 0) {
@@ -313,7 +326,14 @@ export default function ReleasingRecords() {
           created_at: document?.created_at || document?.date_received || null,
           release_instruction: workflow.release_instruction || null,
           workflow_status: workflow.workflow_status || null,
-          urgency: workflow.urgency || document?.urgency || 'normal',
+          urgency: (
+            [workflow.urgency, document?.urgency]
+              .some(value => ['urgent', 'high', 'critical', 'very urgent'].includes(
+                String(value ?? '').trim().toLowerCase().replaceAll('_', ' ').replaceAll('-', ' ')
+              ))
+              ? 'urgent'
+              : (workflow.urgency || document?.urgency || 'normal')
+          ),
           release_received_at: workflow.release_received_at || null,
           release_received_by: workflow.release_received_by || null,
           release_received_by_name: workflow.release_received_by_name || null,
@@ -331,7 +351,12 @@ export default function ReleasingRecords() {
       // The first successful fetch is still the baseline for assignment-change alerts.
       const previousIds = knownAssignmentIds.current
       const previousUrgency = knownUrgencyById.current
-      const activeUrgentRecords = mappedRecords.filter(
+      // Notifications are recipient-specific. Admins may see all table rows,
+      // but only receive alerts for papers assigned to their own account.
+      const notificationRecords = mappedRecords.filter(record =>
+        normalizeStaffName(record.releasing_staff) === normalizeStaffName(profile.full_name),
+      )
+      const activeUrgentRecords = notificationRecords.filter(
         record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
       )
       if (previousIds === null && activeUrgentRecords.length > 0) {
@@ -339,10 +364,10 @@ export default function ReleasingRecords() {
         if (playUrgentNotificationSound()) openSoundPlayed.current = true
       }
       const newlyAssigned = previousIds
-        ? mappedRecords.filter(record => !previousIds.has(record.id))
+        ? notificationRecords.filter(record => !previousIds.has(record.id) && !isReleaseCompleted(record))
         : []
       const newlyUrgent = previousUrgency
-        ? mappedRecords.filter(record =>
+        ? notificationRecords.filter(record =>
             normalizeUrgency(record.urgency) === 'urgent' &&
             !isReleaseCompleted(record) &&
             previousUrgency.get(record.id) === false,
@@ -376,9 +401,9 @@ export default function ReleasingRecords() {
       }
 
       urgentCountForAudio.current = activeUrgentRecords.length
-      knownAssignmentIds.current = new Set(mappedRecords.map(record => record.id))
+      knownAssignmentIds.current = new Set(notificationRecords.map(record => record.id))
       knownUrgencyById.current = new Map(
-        mappedRecords.map(record => [
+        notificationRecords.map(record => [
           record.id,
           normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
         ]),
@@ -705,7 +730,8 @@ export default function ReleasingRecords() {
       const completed = isReleaseCompleted(record)
       const recordUrgency = normalizeUrgency(record.urgency)
 
-      if (releaseStatusFilter === 'AWAITING_RECEIPT' && record.release_received_at) return false
+      if (releaseStatusFilter === 'ACTIVE' && completed) return false
+      if (releaseStatusFilter === 'AWAITING_RECEIPT' && (record.release_received_at || completed)) return false
       if (releaseStatusFilter === 'READY_TO_RELEASE' && (!record.release_received_at || completed)) return false
       if (releaseStatusFilter === 'RELEASED' && !completed) return false
       if (urgencyFilter === 'URGENT' && recordUrgency !== 'urgent') return false
@@ -801,21 +827,25 @@ export default function ReleasingRecords() {
   // After receipt, it leaves the active urgent list only when the workflow is saved
   // as completed. Old release statuses must not hide an unconfirmed assignment.
   function isReleaseCompleted(record: ReleasingRecord) {
-    const workflowStatus = (record.workflow_status || '')
-      .trim()
-      .toLowerCase()
-      .replaceAll('-', '_')
-      .replaceAll(' ', '_')
+    const normalizeStatus = (value: string | null) =>
+      (value || '')
+        .trim()
+        .toLowerCase()
+        .replaceAll('-', '_')
+        .replaceAll(' ', '_')
 
-    // Returned documents begin/continue a new active workflow cycle.
-    if (workflowStatus === 'returned_to_origin') return false
+    const workflowStatus = normalizeStatus(record.workflow_status)
+    const nextActionStatus = normalizeStatus(record.next_action_system_status)
 
-    // Critical guard: an unconfirmed document is still active even if stale status
-    // data says Forwarded/action_completed. This keeps urgent document 27 counted.
-    if (!record.release_received_at) return false
+    // Returned assignments should no longer be active on the releasing page.
+    if (workflowStatus === 'returned_to_origin') return true
 
-    // Only the completion status written when Next Action is saved can remove it.
-    return ['action_completed', 'completed', 'forwarded', 'released', 'release_completed'].includes(workflowStatus)
+    // "Forwarded" and "action_completed" describe the next-action handoff,
+    // NOT proof that the physical paper was released. Keep those records visible.
+    // Hide an assignment as released only when an explicit release status is saved.
+    const releaseStatuses = ['released', 'paper_released', 'release_completed']
+    return releaseStatuses.includes(workflowStatus) ||
+      releaseStatuses.includes(nextActionStatus)
   }
 
   function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
@@ -832,10 +862,13 @@ export default function ReleasingRecords() {
       : { label: 'Not Urgent', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
   }
 
-  // Show urgent assignments immediately, including those still awaiting staff receipt confirmation.
-  // Only completed/forwarded workflows are excluded from the active notification list.
+  // Show urgent assignments that are still active, including those awaiting receipt.
+  // Returned-to-origin assignments are filtered out before they reach this list.
   const urgentRecords = records.filter(
-    record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+    record =>
+      normalizeUrgency(record.urgency) === 'urgent' &&
+      !isReleaseCompleted(record) &&
+      viewerRole === 'staff',
   )
   const urgentCount = urgentRecords.length
 
@@ -891,7 +924,7 @@ export default function ReleasingRecords() {
                 <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
                   <div>
                     <p className="text-sm font-bold text-slate-900">Urgent Documents</p>
-                    <p className="mt-0.5 text-xs text-slate-500">Active assignments only</p>
+                    <p className="mt-0.5 text-xs text-slate-500">{viewerRole === 'admin' ? 'Urgent alerts go to the assigned staff account' : 'Urgent papers assigned to your account only'}</p>
                   </div>
                   <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">{urgentCount}</span>
                 </div>
@@ -1020,7 +1053,8 @@ export default function ReleasingRecords() {
               aria-label="Filter by release status"
               className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-44"
             >
-              <option value="ALL">All Release Statuses</option>
+              <option value="ACTIVE">Active Assignments</option>
+              <option value="ALL">All Assignments (including completed)</option>
               <option value="AWAITING_RECEIPT">Awaiting Receipt</option>
               <option value="READY_TO_RELEASE">Ready to Release</option>
               <option value="RELEASED">Released / Forwarded</option>
@@ -1041,7 +1075,7 @@ export default function ReleasingRecords() {
               type="button"
               onClick={() => {
                 setSearch('')
-                setReleaseStatusFilter('ALL')
+                setReleaseStatusFilter('ACTIVE')
                 setUrgencyFilter('ALL')
               }}
               className="h-9 shrink-0 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
@@ -1257,7 +1291,7 @@ export default function ReleasingRecords() {
                           }}
                           className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-800"
                         >
-                          <Send size={13} /> {record.next_action_release_at ? 'Continue Release' : 'Complete Release'}
+                          <Send size={13} /> {record.next_action_release_at ? 'Action' : 'Complete Release'}
                         </button>
                       )}
                       <button

@@ -563,7 +563,7 @@ export default function Receiving() {
           <p className="text-sm text-slate-500">
             Workspace / Records / Receiving
           </p>
-          <h1 className="mt-1 text-3xl font-bold text-blue-950">
+          <h1 className="mt-1 text-3xl font-bold text-white-950">
             Receiving
           </h1>
           <p className="mt-2 text-sm text-slate-500">
@@ -770,7 +770,7 @@ export default function Receiving() {
       {/* Receiving form */}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-100 p-5 sm:p-6">
-          <h2 className="text-lg font-bold text-blue-950">
+          <h2 className="text-lg font-bold text-white-950">
             Document Information
           </h2>
           <p className="mt-1 text-sm text-slate-500">

@@ -974,7 +974,7 @@ export default function ForwardingRecords() {
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Forwarding to Board Room
           </h2>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-white-500">
             Forward documents to the Board Room, confirm returned documents, and assign received documents to releasing staff.
           </p>
         </div>
@@ -2277,7 +2277,7 @@ export default function ForwardingRecords() {
                       >
                         Select Documents to Forward
                       </h3>
-                      <p className="mt-1 text-sm text-slate-500">
+                      <p className="mt-1 text-sm text-white-500">
                         Check multiple documents to forward them as a group.
                       </p>
                     </div>
@@ -2285,7 +2285,7 @@ export default function ForwardingRecords() {
                       type="button"
                       onClick={() => setDocumentPickerOpen(false)}
                       aria-label="Close document search"
-                      className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                      className="rounded-lg p-2 text-white-500 hover:bg-slate-100"
                     >
                       <X size={20} />
                     </button>

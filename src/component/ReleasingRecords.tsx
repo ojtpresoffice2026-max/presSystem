@@ -22,6 +22,7 @@ type ReleasingRecord = {
   releasing_staff: string | null
   release_date: string | null
   release_time: string | null
+  release_forwarded_at: string | null
   status: string | null
   remarks: string | null
   created_at: string | null
@@ -237,7 +238,7 @@ export default function ReleasingRecords() {
       // Match staff names case-insensitively. Supabase .eq() is case-sensitive,
       // which can hide older assignments when capitalization or spaces differ.
       const normalizeStaffName = (value: unknown) =>
-        String(value ?? '').trim().replace(/\\s+/g, ' ').toLocaleLowerCase()
+        String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase()
 
       const accountAssignments = isReleasingStaff
         ? (assignments ?? []).filter(row =>
@@ -321,6 +322,8 @@ export default function ReleasingRecords() {
           releasing_staff: workflow.release_assigned_to || profile.full_name,
           release_date: workflow.release_forwarded_at || null,
           release_time: workflow.release_forwarded_at || null,
+          // Preserve the real forwarding timestamp for the urgent bell filter.
+          release_forwarded_at: workflow.release_forwarded_at || null,
           status: workflow.workflow_status || 'assigned',
           remarks: workflow.release_instruction || null,
           created_at: document?.created_at || document?.date_received || null,
@@ -351,13 +354,25 @@ export default function ReleasingRecords() {
       // The first successful fetch is still the baseline for assignment-change alerts.
       const previousIds = knownAssignmentIds.current
       const previousUrgency = knownUrgencyById.current
-      // Notifications are recipient-specific. Admins may see all table rows,
-      // but only receive alerts for papers assigned to their own account.
-      const notificationRecords = mappedRecords.filter(record =>
-        normalizeStaffName(record.releasing_staff) === normalizeStaffName(profile.full_name),
+      // A row in document_workflow with a releasing staff assignment is an
+      // assigned releasing document. Do not require release_forwarded_at here:
+      // older valid assignments may have a missing timestamp, which would make
+      // the notification count disagree with the urgent rows shown in this table.
+      const sentAssignments = mappedRecords.filter(record =>
+        Boolean(record.releasing_staff?.trim()),
       )
+
+      // Administrators see all sent assignments; staff see only assignments
+      // sent to their own profile name.
+      const notificationRecords = isAdmin
+        ? sentAssignments
+        : sentAssignments.filter(record =>
+            normalizeStaffName(record.releasing_staff) === normalizeStaffName(profile.full_name),
+          )
       const activeUrgentRecords = notificationRecords.filter(
-        record => normalizeUrgency(record.urgency) === 'urgent' && !isReleaseCompleted(record),
+        record =>
+          normalizeUrgency(record.urgency) === 'urgent' &&
+          !isReleaseCompleted(record),
       )
       if (previousIds === null && activeUrgentRecords.length > 0) {
         urgentCountForAudio.current = activeUrgentRecords.length
@@ -476,7 +491,7 @@ export default function ReleasingRecords() {
     // documents assigned to their own profile name.
     if (
       viewerRole === 'staff' &&
-      record.releasing_staff?.trim().toLocaleLowerCase() !== receiptAccountName.toLocaleLowerCase()
+      record.releasing_staff?.trim().replace(/\\s+/g, ' ').toLocaleLowerCase() !== receiptAccountName.replace(/\\s+/g, ' ').toLocaleLowerCase()
     ) {
       setActionError('Only the assigned releasing staff member or an administrator can confirm receipt.')
       return
@@ -823,9 +838,10 @@ export default function ReleasingRecords() {
     return (status || 'unknown').replaceAll('_', ' ')
   }
 
-  // A document cannot be considered fully released before physical receipt is confirmed.
-  // After receipt, it leaves the active urgent list only when the workflow is saved
-  // as completed. Old release statuses must not hide an unconfirmed assignment.
+  // A document remains in the urgent bell only while its release work is still pending.
+  // Confirming receipt does NOT complete release. Saving the Complete Release / Next Action
+  // sets workflow_status to action_completed and next_action_system_status to Forwarded,
+  // so those records must no longer count as active urgent notifications.
   function isReleaseCompleted(record: ReleasingRecord) {
     const normalizeStatus = (value: string | null) =>
       (value || '')
@@ -837,15 +853,20 @@ export default function ReleasingRecords() {
     const workflowStatus = normalizeStatus(record.workflow_status)
     const nextActionStatus = normalizeStatus(record.next_action_system_status)
 
-    // Returned assignments should no longer be active on the releasing page.
+    // A returned document is no longer an active releasing assignment.
     if (workflowStatus === 'returned_to_origin') return true
 
-    // "Forwarded" and "action_completed" describe the next-action handoff,
-    // NOT proof that the physical paper was released. Keep those records visible.
-    // Hide an assignment as released only when an explicit release status is saved.
-    const releaseStatuses = ['released', 'paper_released', 'release_completed']
-    return releaseStatuses.includes(workflowStatus) ||
-      releaseStatuses.includes(nextActionStatus)
+    // The Complete Release action saves action_completed and marks the next action Forwarded.
+    const completedStatuses = [
+      'action_completed',
+      'released',
+      'paper_released',
+      'release_completed',
+    ]
+
+    return completedStatuses.includes(workflowStatus) ||
+      completedStatuses.includes(nextActionStatus) ||
+      nextActionStatus === 'forwarded'
   }
 
   function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
@@ -862,13 +883,17 @@ export default function ReleasingRecords() {
       : { label: 'Not Urgent', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
   }
 
-  // Show urgent assignments that are still active, including those awaiting receipt.
-  // Returned-to-origin assignments are filtered out before they reach this list.
+  // Bell rule: use the same assignment, urgency, and completion rules as the
+  // urgent records visible in this table. A missing legacy forwarding timestamp
+  // must not hide an assigned urgent document from the bell.
+  // Receipt confirmation alone does not complete release; completing the Next
+  // Action or returning the document removes it from the active urgent count.
   const urgentRecords = records.filter(
     record =>
+      Boolean(record.releasing_staff?.trim()) &&
       normalizeUrgency(record.urgency) === 'urgent' &&
       !isReleaseCompleted(record) &&
-      viewerRole === 'staff',
+      (viewerRole === 'admin' || viewerRole === 'staff'),
   )
   const urgentCount = urgentRecords.length
 

@@ -375,6 +375,90 @@ export default function ReceivingRecords() {
     void loadRecords()
   }, [])
 
+  // Poll the currently open record as a reliable fallback when Supabase
+  // Realtime is not enabled for receiving_records. This lets the scan URL
+  // appear without closing/reopening the modal or manually running a sync.
+  useEffect(() => {
+    const recordId = selected?.id
+    if (!recordId) return
+
+    let cancelled = false
+
+    const refreshSelectedRecord = async () => {
+      const { data, error: refreshError } = await supabase
+        .from('receiving_records')
+        .select('*')
+        .eq('id', recordId)
+        .maybeSingle()
+
+      if (cancelled || refreshError || !data) return
+
+      const freshRecord = data as ReceivingRecord
+      setRecords(current =>
+        current.map(record => record.id === freshRecord.id
+          ? { ...record, ...freshRecord }
+          : record),
+      )
+      setSelected(current => current?.id === freshRecord.id
+        ? { ...current, ...freshRecord }
+        : current)
+
+      if (!editMode) {
+        setDraft(current => current
+          ? createDraft({ ...freshRecord })
+          : current)
+      }
+    }
+
+    // Check immediately, then repeat while the modal remains open.
+    void refreshSelectedRecord()
+    const timer = window.setInterval(() => {
+      void refreshSelectedRecord()
+    }, 5000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [selected?.id, editMode])
+
+  // Keep the Receiving Records list and an open record modal in sync when
+  // the Drive sync Edge Function updates scan_file_url in Supabase.
+  useEffect(() => {
+    const channel = supabase
+      .channel('receiving-record-scan-link-updates')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'receiving_records' },
+        payload => {
+          const updated = payload.new as ReceivingRecord
+
+          if (!updated?.id) return
+
+          setRecords(current =>
+            current.map(record =>
+              record.id === updated.id ? { ...record, ...updated } : record,
+            ),
+          )
+
+          setSelected(current =>
+            current?.id === updated.id ? { ...current, ...updated } : current,
+          )
+
+          // Update the edit form only when the user is not actively editing,
+          // so a background sync cannot overwrite unsaved changes.
+          if (!editMode && selected?.id === updated.id) {
+            setDraft(createDraft({ ...selected, ...updated }))
+          }
+        },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [editMode, selected?.id])
+
   // Load the record creator's name and profile picture.
   // This assumes created_by contains the Supabase auth user UUID.
   async function loadCreatorName(record: ReceivingRecord) {
@@ -1688,7 +1772,7 @@ export default function ReceivingRecords() {
                       className={inputClass}
                     />
                     <span className="mt-1 block text-[11px] font-normal text-slate-500">
-                      Upload the scanned document to Google Drive first, then paste its share link here. The Drive file must be shared with the staff who need access.
+                      The Drive sync links a matching scanned PDF automatically. You can paste a link here only if you need to add or correct it manually.
                     </span>
                     {draft.scan_file_url.trim() && isValidHttpUrl(draft.scan_file_url.trim()) && (
                       <a

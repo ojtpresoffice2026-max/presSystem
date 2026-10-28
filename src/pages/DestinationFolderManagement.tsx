@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Plus, Pencil, Save, X, Power, FolderOpen, Trash2, Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Pencil, Save, X, FolderOpen, Trash2, Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 type Folder = {

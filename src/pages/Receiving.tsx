@@ -594,7 +594,7 @@ export default function Receiving() {
               : '',
           ]
             .filter(Boolean)
-            .join(' â€” '),
+            .join(' — '),
         )
       }
       if (!saved) {
@@ -711,7 +711,7 @@ export default function Receiving() {
                       event.preventDefault()
                       if (filteredDestinationFolders.length > 0) {
                         selectDestination(
-                          filteredDestinationFolders[0],
+                          filteredDestinationFolders[0].code,
                         )
                       }
                     }

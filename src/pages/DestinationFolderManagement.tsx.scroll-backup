@@ -1,0 +1,535 @@
+﻿import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Plus, Pencil, Save, X, Power, FolderOpen, Trash2 } from 'lucide-react'
+import { supabase } from '../lib/supabase'
+
+type Folder = {
+  id: string
+  code: string
+  name: string
+  is_active: boolean
+  sort_order: number
+}
+
+type FieldType = 'text' | 'number' | 'date' | 'dropdown' | 'textarea' | 'checkbox'
+
+type FolderField = {
+  id: string
+  folder_id: string
+  field_name: string
+  field_type: FieldType
+  is_required: boolean
+  options: string[]
+  sort_order: number
+}
+
+const fieldTypes: FieldType[] = [
+  'text', 'number', 'date', 'dropdown', 'textarea', 'checkbox',
+]
+
+export default function DestinationFolderManagement() {
+  const [folders, setFolders] = useState<Folder[]>([])
+  const [fields, setFields] = useState<FolderField[]>([])
+  const [selectedFolder, setSelectedFolder] = useState('')
+  const [folderName, setFolderName] = useState('')
+  const [editingFolder, setEditingFolder] = useState<string | null>(null)
+  const [fieldName, setFieldName] = useState('')
+  const [fieldType, setFieldType] = useState<FieldType>('text')
+  const [fieldRequired, setFieldRequired] = useState(false)
+  const [fieldOptions, setFieldOptions] = useState('')
+  const [editingField, setEditingField] = useState<string | null>(null)
+  const [showInactive, setShowInactive] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const loadFolders = useCallback(async () => {
+    setLoading(true)
+    const { data, error: loadError } = await supabase
+      .from('office_folders')
+      .select('id, code, name, is_active, sort_order')
+      .order('name', { ascending: true })
+
+    if (loadError) {
+      setError(loadError.message)
+    } else {
+      const rows = (data ?? []) as Folder[]
+      setFolders(rows)
+      if (!selectedFolder && rows.length) {
+        setSelectedFolder(rows.find(row => row.is_active)?.id ?? rows[0].id)
+      }
+    }
+    setLoading(false)
+  }, [selectedFolder])
+
+  const loadFields = useCallback(async (folderId: string) => {
+    if (!folderId) {
+      setFields([])
+      return
+    }
+
+    const { data, error: loadError } = await supabase
+      .from('destination_folder_fields')
+      .select('id, folder_id, field_name, field_type, is_required, options, sort_order')
+      .eq('folder_id', folderId)
+      .order('sort_order', { ascending: true })
+      .order('field_name', { ascending: true })
+
+    if (loadError) {
+      setError(`Unable to load custom fields: ${loadError.message}`)
+      setFields([])
+      return
+    }
+
+    setFields((data ?? []) as FolderField[])
+  }, [])
+
+  useEffect(() => {
+    void loadFolders()
+  }, [loadFolders])
+
+  useEffect(() => {
+    void loadFields(selectedFolder)
+  }, [selectedFolder, loadFields])
+
+  async function saveFolder(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+
+    const name = folderName.trim()
+    if (!name) {
+      setError('Enter a folder name.')
+      return
+    }
+
+    const duplicate = folders.some(
+      folder =>
+        folder.name.trim().toLowerCase() === name.toLowerCase() &&
+        folder.id !== editingFolder,
+    )
+
+    if (duplicate) {
+      setError('A folder with this name already exists.')
+      return
+    }
+
+    setSaving(true)
+
+    // Preserve the legacy code column for existing Receiving workflows.
+    // It is generated internally and is not shown to administrators.
+    const generatedCode = name
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 50)
+
+    const result = editingFolder
+      ? await supabase
+          .from('office_folders')
+          .update({ name })
+          .eq('id', editingFolder)
+      : await supabase
+          .from('office_folders')
+          .insert({
+            name,
+            code: generatedCode || `FOLDER_${Date.now()}`,
+            is_active: true,
+            sort_order: 0,
+          })
+
+    setSaving(false)
+
+    if (result.error) {
+      setError(`Unable to save folder: ${result.error.message}`)
+      return
+    }
+
+    setFolderName('')
+    setEditingFolder(null)
+    setNotice(editingFolder ? 'Folder updated.' : 'Folder created.')
+    await loadFolders()
+  }
+
+  function editFolder(folder: Folder) {
+    setEditingFolder(folder.id)
+    setFolderName(folder.name)
+    setError('')
+    setNotice('')
+  }
+
+  async function toggleFolder(folder: Folder) {
+    const action = folder.is_active ? 'deactivate' : 'reactivate'
+    if (!window.confirm(`${action} "${folder.name}"?`)) return
+
+    const { error: updateError } = await supabase
+      .from('office_folders')
+      .update({ is_active: !folder.is_active })
+      .eq('id', folder.id)
+
+    if (updateError) {
+      setError(updateError.message)
+      return
+    }
+
+    setNotice(`Folder ${folder.is_active ? 'deactivated' : 'reactivated'}.`)
+    await loadFolders()
+  }
+
+  async function saveField(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+
+    if (!selectedFolder) {
+      setError('Create or select a destination folder first.')
+      return
+    }
+
+    const name = fieldName.trim()
+    if (!name) {
+      setError('Enter a field name.')
+      return
+    }
+
+    const options = fieldOptions
+      .split('\n')
+      .map(value => value.trim())
+      .filter(Boolean)
+
+    if (fieldType === 'dropdown' && options.length === 0) {
+      setError('Enter at least one dropdown option, one per line.')
+      return
+    }
+
+    setSaving(true)
+
+    const values = {
+      folder_id: selectedFolder,
+      field_name: name,
+      field_type: fieldType,
+      is_required: fieldRequired,
+      options,
+    }
+
+    const result = editingField
+      ? await supabase
+          .from('destination_folder_fields')
+          .update(values)
+          .eq('id', editingField)
+      : await supabase
+          .from('destination_folder_fields')
+          .insert({
+            ...values,
+            sort_order: fields.length,
+          })
+
+    setSaving(false)
+
+    if (result.error) {
+      setError(`Unable to save field: ${result.error.message}`)
+      return
+    }
+
+    resetFieldForm()
+    setNotice(editingField ? 'Custom field updated.' : 'Custom field added.')
+    await loadFields(selectedFolder)
+  }
+
+  function resetFieldForm() {
+    setFieldName('')
+    setFieldType('text')
+    setFieldRequired(false)
+    setFieldOptions('')
+    setEditingField(null)
+  }
+
+  function editField(field: FolderField) {
+    setEditingField(field.id)
+    setFieldName(field.field_name)
+    setFieldType(field.field_type)
+    setFieldRequired(field.is_required)
+    setFieldOptions((field.options ?? []).join('\n'))
+    setError('')
+    setNotice('')
+  }
+
+  async function deleteField(field: FolderField) {
+    if (!window.confirm(`Delete the field "${field.field_name}"?`)) return
+
+    const { error: deleteError } = await supabase
+      .from('destination_folder_fields')
+      .delete()
+      .eq('id', field.id)
+
+    if (deleteError) {
+      setError(deleteError.message)
+      return
+    }
+
+    setNotice('Custom field deleted.')
+    if (editingField === field.id) resetFieldForm()
+    await loadFields(selectedFolder)
+  }
+
+  const activeFolders = folders.filter(folder => folder.is_active)
+  const shownFolders = folders.filter(
+    folder => showInactive || folder.is_active,
+  )
+
+  return (
+    <main className="mx-auto w-full max-w-6xl space-y-6 p-4 md:p-6">
+      <header>
+        <p className="text-sm font-semibold text-blue-700">ADMINISTRATION</p>
+        <h1 className="mt-1 text-2xl font-bold text-slate-900">
+          Destination Folder Management
+        </h1>
+        <p className="mt-1 text-sm text-slate-500">
+          Create folders and configure the custom fields used by each destination.
+        </p>
+      </header>
+
+      {error && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+          {notice}
+        </div>
+      )}
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="mb-4 font-semibold text-slate-900">
+          {editingFolder ? 'Edit Destination Folder' : 'Create Destination Folder'}
+        </h2>
+
+        <form onSubmit={event => void saveFolder(event)} className="flex flex-wrap items-end gap-3">
+          <label className="min-w-56 flex-1 text-sm font-medium text-slate-700">
+            Folder Name *
+            <input
+              value={folderName}
+              onChange={event => setFolderName(event.target.value)}
+              placeholder="Enter destination folder name"
+              maxLength={150}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-blue-500"
+            />
+          </label>
+
+          <button
+            type="submit"
+            disabled={saving}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+          >
+            {editingFolder ? <Save size={16} /> : <Plus size={16} />}
+            {saving ? 'Saving...' : editingFolder ? 'Save Changes' : 'Create Folder'}
+          </button>
+
+          {editingFolder && (
+            <button
+              type="button"
+              onClick={() => { setEditingFolder(null); setFolderName('') }}
+              className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm"
+            >
+              Cancel
+            </button>
+          )}
+        </form>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
+          <h2 className="flex items-center gap-2 font-semibold text-slate-900">
+            <FolderOpen size={19} /> Destination Folders
+          </h2>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={event => setShowInactive(event.target.checked)}
+            />
+            Show inactive
+          </label>
+        </div>
+
+        {loading ? (
+          <p className="p-5 text-sm text-slate-500">Loading folders...</p>
+        ) : shownFolders.length === 0 ? (
+          <p className="p-5 text-sm text-slate-500">No destination folders found.</p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {shownFolders.map(folder => (
+              <div key={folder.id} className="flex flex-wrap items-center gap-3 p-4">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFolder(folder.id)}
+                  className={`min-w-0 flex-1 text-left ${
+                    selectedFolder === folder.id ? 'text-blue-700' : 'text-slate-800'
+                  }`}
+                >
+                  <span className="block font-semibold">{folder.name}</span>
+                  <span className="text-xs text-slate-500">
+                    {folder.is_active ? 'Active' : 'Inactive'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => editFolder(folder)}
+                  className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm"
+                >
+                  <Pencil size={14} /> Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void toggleFolder(folder)}
+                  className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm"
+                >
+                  <Power size={14} />
+                  {folder.is_active ? 'Deactivate' : 'Reactivate'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="mb-1 font-semibold text-slate-900">Custom Fields</h2>
+        <p className="mb-4 text-sm text-slate-500">
+          Choose a folder, then add the fields that should belong to it.
+        </p>
+
+        <label className="block max-w-xl text-sm font-medium text-slate-700">
+          Select Destination Folder
+          <select
+            value={selectedFolder}
+            onChange={event => { setSelectedFolder(event.target.value); resetFieldForm() }}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"
+          >
+            <option value="">Select a folder</option>
+            {activeFolders
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map(folder => (
+                <option key={folder.id} value={folder.id}>{folder.name}</option>
+              ))}
+          </select>
+        </label>
+
+        <form onSubmit={event => void saveField(event)} className="mt-5 space-y-4 rounded-lg bg-slate-50 p-4">
+          <h3 className="font-medium text-slate-800">
+            {editingField ? 'Edit Custom Field' : 'Add Custom Field'}
+          </h3>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <label className="text-sm font-medium text-slate-700">
+              Field Name *
+              <input
+                value={fieldName}
+                onChange={event => setFieldName(event.target.value)}
+                placeholder="e.g. Reference Number"
+                required
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"
+              />
+            </label>
+
+            <label className="text-sm font-medium text-slate-700">
+              Field Type
+              <select
+                value={fieldType}
+                onChange={event => setFieldType(event.target.value as FieldType)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"
+              >
+                {fieldTypes.map(type => (
+                  <option key={type} value={type}>
+                    {type === 'textarea' ? 'Text Area' : type.charAt(0).toUpperCase() + type.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {fieldType === 'dropdown' && (
+            <label className="block text-sm font-medium text-slate-700">
+              Dropdown Options (one per line) *
+              <textarea
+                value={fieldOptions}
+                onChange={event => setFieldOptions(event.target.value)}
+                placeholder={'Pending\nApproved\nRejected'}
+                rows={4}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"
+              />
+            </label>
+          )}
+
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={fieldRequired}
+              onChange={event => setFieldRequired(event.target.checked)}
+            />
+            Required field
+          </label>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="submit"
+              disabled={saving || !selectedFolder}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {editingField ? <Save size={16} /> : <Plus size={16} />}
+              {saving ? 'Saving...' : editingField ? 'Save Field' : 'Add Field'}
+            </button>
+            {editingField && (
+              <button
+                type="button"
+                onClick={resetFieldForm}
+                className="inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm"
+              >
+                <X size={16} /> Cancel
+              </button>
+            )}
+          </div>
+        </form>
+
+        <div className="mt-5 divide-y divide-slate-100 rounded-lg border">
+          {!selectedFolder ? (
+            <p className="p-4 text-sm text-slate-500">Select a folder to manage its fields.</p>
+          ) : fields.length === 0 ? (
+            <p className="p-4 text-sm text-slate-500">No custom fields have been configured for this folder.</p>
+          ) : fields.map(field => (
+            <div key={field.id} className="flex flex-wrap items-center gap-3 p-4">
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-slate-800">{field.field_name}</p>
+                <p className="text-xs text-slate-500">
+                  {field.field_type} · {field.is_required ? 'Required' : 'Optional'}
+                  {field.field_type === 'dropdown' && field.options?.length
+                    ? ` · ${field.options.join(', ')}`
+                    : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => editField(field)}
+                className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm"
+              >
+                <Pencil size={14} /> Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteField(field)}
+                className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-3 py-2 text-sm text-red-700"
+              >
+                <Trash2 size={14} /> Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+    </main>
+  )
+}

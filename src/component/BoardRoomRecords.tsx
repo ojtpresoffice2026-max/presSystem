@@ -119,7 +119,7 @@ function isReadyToReturn(row: DisplayRecord) {
 }
 
 function formatDateOnly(value: string | null | undefined) {
- if (!value) return 'â€”'
+ if (!value) return '—'
 
  const date = new Date(`${value}T00:00:00`)
  if (Number.isNaN(date.getTime())) return value
@@ -131,7 +131,7 @@ function formatDateOnly(value: string | null | undefined) {
 }
 
 function formatTime(value: string | null | undefined) {
- if (!value) return 'â€”'
+ if (!value) return '—'
 
  const match = value.match(/^(\d{1,2}):(\d{2})/)
  if (!match) return value
@@ -148,7 +148,7 @@ function formatTime(value: string | null | undefined) {
 }
 
 function formatDateTime(value: string | null | undefined) {
- if (!value) return 'â€”'
+ if (!value) return '—'
 
  const date = new Date(value)
  if (Number.isNaN(date.getTime())) return value
@@ -191,8 +191,8 @@ function getManilaDate() {
 
 function getStorageLabel(workflow: WorkflowRecord) {
  return workflow.storage_type === 'folder'
- ? `Folder â€” ${workflow.folder_color || 'Not specified'}`
- : `Box â€” ${workflow.box_number || 'Not specified'}`
+ ? `Folder — ${workflow.folder_color || 'Not specified'}`
+ : `Box — ${workflow.box_number || 'Not specified'}`
 }
 
 async function copyDocumentCode(
@@ -868,7 +868,7 @@ export default function BoardRoomRecords() {
  </button>
  {incomingDocumentsOpen && (
  <div className="absolute right-0 z-50 mt-2 w-[min(26rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-blue-200 bg-white shadow-xl">
- <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3"><div><h3 className="font-bold text-slate-900">Incoming Documents</h3><p className="text-xs text-slate-500">{incomingRecords.length} forwarded to the Board Room Â· awaiting receipt</p></div><button type="button" onClick={() => setIncomingDocumentsOpen(false)} aria-label="Close incoming documents" className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100"><X size={16} /></button></div>
+ <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3"><div><h3 className="font-bold text-slate-900">Incoming Documents</h3><p className="text-xs text-slate-500">{incomingRecords.length} forwarded to the Board Room · awaiting receipt</p></div><button type="button" onClick={() => setIncomingDocumentsOpen(false)} aria-label="Close incoming documents" className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100"><X size={16} /></button></div>
  {incomingRecords.length === 0 ? <div className="px-4 py-7 text-center text-sm text-slate-500">No incoming documents are waiting for receipt.</div> : (
  <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">{incomingRecords.map(({ workflow, document }) => (
  <button type="button" key={workflow.id} onClick={() => { setSelectedId(workflow.id); setIncomingDocumentsOpen(false) }} className="block w-full px-4 py-3 text-left transition-colors hover:bg-blue-50"><div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</span><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${workflow.urgency === 'urgent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{workflow.urgency === 'urgent' ? 'URGENT' : 'NOT URGENT'}</span></div><p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p><p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p></button>
@@ -888,7 +888,7 @@ export default function BoardRoomRecords() {
  <div className="min-w-0 flex-1">
  <p className="font-bold">Urgent paper forwarded to the Board Room</p>
  <p className="mt-1 break-words">
- {latestUrgentRecord.document?.reference_number || 'No reference number'} â€” {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
+ {latestUrgentRecord.document?.reference_number || 'No reference number'} — {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
  </p>
  <p className="mt-1 text-xs text-red-700">Please prioritize this paper and confirm receipt.</p>
  </div>
@@ -1046,7 +1046,7 @@ export default function BoardRoomRecords() {
  Transaction Person
  </div>
  <div className="mt-0.5 break-words text-sm font-medium text-slate-800">
- {workflow.transaction_person || 'â€”'}
+ {workflow.transaction_person || '—'}
  </div>
  </div>
  <div className="mt-2 border-t border-slate-100 pt-2">
@@ -1088,7 +1088,7 @@ export default function BoardRoomRecords() {
  {workflow.forwarded_by
  ? accountNames[workflow.forwarded_by] ||
  'Account name unavailable'
- : 'â€”'}
+ : '—'}
  </div>
  </div>
  {workflow.forwarded_at && (
@@ -1114,7 +1114,7 @@ export default function BoardRoomRecords() {
  {workflow.board_room_received_by
  ? accountNames[workflow.board_room_received_by] ||
  'Account name unavailable'
- : 'â€”'}
+ : '—'}
  </div>
  <div className="mt-0.5 text-[11px] text-slate-500">
  Confirmed at: {formatDateTime(workflow.board_room_received_at)}
@@ -1134,7 +1134,7 @@ export default function BoardRoomRecords() {
  {workflow.returned_to_origin_by
  ? accountNames[workflow.returned_to_origin_by] ||
  'Account name unavailable'
- : 'â€”'}
+ : '—'}
  </div>
  <div className="mt-0.5 text-[11px] text-slate-500">
  Returned at: {formatDateTime(workflow.returned_to_origin_at)}
@@ -1142,7 +1142,7 @@ export default function BoardRoomRecords() {
  </div>
  )}
  {!workflow.board_room_received_at &&
- !workflow.returned_to_origin_at && 'â€”'}
+ !workflow.returned_to_origin_at && '—'}
  </td>
 
  <td
@@ -1355,7 +1355,7 @@ export default function BoardRoomRecords() {
  {label}
  </p>
  <p className="mt-1 break-words text-sm font-medium text-slate-900">
- {value ? String(value) : 'â€”'}
+ {value ? String(value) : '—'}
  </p>
  </div>
  ))}
@@ -1503,7 +1503,7 @@ export default function BoardRoomRecords() {
  'No subject provided'}
  </p>
  <p className="mt-1 text-[11px] text-slate-500">
- {statusLabels[workflow.workflow_status]} Â·{' '}
+ {statusLabels[workflow.workflow_status]} ·{' '}
  {workflow.urgency === 'urgent'
  ? 'Urgent'
  : 'Not Urgent'}

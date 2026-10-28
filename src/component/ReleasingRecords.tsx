@@ -86,6 +86,7 @@ export default function ReleasingRecords() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [nextActionOffice, setNextActionOffice] = useState('')
   const [nextActionReleaseTo, setNextActionReleaseTo] = useState('')
+  const [nextActionReleaseAt, setNextActionReleaseAt] = useState('')
   const [savingNextAction, setSavingNextAction] = useState(false)
   const [nextActionMode, setNextActionMode] = useState<'view' | 'edit'>('view')
   const [auditLogs, setAuditLogs] = useState<Array<{ id: string; edited_by_name: string; edited_at: string; change_type: string; previous_values: Record<string, unknown> | null; new_values: Record<string, unknown> | null }>>([])
@@ -579,24 +580,51 @@ export default function ReleasingRecords() {
 
     const office = nextActionOffice.trim()
     const releaseTo = nextActionReleaseTo.trim()
-    if (!office || !releaseTo) {
-      setActionError('Please enter both Office to Forward and Release To.')
+
+    if (!office || !releaseTo || !nextActionReleaseAt) {
+      setActionError('Please enter Office to Forward, Release To, and Date/Time Release.')
       return
     }
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError) { setActionError(authError.message); return }
-    if (!user) { setActionError('Your session has expired. Please sign in again.'); return }
+    const releaseDate = new Date(nextActionReleaseAt)
+    if (Number.isNaN(releaseDate.getTime())) {
+      setActionError('Please enter a valid release date and time.')
+      return
+    }
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
+    if (authError) {
+      setActionError(authError.message)
+      return
+    }
+    if (!user) {
+      setActionError('Your session has expired. Please sign in again.')
+      return
+    }
 
     setSavingNextAction(true)
+
     try {
       const { data: profile, error: profileError } = await supabase
-        .from('profiles').select('full_name').eq('id', user.id).maybeSingle()
+        .from('profiles')
+        .select('full_name')
+        .eq('id', user.id)
+        .maybeSingle()
+
       if (profileError) throw profileError
+
       const editorName = profile?.full_name?.trim()
-      if (!editorName) throw new Error('Your profile must have a full name before saving this action.')
+      if (!editorName) {
+        throw new Error('Your profile must have a full name before saving this action.')
+      }
 
       const now = new Date().toISOString()
+      const releaseAt = releaseDate.toISOString()
+      const isEdit = Boolean(record.next_action_release_at)
       const previousValues = {
         office_to_forward: record.next_action_office_to_forward,
         release_to: record.next_action_release_to,
@@ -607,37 +635,39 @@ export default function ReleasingRecords() {
       const newValues = {
         office_to_forward: office,
         release_to: releaseTo,
-        release_at: record.next_action_release_at || now,
+        release_at: releaseAt,
         system_status: 'Forwarded',
         date_forwarded: record.next_action_date_forwarded || now,
       }
-      const isEdit = Boolean(record.next_action_release_at)
+
+      // Editing a completed document must not reactivate its workflow.
+      const workflowStatus = isEdit
+        ? (record.workflow_status || 'action_completed')
+        : 'action_completed'
 
       const { data: updatedRows, error: updateError } = await supabase
         .from('document_workflow')
         .update({
           next_action_office_to_forward: office,
           next_action_release_to: releaseTo,
-          next_action_release_at: record.next_action_release_at || now,
+          next_action_release_at: releaseAt,
           next_action_system_status: 'Forwarded',
           next_action_date_forwarded: newValues.date_forwarded,
           next_action_recorded_by: user.id,
           next_action_recorded_by_name: editorName,
-          workflow_status: 'action_completed',
+          workflow_status: workflowStatus,
           updated_at: now,
         })
         .eq('id', record.id)
-        .select('id, workflow_status, next_action_system_status, next_action_date_forwarded')
+        .select('id')
 
       if (updateError) throw updateError
-
       if (!updatedRows || updatedRows.length === 0) {
         throw new Error(
           'Release was not saved. Check your Supabase UPDATE permissions and row-level security policies.',
         )
       }
 
-      // Store a separate immutable history entry for the initial save and every edit.
       const { error: logError } = await supabase
         .from('document_workflow_next_action_logs')
         .insert({
@@ -649,32 +679,41 @@ export default function ReleasingRecords() {
           previous_values: previousValues,
           new_values: newValues,
         })
+
       if (logError) {
-        throw new Error(`The action was saved, but its audit log could not be saved: ${logError.message}. Please check the audit-log table policies.`)
+        throw new Error(
+          `The release was saved, but its audit log could not be saved: ${logError.message}.`,
+        )
       }
 
-      await loadRecords()
-      const updatedRecord = { ...record,
+      const updatedRecord: ReleasingRecord = {
+        ...record,
         next_action_office_to_forward: office,
         next_action_release_to: releaseTo,
-        next_action_release_at: newValues.release_at,
+        next_action_release_at: releaseAt,
         next_action_system_status: 'Forwarded',
         next_action_date_forwarded: newValues.date_forwarded,
         next_action_recorded_by: user.id,
         next_action_recorded_by_name: editorName,
-        workflow_status: 'action_completed',
-        status: 'action_completed',
+        workflow_status: workflowStatus,
+        status: workflowStatus,
       }
-      setSelected(updatedRecord)
+
+      setRecords(current =>
+        current.map(item => item.id === record.id ? updatedRecord : item),
+      )
+      setReleasePanelRecord(updatedRecord)
       setNextActionMode('view')
       await loadNextActionLogs(record.id)
-
-      // This workflow always records the action as Forwarded when saved.
-      // Close the panel and refresh the table so the completed state is visible.
-      setReleasePanelRecord(null)
-      setActionSuccess(`Document ${record.reference_number} was marked Forwarded successfully.`)
+      setActionSuccess(
+        isEdit
+          ? `Release details for ${record.reference_number} were updated successfully.`
+          : `Document ${record.reference_number} was marked Forwarded successfully.`,
+      )
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Unable to save Next Action.')
+      setActionError(
+        err instanceof Error ? err.message : 'Unable to save Next Action.',
+      )
     } finally {
       setSavingNextAction(false)
     }
@@ -832,6 +871,17 @@ export default function ReleasingRecords() {
           second: '2-digit',
           hour12: true,
         })
+  }
+
+  function toDateTimeLocalValue(value: string | null) {
+    if (!value) return ''
+
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+
+    const pad = (number: number) => String(number).padStart(2, '0')
+
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
   }
 
   function displayStatus(status: string | null) {
@@ -1301,7 +1351,7 @@ export default function ReleasingRecords() {
                       ) : (
                         <span className="text-[10px] text-amber-700">Awaiting receipt</span>
                       )}
-                      {record.release_received_at && !isReleaseCompleted(record) && (
+                      {record.release_received_at && (
                         <button
                           type="button"
                           onClick={() => {
@@ -1309,14 +1359,14 @@ export default function ReleasingRecords() {
                             setNextActionMode(record.next_action_release_at ? 'view' : 'edit')
                             setActionError('')
                             setActionSuccess('')
-                            void loadNextActionLogs(record.id)
                             setNextActionOffice(record.next_action_office_to_forward || '')
                             setNextActionReleaseTo(record.next_action_release_to || '')
-                            
+                            setNextActionReleaseAt(toDateTimeLocalValue(record.next_action_release_at))
+                            void loadNextActionLogs(record.id)
                           }}
                           className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-800"
                         >
-                          <Send size={13} /> {record.next_action_release_at ? 'Action' : 'Complete Release'}
+                          <Send size={13} /> {isReleaseCompleted(record) || record.next_action_release_at ? 'Action' : 'Complete Release'}
                         </button>
                       )}
                       <button
@@ -1495,8 +1545,7 @@ export default function ReleasingRecords() {
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <label className="text-xs font-semibold text-slate-600">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
                   <label className="text-xs font-semibold text-slate-600">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
-                  <div className="text-xs font-semibold text-slate-600">Date Release<p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_release_at ? formatDate(releasePanelRecord.next_action_release_at) : 'Recorded automatically when saved'}</p></div>
-                  <div className="text-xs font-semibold text-slate-600">Time Release<p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_release_at ? formatReleaseTime(releasePanelRecord.next_action_release_at) : 'Recorded automatically when saved'}</p></div>
+                  <label className="text-xs font-semibold text-slate-600">Forward At (Date and Time) *<input type="datetime-local" value={nextActionReleaseAt} onChange={event => setNextActionReleaseAt(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100" /></label>
                   <div className="text-xs font-semibold text-slate-600">Action Done in Unified System
                     <p className="mt-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800">Forwarded</p>
                   </div>
@@ -1508,9 +1557,9 @@ export default function ReleasingRecords() {
                 {!releasePanelRecord.release_received_at && <p className="mt-3 text-xs text-amber-700">Confirm physical receipt before releasing this document.</p>}
                 {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-blue-700">{actionError}</p>}
                 {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">{actionSuccess}</p>}
-                {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')})</p>}</div>)}</div></div>}
+                {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')}; Forward At: {String(log.previous_values.release_at || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')}; Forward At: {String(log.new_values.release_at || '—')})</p>}</div>)}</div></div>}
                 <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-red-100 pt-4">
-                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => setNextActionMode('edit')} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Processing…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
+                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => { setNextActionOffice(releasePanelRecord.next_action_office_to_forward || ''); setNextActionReleaseTo(releasePanelRecord.next_action_release_to || ''); setNextActionReleaseAt(toDateTimeLocalValue(releasePanelRecord.next_action_release_at)); setActionError(''); setNextActionMode('edit') }} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Saving…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
                   <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close Panel</button>
                 </div>
               </div>

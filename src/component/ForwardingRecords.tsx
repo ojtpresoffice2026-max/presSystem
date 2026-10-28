@@ -103,7 +103,7 @@ function displayStatus(status: string) {
 }
 
 function formatDate(value?: string | null) {
-  if (!value) return 'â€”'
+  if (!value) return '—'
 
   const date = new Date(`${value.slice(0, 10)}T00:00:00`)
 
@@ -117,7 +117,7 @@ function formatDate(value?: string | null) {
 }
 
 function formatTime(value?: string | null) {
-  if (!value) return 'â€”'
+  if (!value) return '—'
 
   const [hourString, minuteString] = value.split(':')
   const hour = Number(hourString)
@@ -138,7 +138,7 @@ function formatTime(value?: string | null) {
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return 'â€”'
+  if (!value) return '—'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   const datePart = date.toLocaleDateString('en-US', {
@@ -882,7 +882,7 @@ export default function ForwardingRecords() {
       setReceiptConfirmation(null)
 
       setSuccess(
-        `Physical receipt confirmed for ${reference}. Next, select â€œForward to Releasing Staffâ€ and choose the staff member.`,
+        `Physical receipt confirmed for ${reference}. Next, select “Forward to Releasing Staff” and choose the staff member.`,
       )
 
       await loadData()
@@ -903,7 +903,7 @@ export default function ForwardingRecords() {
                 typeof details.details === 'string' ? details.details : '',
                 typeof details.hint === 'string' ? `Hint: ${details.hint}` : '',
                 typeof details.code === 'string' ? `Code: ${details.code}` : '',
-              ].filter(Boolean).join(' â€” ')
+              ].filter(Boolean).join(' — ')
             : typeof err === 'string'
               ? err
               : 'Unknown error. Check the browser console and Supabase logs.'
@@ -990,7 +990,7 @@ export default function ForwardingRecords() {
       )
 
       setSuccess(
-        `${document?.reference_number || 'Document'} forwarded to ${releaseStaff} â€” ${instruction}.`,
+        `${document?.reference_number || 'Document'} forwarded to ${releaseStaff} — ${instruction}.`,
       )
       setReleaseAssignment(null)
       setReleaseStaff('')
@@ -1143,7 +1143,7 @@ export default function ForwardingRecords() {
                   <div>
                     <h3 className="font-bold text-slate-900">Urgent Notifications</h3>
                     <p className="text-xs text-slate-500">
-                      {urgentReceivedDocuments.length} new Â· {urgentReturnedWorkflows.length} returned by Board Room
+                      {urgentReceivedDocuments.length} new · {urgentReturnedWorkflows.length} returned by Board Room
                     </p>
                   </div>
                   <button
@@ -1168,12 +1168,12 @@ export default function ForwardingRecords() {
                       <div key={`new-${document.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-red-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number}>
-                            PresOffice No.: {document.reference_number || 'â€”'}
+                            PresOffice No.: {document.reference_number || '—'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600" title={document.system_code || ''}>
-                            System Code: {document.system_code || 'â€”'}
+                            System Code: {document.system_code || '—'}
                           </p>
-                          <p className="mt-1 text-[10px] text-red-700">Urgent Â· Awaiting forwarding</p>
+                          <p className="mt-1 text-[10px] text-red-700">Urgent · Awaiting forwarding</p>
                         </div>
                         <button
                           type="button"
@@ -1189,12 +1189,12 @@ export default function ForwardingRecords() {
                       <div key={`returned-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-amber-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
-                            PresOffice No.: {document?.reference_number || 'â€”'}
+                            PresOffice No.: {document?.reference_number || '—'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
-                            System Code: {document?.system_code || 'â€”'}
+                            System Code: {document?.system_code || '—'}
                           </p>
-                          <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent Â· Returned by Board Room</p>
+                          <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent · Returned by Board Room</p>
                         </div>
                         <button
                           type="button"
@@ -1263,16 +1263,16 @@ export default function ForwardingRecords() {
                       <div key={`returned-pending-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-blue-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
-                            PresOffice No.: {document?.reference_number || 'â€”'}
+                            PresOffice No.: {document?.reference_number || '—'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
-                            System Code: {document?.system_code || 'â€”'}
+                            System Code: {document?.system_code || '—'}
                           </p>
                           <p className="mt-1 truncate text-xs text-slate-600">
                             {document?.content || document?.subject || 'No subject provided'}
                           </p>
                           <p className="mt-1 text-[10px] font-semibold text-blue-700">
-                            Returned Â· Awaiting receipt confirmation
+                            Returned · Awaiting receipt confirmation
                           </p>
                           {workflow.returned_to_origin_at && (
                             <p className="mt-0.5 text-[10px] text-slate-500">
@@ -1346,7 +1346,7 @@ export default function ForwardingRecords() {
               <p className="mt-0.5 text-xs text-slate-500">
                 {loading
                   ? 'Loading records...'
-                  : `${filteredWorkflows.length} matching records Â· ${availableDocuments.length} eligible to forward`}
+                  : `${filteredWorkflows.length} matching records · ${availableDocuments.length} eligible to forward`}
               </p>
             </div>
           </div>
@@ -1481,7 +1481,7 @@ export default function ForwardingRecords() {
                         {filteredWorkflows.length - index}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
-                        {document?.reference_number || 'â€”'}
+                        {document?.reference_number || '—'}
                       </td>
 
                       <td
@@ -1489,7 +1489,7 @@ export default function ForwardingRecords() {
                         title={document?.system_code || ''}
                       >
                         <span className="block truncate">
-                          {document?.system_code || 'â€”'}
+                          {document?.system_code || '—'}
                         </span>
                       </td>
 
@@ -1500,7 +1500,7 @@ export default function ForwardingRecords() {
                               Transaction Person
                             </p>
                             <p className="mt-0.5 font-medium text-slate-800">
-                              {workflow.transaction_person || 'â€”'}
+                              {workflow.transaction_person || '—'}
                             </p>
                           </div>
                           <div className="border-t border-slate-100 pt-1.5">
@@ -1542,7 +1542,7 @@ export default function ForwardingRecords() {
                         </span>
                         {workflow.board_room_received_at && (
                           <div className="mt-2 min-w-[150px] space-y-1 text-[10px] text-slate-500">
-                            <p>Receipt confirmed by: {workflow.board_room_received_by ? (profiles[workflow.board_room_received_by] || workflow.board_room_received_by) : 'â€”'}</p>
+                            <p>Receipt confirmed by: {workflow.board_room_received_by ? (profiles[workflow.board_room_received_by] || workflow.board_room_received_by) : '—'}</p>
                             <p>At: {formatDateTime(workflow.board_room_received_at)}</p>
                           </div>
                         )}
@@ -1607,7 +1607,7 @@ export default function ForwardingRecords() {
                             </div>
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">â€”</span>
+                          <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
 
@@ -1627,7 +1627,7 @@ export default function ForwardingRecords() {
                       </td>
 
                       <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
-                        {workflow.release_instruction || 'â€”'}
+                        {workflow.release_instruction || '—'}
                       </td>
 
                       <td className="px-4 py-3.5">
@@ -1679,7 +1679,7 @@ export default function ForwardingRecords() {
                             Assigned
                           </span>
                         ) : (
-                          <span className="text-xs text-slate-400">â€”</span>
+                          <span className="text-xs text-slate-400">—</span>
                         )}
                         </div>
                       </td>
@@ -1719,7 +1719,7 @@ export default function ForwardingRecords() {
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-slate-200 p-3">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || 'â€”'}</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || '—'}</p>
                 </div>
               ))}
             </div>
@@ -1794,7 +1794,7 @@ export default function ForwardingRecords() {
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-lg border border-slate-200 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || 'â€”'}</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || '—'}</p>
                   </div>
                 ))}
               </div>
@@ -1858,7 +1858,7 @@ export default function ForwardingRecords() {
                   {documents.find(
                     item =>
                       item.id === receiptConfirmation.receiving_record_id,
-                  )?.reference_number || 'â€”'}
+                  )?.reference_number || '—'}
                 </span>
               </div>
 
@@ -1988,7 +1988,7 @@ export default function ForwardingRecords() {
                 <p className="mt-1 text-sm font-bold text-slate-900">
                   {documents.find(
                     item => item.id === releaseAssignment.receiving_record_id,
-                  )?.reference_number || 'â€”'}
+                  )?.reference_number || '—'}
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
                   {documents.find(
@@ -2291,7 +2291,7 @@ export default function ForwardingRecords() {
                   htmlFor="transaction-person"
                   className="text-xs font-semibold text-slate-600"
                 >
-                  Transaction â€” Person Who Brought the Documents *
+                  Transaction — Person Who Brought the Documents *
                 </label>
                 <input
                   id="transaction-person"
@@ -2385,7 +2385,7 @@ export default function ForwardingRecords() {
                     </p>
                   </div>
                   <span className="text-xs text-slate-500 dark:text-slate-400">
-                    {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'urgent').length} urgent Â· {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'not_urgent').length} not urgent
+                    {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'urgent').length} urgent · {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'not_urgent').length} not urgent
                   </span>
                 </div>
 

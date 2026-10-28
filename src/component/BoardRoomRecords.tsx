@@ -1,4 +1,4 @@
-import {
+﻿import {
  useCallback,
  useEffect,
  useMemo,
@@ -13,7 +13,6 @@ import {
  CheckCircle2,
  FileText,
  LoaderCircle,
- RefreshCw,
  Search,
  Send,
  X,
@@ -78,11 +77,13 @@ type DisplayRecord = {
 type CartItem = {
  workflowId: string
  remarks: string
+ urgency: 'urgent' | 'not_urgent'
 }
 
 type ReturnCartItem = {
  workflow_id: string
  remarks: string
+ urgency: 'urgent' | 'not_urgent'
 }
 
 const statusLabels: Record<WorkflowStatus, string> = {
@@ -106,14 +107,19 @@ const statusClasses: Record<WorkflowStatus, string> = {
 const inputClass =
  'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
 
-const returnableStatuses: WorkflowStatus[] = [
- 'board_room_received',
- 'action_in_progress',
- 'action_completed',
-]
+// A document can be returned to its originating office only after the
+// Board Room has confirmed physical receipt AND the action is completed.
+const returnableStatuses: WorkflowStatus[] = ['action_completed']
+
+function isReadyToReturn(row: DisplayRecord) {
+ return (
+  returnableStatuses.includes(row.workflow.workflow_status) &&
+  Boolean(row.workflow.board_room_received_at)
+ )
+}
 
 function formatDateOnly(value: string | null | undefined) {
- if (!value) return '—'
+ if (!value) return 'â€”'
 
  const date = new Date(`${value}T00:00:00`)
  if (Number.isNaN(date.getTime())) return value
@@ -125,7 +131,7 @@ function formatDateOnly(value: string | null | undefined) {
 }
 
 function formatTime(value: string | null | undefined) {
- if (!value) return '—'
+ if (!value) return 'â€”'
 
  const match = value.match(/^(\d{1,2}):(\d{2})/)
  if (!match) return value
@@ -142,7 +148,7 @@ function formatTime(value: string | null | undefined) {
 }
 
 function formatDateTime(value: string | null | undefined) {
- if (!value) return '—'
+ if (!value) return 'â€”'
 
  const date = new Date(value)
  if (Number.isNaN(date.getTime())) return value
@@ -185,8 +191,8 @@ function getManilaDate() {
 
 function getStorageLabel(workflow: WorkflowRecord) {
  return workflow.storage_type === 'folder'
- ? `Folder — ${workflow.folder_color || 'Not specified'}`
- : `Box — ${workflow.box_number || 'Not specified'}`
+ ? `Folder â€” ${workflow.folder_color || 'Not specified'}`
+ : `Box â€” ${workflow.box_number || 'Not specified'}`
 }
 
 async function copyDocumentCode(
@@ -245,6 +251,7 @@ export default function BoardRoomRecords() {
  const [error, setError] = useState('')
  const [success, setSuccess] = useState('')
  const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
+ const [incomingDocumentsOpen, setIncomingDocumentsOpen] = useState(false)
  const [latestUrgentWorkflowId, setLatestUrgentWorkflowId] = useState<string | null>(null)
 
  // Play urgent alerts automatically. If browser autoplay is blocked, retry on
@@ -322,13 +329,11 @@ export default function BoardRoomRecords() {
  const [returnDate, setReturnDate] = useState(getManilaDate)
  const [returnTime, setReturnTime] = useState('')
 
- // Shared storage and urgency settings.
+ // Storage settings are shared across the return transaction. Urgency is set per paper.
  const [returnStorageType, setReturnStorageType] =
  useState<'folder' | 'box'>('folder')
  const [returnFolderColor, setReturnFolderColor] = useState('')
  const [returnBoxNumber, setReturnBoxNumber] = useState('')
- const [returnUrgency, setReturnUrgency] =
- useState<'urgent' | 'not_urgent'>('not_urgent')
 
  const loadRecords = useCallback(async () => {
  setLoading(true)
@@ -414,9 +419,7 @@ export default function BoardRoomRecords() {
  // Keep only documents that are still eligible for return.
  const eligibleIds = new Set(
  combined
- .filter(row =>
- returnableStatuses.includes(row.workflow.workflow_status),
- )
+ .filter(isReadyToReturn)
  .map(row => row.workflow.id),
  )
 
@@ -501,9 +504,7 @@ export default function BoardRoomRecords() {
 
  const returnableRecords = useMemo(
  () =>
- records.filter(row =>
- returnableStatuses.includes(row.workflow.workflow_status),
- ),
+ records.filter(isReadyToReturn),
  [records],
  )
 
@@ -515,10 +516,10 @@ export default function BoardRoomRecords() {
  record => record.workflow.id === item.workflowId,
  )
 
- return row ? { ...row, cartRemarks: item.remarks } : null
+ return row ? { ...row, cartRemarks: item.remarks, cartUrgency: item.urgency } : null
  })
  .filter(
- (row): row is DisplayRecord & { cartRemarks: string } =>
+ (row): row is DisplayRecord & { cartRemarks: string; cartUrgency: 'urgent' | 'not_urgent' } =>
  row !== null,
  ),
  [cart, returnableRecords],
@@ -556,6 +557,12 @@ export default function BoardRoomRecords() {
  row.workflow.urgency === 'urgent' &&
  row.workflow.workflow_status === 'forwarded',
  ),
+ [records],
+ )
+
+ // All forwarded documents awaiting Board Room receipt.
+ const incomingRecords = useMemo(
+ () => records.filter(row => row.workflow.workflow_status === 'forwarded'),
  [records],
  )
 
@@ -611,6 +618,7 @@ export default function BoardRoomRecords() {
  setError('')
  setSuccess('')
  setPickerSearch('')
+ // Each paper defaults to Not Urgent when it is added to the transaction.
  setCartOpen(true)
  }
 
@@ -620,7 +628,7 @@ export default function BoardRoomRecords() {
  return current
  }
 
- return [...current, { workflowId, remarks: '' }]
+ return [...current, { workflowId, remarks: '', urgency: 'not_urgent' }]
  })
 
  setSuccess('')
@@ -636,6 +644,14 @@ export default function BoardRoomRecords() {
  setCart(current =>
  current.map(item =>
  item.workflowId === workflowId ? { ...item, remarks } : item,
+ ),
+ )
+ }
+
+ function updateCartUrgency(workflowId: string, urgency: 'urgent' | 'not_urgent') {
+ setCart(current =>
+ current.map(item =>
+ item.workflowId === workflowId ? { ...item, urgency } : item,
  ),
  )
  }
@@ -662,7 +678,7 @@ export default function BoardRoomRecords() {
  const existingIds = new Set(current.map(item => item.workflowId))
  const additions = visibleIds
  .filter(id => !existingIds.has(id))
- .map(workflowId => ({ workflowId, remarks: '' }))
+ .map(workflowId => ({ workflowId, remarks: '', urgency: 'not_urgent' as const }))
 
  return [...current, ...additions]
  })
@@ -708,9 +724,16 @@ export default function BoardRoomRecords() {
  }
 
  const items: ReturnCartItem[] = cartRecords.map(row => ({
- workflow_id: row.workflow.id,
- remarks: row.cartRemarks.trim(),
- }))
+  workflow_id: row.workflow.id,
+  remarks: row.cartRemarks.trim(),
+  urgency: row.workflow.urgency === 'urgent' ? 'urgent' : 'not_urgent',
+}))
+
+ // Re-check readiness immediately before submitting the return transaction.
+ if (cartRecords.some(row => !isReadyToReturn(row))) {
+ setError('Only documents received by the Board Room and marked Ready to return can be returned to their originating offices. Reload the page and try again.')
+ return
+ }
 
  setProcessing(true)
 
@@ -737,11 +760,25 @@ export default function BoardRoomRecords() {
  returnStorageType === 'folder' ? returnFolderColor.trim() : null,
  p_box_number:
  returnStorageType === 'box' ? returnBoxNumber.trim() : null,
- p_urgency: returnUrgency,
+ // Keep the RPC's legacy shared value at Not Urgent; per-document urgency
+ // is applied immediately after the return transaction succeeds.
+ p_urgency: 'not_urgent',
  },
  )
 
  if (rpcError) throw rpcError
+
+ // Apply each paper's own urgency so a single return transaction can contain
+ // both Urgent and Not Urgent documents. The RPC marks the selected papers
+ // as returned; this follow-up preserves the per-paper urgency choices.
+ for (const row of cartRecords) {
+  const { error: urgencyError } = await supabase
+   .from('document_workflow')
+   .update({ urgency: row.cartUrgency })
+   .eq('id', row.workflow.id)
+   .eq('workflow_status', 'returned_to_origin')
+  if (urgencyError) throw urgencyError
+ }
 
  const returnedCount = Number(data ?? items.length)
 
@@ -755,7 +792,6 @@ export default function BoardRoomRecords() {
  setReturnStorageType('folder')
  setReturnFolderColor('')
  setReturnBoxNumber('')
- setReturnUrgency('not_urgent')
 
  setSuccess(
  `${returnedCount} document(s) returned to their originating offices successfully.`,
@@ -785,6 +821,7 @@ export default function BoardRoomRecords() {
  </div>
 
  <div className="flex flex-wrap items-center gap-3">
+ {/* Urgent notification bell */}
  <div className="relative">
  <button
  type="button"
@@ -803,32 +840,16 @@ export default function BoardRoomRecords() {
  {urgentNotificationsOpen && (
  <div className="absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-red-200 bg-white shadow-xl">
  <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
- <div>
- <h3 className="font-bold text-slate-900">Urgent Incoming Papers</h3>
- <p className="text-xs text-slate-500">{urgentIncomingRecords.length} awaiting Board Room receipt</p>
- </div>
- <button type="button" onClick={() => setUrgentNotificationsOpen(false)} aria-label="Close urgent notifications" className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100">
- <X size={16} />
- </button>
+ <div><h3 className="font-bold text-slate-900">Urgent Incoming Papers</h3><p className="text-xs text-slate-500">{urgentIncomingRecords.length} awaiting Board Room receipt</p></div>
+ <button type="button" onClick={() => setUrgentNotificationsOpen(false)} aria-label="Close urgent notifications" className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100"><X size={16} /></button>
  </div>
  {urgentIncomingRecords.length === 0 ? (
  <div className="px-4 py-7 text-center text-sm text-slate-500">No urgent papers are waiting for receipt.</div>
  ) : (
  <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
  {urgentIncomingRecords.map(({ workflow, document }) => (
- <button
- type="button"
- key={workflow.id}
- onClick={() => {
- setSelectedId(workflow.id)
- setUrgentNotificationsOpen(false)
- }}
- className="block w-full px-4 py-3 text-left transition-colors hover:bg-red-50"
- >
- <div className="flex items-start justify-between gap-2">
- <button type="button" onClick={(event) => { event.stopPropagation(); void copyDocumentCode(document?.reference_number, event) }} title="Click to copy reference number" className="break-words text-left text-sm font-semibold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline">{document?.reference_number || 'No reference number'}</button>
- <span className="shrink-0 rounded-full bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700">URGENT</span>
- </div>
+ <button type="button" key={workflow.id} onClick={() => { setSelectedId(workflow.id); setUrgentNotificationsOpen(false) }} className="block w-full px-4 py-3 text-left transition-colors hover:bg-red-50">
+ <div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</span><span className="shrink-0 rounded-full bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700">URGENT</span></div>
  <p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
  <p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p>
  </button>
@@ -838,31 +859,26 @@ export default function BoardRoomRecords() {
  </div>
  )}
  </div>
- <button
- type="button"
- onClick={openCart}
- disabled={processing}
- className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 disabled:opacity-50"
- >
- <FileText size={17} />
- Return Documents
- <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
- {cart.length}
- </span>
- </button>
 
- <button
- type="button"
- onClick={() => void loadRecords()}
- disabled={loading || processing}
- className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-100 disabled:opacity-50"
- >
- <RefreshCw
- size={16}
- className={loading ? 'animate-spin' : ''}
- />
- Refresh
+ {/* Incoming count badge sits at the top-right corner of the button. */}
+ <div className="relative">
+ <button type="button" onClick={() => setIncomingDocumentsOpen(open => !open)} aria-label={`Incoming documents awaiting receipt: ${incomingRecords.length}`} aria-expanded={incomingDocumentsOpen} className="relative inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 shadow-sm transition-colors hover:bg-blue-50">
+ <FileText size={17} /> Incoming
+ <span className="absolute -right-1.5 -top-1.5 z-10 flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-700 px-1.5 text-[10px] font-bold text-white ring-2 ring-slate-50">{incomingRecords.length > 99 ? '99+' : incomingRecords.length}</span>
  </button>
+ {incomingDocumentsOpen && (
+ <div className="absolute right-0 z-50 mt-2 w-[min(26rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-blue-200 bg-white shadow-xl">
+ <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3"><div><h3 className="font-bold text-slate-900">Incoming Documents</h3><p className="text-xs text-slate-500">{incomingRecords.length} forwarded to the Board Room Â· awaiting receipt</p></div><button type="button" onClick={() => setIncomingDocumentsOpen(false)} aria-label="Close incoming documents" className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100"><X size={16} /></button></div>
+ {incomingRecords.length === 0 ? <div className="px-4 py-7 text-center text-sm text-slate-500">No incoming documents are waiting for receipt.</div> : (
+ <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">{incomingRecords.map(({ workflow, document }) => (
+ <button type="button" key={workflow.id} onClick={() => { setSelectedId(workflow.id); setIncomingDocumentsOpen(false) }} className="block w-full px-4 py-3 text-left transition-colors hover:bg-blue-50"><div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</span><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${workflow.urgency === 'urgent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{workflow.urgency === 'urgent' ? 'URGENT' : 'NOT URGENT'}</span></div><p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p><p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p></button>
+ ))}</div>
+ )}
+ </div>
+ )}
+ </div>
+
+ <button type="button" onClick={openCart} disabled={processing} className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 disabled:opacity-50"><FileText size={17} /> Return Documents <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">{cart.length}</span></button>
  </div>
  </div>
 
@@ -872,7 +888,7 @@ export default function BoardRoomRecords() {
  <div className="min-w-0 flex-1">
  <p className="font-bold">Urgent paper forwarded to the Board Room</p>
  <p className="mt-1 break-words">
- {latestUrgentRecord.document?.reference_number || 'No reference number'} — {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
+ {latestUrgentRecord.document?.reference_number || 'No reference number'} â€” {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
  </p>
  <p className="mt-1 text-xs text-red-700">Please prioritize this paper and confirm receipt.</p>
  </div>
@@ -996,9 +1012,7 @@ export default function BoardRoomRecords() {
  const inCart = cart.some(
  item => item.workflowId === workflow.id,
  )
- const canReturn = returnableStatuses.includes(
- workflow.workflow_status,
- )
+ const canReturn = isReadyToReturn({ workflow, document })
 
  return (
  <tr
@@ -1032,7 +1046,7 @@ export default function BoardRoomRecords() {
  Transaction Person
  </div>
  <div className="mt-0.5 break-words text-sm font-medium text-slate-800">
- {workflow.transaction_person || '—'}
+ {workflow.transaction_person || 'â€”'}
  </div>
  </div>
  <div className="mt-2 border-t border-slate-100 pt-2">
@@ -1074,7 +1088,7 @@ export default function BoardRoomRecords() {
  {workflow.forwarded_by
  ? accountNames[workflow.forwarded_by] ||
  'Account name unavailable'
- : '—'}
+ : 'â€”'}
  </div>
  </div>
  {workflow.forwarded_at && (
@@ -1100,7 +1114,7 @@ export default function BoardRoomRecords() {
  {workflow.board_room_received_by
  ? accountNames[workflow.board_room_received_by] ||
  'Account name unavailable'
- : '—'}
+ : 'â€”'}
  </div>
  <div className="mt-0.5 text-[11px] text-slate-500">
  Confirmed at: {formatDateTime(workflow.board_room_received_at)}
@@ -1120,7 +1134,7 @@ export default function BoardRoomRecords() {
  {workflow.returned_to_origin_by
  ? accountNames[workflow.returned_to_origin_by] ||
  'Account name unavailable'
- : '—'}
+ : 'â€”'}
  </div>
  <div className="mt-0.5 text-[11px] text-slate-500">
  Returned at: {formatDateTime(workflow.returned_to_origin_at)}
@@ -1128,7 +1142,7 @@ export default function BoardRoomRecords() {
  </div>
  )}
  {!workflow.board_room_received_at &&
- !workflow.returned_to_origin_at && '—'}
+ !workflow.returned_to_origin_at && 'â€”'}
  </td>
 
  <td
@@ -1341,7 +1355,7 @@ export default function BoardRoomRecords() {
  {label}
  </p>
  <p className="mt-1 break-words text-sm font-medium text-slate-900">
- {value ? String(value) : '—'}
+ {value ? String(value) : 'â€”'}
  </p>
  </div>
  ))}
@@ -1489,7 +1503,7 @@ export default function BoardRoomRecords() {
  'No subject provided'}
  </p>
  <p className="mt-1 text-[11px] text-slate-500">
- {statusLabels[workflow.workflow_status]} ·{' '}
+ {statusLabels[workflow.workflow_status]} Â·{' '}
  {workflow.urgency === 'urgent'
  ? 'Urgent'
  : 'Not Urgent'}
@@ -1528,13 +1542,28 @@ export default function BoardRoomRecords() {
  </span>
  </div>
 
+ <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+ <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+ <p className="text-[11px] font-medium text-blue-700">Selected</p>
+ <p className="text-lg font-bold tabular-nums text-blue-900">{cartRecords.length}</p>
+ </div>
+ <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2">
+ <p className="text-[11px] font-medium text-red-700">Urgent</p>
+ <p className="text-lg font-bold tabular-nums text-red-900">{cartRecords.filter(row => row.cartUrgency === 'urgent').length}</p>
+ </div>
+ <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+ <p className="text-[11px] font-medium text-slate-600">Not Urgent</p>
+ <p className="text-lg font-bold tabular-nums text-slate-900">{cartRecords.filter(row => row.cartUrgency === 'not_urgent').length}</p>
+ </div>
+ </div>
+
  {cartRecords.length === 0 ? (
  <p className="mt-4 text-sm text-slate-500">
  No documents selected yet.
  </p>
  ) : (
  <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
- {cartRecords.map(({ workflow, document, cartRemarks }) => (
+ {cartRecords.map(({ workflow, document, cartRemarks, cartUrgency }) => (
  <div
  key={workflow.id}
  className="rounded-lg border border-blue-100 bg-white p-3"
@@ -1578,6 +1607,20 @@ export default function BoardRoomRecords() {
  className={inputClass}
  />
  </label>
+
+ <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+  <p className="text-xs font-semibold text-slate-700">Urgency for this paper</p>
+  <div className="mt-2 flex flex-wrap gap-5">
+   <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+    <input type="radio" name={`return-urgency-${workflow.id}`} checked={cartUrgency === 'urgent'} onChange={() => updateCartUrgency(workflow.id, 'urgent')} className="accent-red-600" />
+    <AlertCircle size={15} className="text-red-600" /> Urgent
+   </label>
+   <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+    <input type="radio" name={`return-urgency-${workflow.id}`} checked={cartUrgency === 'not_urgent'} onChange={() => updateCartUrgency(workflow.id, 'not_urgent')} className="accent-blue-700" />
+    Not Urgent
+   </label>
+  </div>
+ </div>
  </div>
  ))}
  </div>
@@ -1585,13 +1628,13 @@ export default function BoardRoomRecords() {
  </div>
  </div>
 
- {/* Shared storage and urgency settings */}
+ {/* Shared storage settings */}
  <div className="border-t border-slate-200 pt-5">
  <h3 className="text-sm font-bold text-slate-900">
- Shared Storage and Urgency
+ Shared Storage
  </h3>
  <p className="mt-1 text-xs text-slate-500">
- These settings will be applied to every document selected in this return.
+ Storage details apply to every document in this return. Urgency is selected separately for each paper above.
  </p>
 
  <div className="mt-4 space-y-4">
@@ -1674,36 +1717,7 @@ export default function BoardRoomRecords() {
  </label>
  )}
 
- <div>
- <span className="text-xs font-semibold text-slate-600">
- Urgency *
- </span>
 
- <div className="mt-2 flex flex-wrap gap-5">
- <label className="inline-flex items-center gap-2 text-sm text-slate-700">
- <input
- type="radio"
- name="returnUrgency"
- value="urgent"
- checked={returnUrgency === 'urgent'}
- onChange={() => setReturnUrgency('urgent')}
- />
- <AlertCircle size={15} className="text-red-600" />
- Urgent
- </label>
-
- <label className="inline-flex items-center gap-2 text-sm text-slate-700">
- <input
- type="radio"
- name="returnUrgency"
- value="not_urgent"
- checked={returnUrgency === 'not_urgent'}
- onChange={() => setReturnUrgency('not_urgent')}
- />
- Not Urgent
- </label>
- </div>
- </div>
  </div>
  </div>
 
@@ -1791,7 +1805,7 @@ export default function BoardRoomRecords() {
  {cartRecords.length} document(s) selected
  </p>
  <p className="mt-1 text-xs text-slate-500">
- Individual remarks are saved with their respective documents.
+ Each paper keeps its own urgency and remarks; one transaction can mix Urgent and Not Urgent documents.
  </p>
  </div>
 

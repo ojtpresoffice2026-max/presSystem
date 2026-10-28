@@ -1,5 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
-
+﻿import { useEffect, useState, type FormEvent } from 'react'
 import {
   ClipboardList,
   RefreshCw,
@@ -21,6 +20,35 @@ type OfficeFolder = {
   name: string
   is_active: boolean
   sort_order: number
+}
+
+type DestinationField = {
+  id: string
+  folder_id: string
+  field_name: string
+  field_type: 'text' | 'number' | 'date' | 'dropdown' | 'textarea' | 'checkbox'
+  is_required: boolean
+  options: string[] | null
+  sort_order: number
+}
+
+type CustomFieldValue = string | boolean
+
+/** Return a readable folder label without changing the database code. */
+function getFolderDisplayName(
+  folder?: Pick<OfficeFolder, 'code' | 'name'>,
+  fallback = '',
+): string {
+  const code = folder?.code?.trim() || fallback.trim()
+  const name = folder?.name?.trim() || ''
+  const rawLabel = name && name.toUpperCase() !== code.toUpperCase() ? name : code
+
+  // Some folder codes/names contain a generated numeric suffix, e.g. DV_MAIN_179317...
+  return rawLabel
+    .replace(/_\d{8,}$/, '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 const DESTINATION_FOLDERS = [
@@ -130,7 +158,6 @@ function generatePresOfficeNumber(): string {
       ],
   ).join('')
 }
-
 /**
  * Converts currency-formatted text to a numeric value.
  *
@@ -151,7 +178,7 @@ function toAmount(value: string): number | null {
     .replace(/\bPHP\b/gi, '')
     .replace(/,/g, '')
     .replace(/\s+/g, '')
-  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
     throw new Error(
       `Invalid amount: "${value}". Enter a valid amount, such as ₱1,500.00.`,
     )
@@ -203,6 +230,10 @@ export default function Receiving() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [receiptDate, setReceiptDate] = useState(new Date())
+  const [previewCode, setPreviewCode] = useState('Generated number')
+  const [customFields, setCustomFields] = useState<DestinationField[]>([])
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, CustomFieldValue>>({})
+  const [customFieldsLoading, setCustomFieldsLoading] = useState(false)
   const [form, setForm] = useState(initialForm)
   const [generatedCode, setGeneratedCode] = useState('')
   const [showSuccessModal, setShowSuccessModal] = useState(false)
@@ -211,23 +242,28 @@ export default function Receiving() {
   const [destinationDropdownOpen, setDestinationDropdownOpen] =
     useState(false)
   const [destinationSearch, setDestinationSearch] = useState('')
-  const filteredDestinationFolders = DESTINATION_FOLDERS.filter(code => {
-    const matchingFolder = folders.find(
-      item =>
-        item.code.trim().toUpperCase() === code ||
-        item.name.trim().toUpperCase() === code,
-    )
-    const label =
-      matchingFolder &&
-      matchingFolder.name.trim().toUpperCase() !== code
-        ? `${code} — ${matchingFolder.name}`
-        : code
-    return label
-      .toLowerCase()
-      .includes(destinationSearch.trim().toLowerCase())
-  })
-  const selectedDestination =
-    form.destinationFolder.trim().toUpperCase()
+  const filteredDestinationFolders = folders
+    .filter(folder => folder.is_active)
+    .filter(folder => {
+      const displayName = getFolderDisplayName(folder)
+      const search = destinationSearch.trim().toLowerCase()
+      return (
+        displayName.toLowerCase().includes(search) ||
+        folder.code.trim().toLowerCase().includes(search)
+      )
+    })
+  const selectedFolder = folders.find(
+    folder =>
+      folder.code.trim().toUpperCase() ===
+        form.destinationFolder.trim().toUpperCase() ||
+      folder.name.trim().toUpperCase() ===
+        form.destinationFolder.trim().toUpperCase(),
+  )
+  const selectedFolderLabel = getFolderDisplayName(
+    selectedFolder,
+    form.destinationFolder,
+  )
+  const selectedDestination = selectedFolderLabel.toUpperCase()
   const showAdditionalFields =
     SPECIAL_DESTINATIONS.includes(selectedDestination)
   const showDvFields =
@@ -274,6 +310,12 @@ export default function Receiving() {
   useEffect(() => {
     void loadData()
   }, [])
+  useEffect(() => {
+    const refreshDate = () => setReceiptDate(new Date())
+    refreshDate()
+    const intervalId = window.setInterval(refreshDate, 30_000)
+    return () => window.clearInterval(intervalId)
+  }, [])
   function updateField(
   field: keyof typeof initialForm,
   value: string | string[],
@@ -283,18 +325,45 @@ export default function Receiving() {
     field !== 'content' && typeof value === 'string'
       ? value.toUpperCase()
       : value
-
   setForm(previous => ({
     ...previous,
     [field]: normalizedValue,
   }))
-
   setError('')
 }
-  function selectDestination(code: string) {
+  async function selectDestination(code: string) {
     updateField('destinationFolder', code)
     setDestinationSearch('')
     setDestinationDropdownOpen(false)
+    setCustomFields([])
+    setCustomFieldValues({})
+    setError('')
+    if (!code) return
+    const folder = folders.find(
+      item =>
+        item.code.trim().toUpperCase() === code.trim().toUpperCase() ||
+        item.name.trim().toUpperCase() === code.trim().toUpperCase(),
+    )
+    if (!folder) return
+    setCustomFieldsLoading(true)
+    try {
+      const { data, error: fieldsError } = await supabase
+        .from('destination_folder_fields')
+        .select('id, folder_id, field_name, field_type, is_required, options, sort_order')
+        .eq('folder_id', folder.id)
+        .order('sort_order', { ascending: true })
+      if (fieldsError) throw fieldsError
+      setCustomFields((data ?? []) as DestinationField[])
+    } catch (err) {
+      console.error('Unable to load destination custom fields:', err)
+      setError(
+        err instanceof Error
+          ? `Unable to load destination fields: ${err.message}`
+          : 'Unable to load destination fields.',
+      )
+    } finally {
+      setCustomFieldsLoading(false)
+    }
   }
   function toggleCode(code: string) {
     setForm(previous => {
@@ -361,6 +430,16 @@ export default function Receiving() {
         throw new Error(
           'Please complete all required fields and select a valid destination folder.',
         )
+      }
+      for (const field of customFields) {
+        const value = customFieldValues[field.id]
+        const isMissing =
+          field.field_type === 'checkbox'
+            ? value !== true
+            : value === undefined || String(value).trim() === ''
+        if (field.is_required && isMissing) {
+          throw new Error(`Please complete the required field: ${field.field_name}.`)
+        }
       }
       if (
         showDvFields &&
@@ -445,6 +524,13 @@ export default function Receiving() {
           received_at: receivedAt.toISOString(),
           receiving_staff: receivingStaff,
           urgency: form.urgency || null,
+          custom_field_values: Object.fromEntries(
+            customFields.map(field => [
+              field.id,
+              customFieldValues[field.id] ??
+                (field.field_type === 'checkbox' ? false : ''),
+            ]),
+          ),
           created_by: user.id,
           status: 'received',
           current_office: destinationCode,
@@ -508,7 +594,7 @@ export default function Receiving() {
               : '',
           ]
             .filter(Boolean)
-            .join(' — '),
+            .join(' â€” '),
         )
       }
       if (!saved) {
@@ -517,6 +603,9 @@ export default function Receiving() {
         )
       }
       setGeneratedCode(savedCode)
+      setPreviewCode('Generated number')
+      setCustomFieldValues({})
+      setCustomFields([])
       setCopyMessage('')
       setShowSuccessModal(true)
       setForm({ ...initialForm, selectedCodes: [] })
@@ -554,6 +643,10 @@ export default function Receiving() {
     setError('')
     setDestinationSearch('')
     setDestinationDropdownOpen(false)
+    setPreviewCode('Generated number')
+    setCustomFields([])
+    setCustomFieldValues({})
+    setCustomFieldsLoading(false)
   }
   return (
     <main className="h-[calc(100vh-3.5rem)] min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-y-contain bg-slate-50 p-4 text-slate-800 sm:p-6 lg:p-8">
@@ -596,7 +689,7 @@ export default function Receiving() {
                   value={
                     destinationDropdownOpen
                       ? destinationSearch
-                      : form.destinationFolder
+                      : selectedFolderLabel
                   }
                   onFocus={() => {
                     setDestinationSearch('')
@@ -678,25 +771,15 @@ export default function Receiving() {
                       Select destination folder
                     </button>
                     {filteredDestinationFolders.length > 0 ? (
-                      filteredDestinationFolders.map(code => {
-                        const matchingFolder = folders.find(
-                          item =>
-                            item.code.trim().toUpperCase() === code ||
-                            item.name.trim().toUpperCase() === code,
-                        )
-                        const label =
-                          matchingFolder &&
-                          matchingFolder.name.trim().toUpperCase() !== code
-                            ? `${code} — ${matchingFolder.name}`
-                            : code
+                      filteredDestinationFolders.map(folder => {
+                        const code = folder.code.trim().toUpperCase()
+                        const displayName = getFolderDisplayName(folder)
                         return (
                           <button
-                            key={code}
+                            key={folder.id}
                             type="button"
                             role="option"
-                            aria-selected={
-                              form.destinationFolder === code
-                            }
+                            aria-selected={form.destinationFolder === code}
                             onClick={() => selectDestination(code)}
                             className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${
                               form.destinationFolder === code
@@ -704,7 +787,7 @@ export default function Receiving() {
                                 : 'text-slate-700'
                             }`}
                           >
-                            {label}
+                            {displayName}
                           </button>
                         )
                       })
@@ -802,13 +885,13 @@ export default function Receiving() {
             <label className="text-sm font-semibold">
               PresOffice No.
               <input
-                value="Generated automatically when saved"
+                value={previewCode}
                 readOnly
                 aria-readonly="true"
                 className={`${inputClass} cursor-not-allowed bg-slate-50 text-slate-500`}
               />
               <span className="mt-1 block text-xs font-normal text-slate-500">
-                A unique 5-character alphanumeric code is generated when you save.
+                A 5-character PresOffice No. is generated when you save the record.
               </span>
             </label>
             <label className="text-sm font-semibold">
@@ -951,6 +1034,104 @@ export default function Receiving() {
               className={inputClass}
             />
           </label>
+          {/* Destination-specific custom fields */}
+          {form.destinationFolder && (
+            <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">
+              <div>
+                <h3 className="text-base font-bold text-blue-950">
+                  Destination-Specific Fields
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Custom fields configured for {selectedFolderLabel}.
+                </p>
+              </div>
+              {customFieldsLoading ? (
+                <p className="text-sm text-slate-500">Loading custom fields...</p>
+              ) : customFields.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No custom fields are configured for this destination.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                  {customFields.map(field => {
+                    const value = customFieldValues[field.id] ?? ''
+                    const options = Array.isArray(field.options)
+                      ? field.options
+                      : []
+                    const setValue = (nextValue: CustomFieldValue) => {
+                      setCustomFieldValues(previous => ({
+                        ...previous,
+                        [field.id]: nextValue,
+                      }))
+                    }
+                    if (field.field_type === 'checkbox') {
+                      return (
+                        <label
+                          key={field.id}
+                          className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm font-semibold"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={value === true}
+                            onChange={event => setValue(event.target.checked)}
+                            required={field.is_required}
+                            className="h-4 w-4 accent-blue-700"
+                          />
+                          <span>
+                            {field.field_name}
+                            {field.is_required ? ' *' : ''}
+                          </span>
+                        </label>
+                      )
+                    }
+                    return (
+                      <label key={field.id} className="block text-sm font-semibold">
+                        {field.field_name}
+                        {field.is_required ? ' *' : ''}
+                        {field.field_type === 'dropdown' ? (
+                          <select
+                            value={String(value)}
+                            onChange={event => setValue(event.target.value)}
+                            required={field.is_required}
+                            className={inputClass}
+                          >
+                            <option value="">Select an option</option>
+                            {options.map(option => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                        ) : field.field_type === 'textarea' ? (
+                          <textarea
+                            value={String(value)}
+                            onChange={event => setValue(event.target.value)}
+                            required={field.is_required}
+                            rows={3}
+                            className={inputClass}
+                          />
+                        ) : (
+                          <input
+                            type={
+                              field.field_type === 'number'
+                                ? 'number'
+                                : field.field_type === 'date'
+                                  ? 'date'
+                                  : 'text'
+                            }
+                            value={String(value)}
+                            onChange={event => setValue(event.target.value)}
+                            required={field.is_required}
+                            className={inputClass}
+                          />
+                        )}
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          )}
           {/* Document codes and amounts */}
           {showDvFields && (
             <section className="space-y-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5 sm:p-6">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   Search,
@@ -12,6 +12,7 @@ import {
   Clock,
   AlertTriangle,
   Bell,
+  Undo2,
   CheckCircle2,
   Check,
   LoaderCircle,
@@ -73,7 +74,7 @@ type WorkflowWithDocument = {
 }
 
 const inputClass =
-  'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
+  'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900'
 
 const statusOptions = [
   { label: 'All Statuses', value: 'ALL' },
@@ -102,7 +103,7 @@ function displayStatus(status: string) {
 }
 
 function formatDate(value?: string | null) {
-  if (!value) return '—'
+  if (!value) return 'â€”'
 
   const date = new Date(`${value.slice(0, 10)}T00:00:00`)
 
@@ -116,7 +117,7 @@ function formatDate(value?: string | null) {
 }
 
 function formatTime(value?: string | null) {
-  if (!value) return '—'
+  if (!value) return 'â€”'
 
   const [hourString, minuteString] = value.split(':')
   const hour = Number(hourString)
@@ -137,7 +138,7 @@ function formatTime(value?: string | null) {
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return '—'
+  if (!value) return 'â€”'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   const datePart = date.toLocaleDateString('en-US', {
@@ -199,8 +200,8 @@ function UrgencyBadge({ urgency }: { urgency?: string | null }) {
     <span
       className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${
         isUrgent
-          ? 'bg-red-50 text-red-700'
-          : 'bg-slate-100 text-slate-600'
+          ? 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
+          : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'
       }`}
     >
       {isUrgent && <AlertTriangle size={12} />}
@@ -211,7 +212,7 @@ function UrgencyBadge({ urgency }: { urgency?: string | null }) {
 
 function StorageBadge({ workflow }: { workflow: WorkflowRecord }) {
   return (
-    <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-semibold text-blue-700">
+    <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-semibold text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
       {getStorageLabel(workflow)}
     </span>
   )
@@ -226,6 +227,7 @@ export default function ForwardingRecords() {
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [showForm, setShowForm] = useState(false)
   const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
+  const [returnedNotificationsOpen, setReturnedNotificationsOpen] = useState(false)
 
   const [documentPickerOpen, setDocumentPickerOpen] = useState(false)
   const [documentSearch, setDocumentSearch] = useState('')
@@ -235,7 +237,7 @@ export default function ForwardingRecords() {
   const [storageType, setStorageType] = useState<'folder' | 'box'>('folder')
   const [folderColor, setFolderColor] = useState('')
   const [boxNumber, setBoxNumber] = useState('')
-  const [urgency, setUrgency] = useState<'urgent' | 'not_urgent'>('not_urgent')
+  const [documentUrgencies, setDocumentUrgencies] = useState<Record<string, 'urgent' | 'not_urgent'>>({})
   const [forwardingTime, setForwardingTime] = useState('')
 
   const [loading, setLoading] = useState(true)
@@ -486,6 +488,21 @@ export default function ForwardingRecords() {
   const urgentNotificationCount =
     urgentReceivedDocuments.length + urgentReturnedWorkflows.length
 
+  // The workflow status is the source of truth for the pending receipt action.
+  // Some older rows may have a stale origin_office_received_at timestamp even
+  // though the workflow is still returned_to_origin (the table then still shows
+  // the Confirm Receipt action). Do not hide those rows from this notification.
+  const returnedAwaitingReceiptWorkflows = useMemo(
+    () =>
+      workflows.filter(({ workflow }) =>
+        String(workflow.workflow_status ?? '')
+          .trim()
+          .toLowerCase()
+          .replace(/[\s-]+/g, '_') === 'returned_to_origin',
+      ),
+    [workflows],
+  )
+
   const playUrgentNotificationSound = useCallback(async () => {
     try {
       const AudioContextConstructor =
@@ -652,22 +669,50 @@ export default function ForwardingRecords() {
       selectedDocumentIds.includes(document.id),
     )
 
+
   function toggleDocumentSelection(id: string) {
-    setSelectedDocumentIds(current =>
-      current.includes(id)
-        ? current.filter(selectedId => selectedId !== id)
-        : [...current, id],
-    )
+    if (selectedDocumentIds.includes(id)) {
+      setSelectedDocumentIds(current => current.filter(selectedId => selectedId !== id))
+      setDocumentUrgencies(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      return
+    }
+
+    setSelectedDocumentIds(current => current.includes(id) ? current : [...current, id])
+    setDocumentUrgencies(current => ({
+      ...current,
+      [id]: current[id] ?? 'not_urgent',
+    }))
+  }
+
+  function setSelectedDocumentUrgency(id: string, value: 'urgent' | 'not_urgent') {
+    setDocumentUrgencies(current => ({ ...current, [id]: value }))
   }
 
   function toggleAllFilteredDocuments() {
     const filteredIds = filteredPickerDocuments.map(document => document.id)
 
-    setSelectedDocumentIds(current =>
-      allFilteredSelected
-        ? current.filter(id => !filteredIds.includes(id))
-        : [...new Set([...current, ...filteredIds])],
-    )
+    if (allFilteredSelected) {
+      setSelectedDocumentIds(current => current.filter(id => !filteredIds.includes(id)))
+      setDocumentUrgencies(current => {
+        const next = { ...current }
+        filteredIds.forEach(id => delete next[id])
+        return next
+      })
+      return
+    }
+
+    setSelectedDocumentIds(current => [...new Set([...current, ...filteredIds])])
+    setDocumentUrgencies(current => {
+      const next = { ...current }
+      filteredPickerDocuments.forEach(document => {
+        next[document.id] = next[document.id] ?? 'not_urgent'
+      })
+      return next
+    })
   }
 
   function resetForm() {
@@ -678,7 +723,7 @@ export default function ForwardingRecords() {
     setStorageType('folder')
     setFolderColor('')
     setBoxNumber('')
-    setUrgency('not_urgent')
+    setDocumentUrgencies({})
     setForwardingTime('')
   }
 
@@ -744,7 +789,7 @@ export default function ForwardingRecords() {
         folder_color:
           storageType === 'folder' ? folderColor.trim() : null,
         box_number: storageType === 'box' ? boxNumber.trim() : null,
-        urgency,
+        urgency: documentUrgencies[receivingRecordId] ?? 'not_urgent',
         forwarding_time: forwardingTime,
         forwarded_by: user.id,
         workflow_status: 'forwarded',
@@ -837,7 +882,7 @@ export default function ForwardingRecords() {
       setReceiptConfirmation(null)
 
       setSuccess(
-        `Physical receipt confirmed for ${reference}. Next, select “Forward to Releasing Staff” and choose the staff member.`,
+        `Physical receipt confirmed for ${reference}. Next, select â€œForward to Releasing Staffâ€ and choose the staff member.`,
       )
 
       await loadData()
@@ -858,7 +903,7 @@ export default function ForwardingRecords() {
                 typeof details.details === 'string' ? details.details : '',
                 typeof details.hint === 'string' ? `Hint: ${details.hint}` : '',
                 typeof details.code === 'string' ? `Code: ${details.code}` : '',
-              ].filter(Boolean).join(' — ')
+              ].filter(Boolean).join(' â€” ')
             : typeof err === 'string'
               ? err
               : 'Unknown error. Check the browser console and Supabase logs.'
@@ -945,7 +990,7 @@ export default function ForwardingRecords() {
       )
 
       setSuccess(
-        `${document?.reference_number || 'Document'} forwarded to ${releaseStaff} — ${instruction}.`,
+        `${document?.reference_number || 'Document'} forwarded to ${releaseStaff} â€” ${instruction}.`,
       )
       setReleaseAssignment(null)
       setReleaseStaff('')
@@ -964,6 +1009,102 @@ export default function ForwardingRecords() {
     }
   }
 
+  const renderPickerDocumentCard = (document: ReceivingRecord) => {
+    const isSelected = selectedDocumentIds.includes(document.id)
+    const selectedUrgency = documentUrgencies[document.id] ?? 'not_urgent'
+
+    // Explicit inline colors keep the selected card theme-correct even if
+    // Tailwind utility ordering causes the light background to win.
+    const isDarkTheme =
+      window.document.documentElement.classList.contains('dark') ||
+      window.document.body.classList.contains('dark') ||
+      window.document.documentElement.getAttribute('data-theme') === 'dark' ||
+      window.document.body.getAttribute('data-theme') === 'dark'
+
+    return (
+      <div
+        key={document.id}
+        style={
+          isSelected
+            ? { backgroundColor: isDarkTheme ? '#1e293b' : '#eff6ff' }
+            : undefined
+        }
+        className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${
+          isSelected
+            ? 'border-blue-500 ring-2 ring-blue-200 dark:border-sky-400 dark:ring-sky-500'
+            : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-sky-600 dark:hover:bg-slate-800'
+        }`}
+      >
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={() => toggleDocumentSelection(document.id)}
+          className="mt-1 h-4 w-4 accent-blue-700"
+        />
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className={`font-semibold ${isSelected ? 'text-blue-950 dark:text-slate-100' : 'text-blue-800 dark:text-sky-300'}`}>
+              {document.reference_number || 'No reference number'}
+            </p>
+            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+              selectedUrgency === 'urgent'
+                ? 'bg-red-100 text-red-700 dark:bg-red-950/70 dark:text-red-300'
+                : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'
+            }`}>
+              {selectedUrgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
+            </span>
+          </div>
+          <div
+            style={{
+              backgroundColor: isDarkTheme
+                ? (isSelected ? '#0f172a' : '#0f172acc')
+                : (isSelected ? '#ffffff' : '#f8fafc'),
+            }}
+            className={`mt-3 flex flex-wrap gap-3 rounded-lg border px-3 py-2 ${isSelected ? 'border-blue-200 dark:border-slate-600' : 'border-slate-200 dark:border-slate-600'}`}
+          >
+            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-100" onClick={event => event.stopPropagation()}>
+              <input
+                type="radio"
+                name={`picker-urgency-${document.id}`}
+                checked={selectedUrgency === 'urgent'}
+                onChange={() => setSelectedDocumentUrgency(document.id, 'urgent')}
+                onClick={event => event.stopPropagation()}
+                className="accent-red-600"
+              />
+              <AlertTriangle size={13} className="text-red-600" /> Urgent
+            </label>
+            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-100" onClick={event => event.stopPropagation()}>
+              <input
+                type="radio"
+                name={`picker-urgency-${document.id}`}
+                checked={selectedUrgency === 'not_urgent'}
+                onChange={() => setSelectedDocumentUrgency(document.id, 'not_urgent')}
+                onClick={event => event.stopPropagation()}
+                className="accent-blue-700"
+              />
+              Not Urgent
+            </label>
+          </div>
+          <p className={`mt-3 break-words text-sm font-medium ${isSelected ? 'text-slate-900 dark:text-slate-100' : 'text-slate-800 dark:text-slate-100'}`}>
+            {document.content || document.subject || 'No subject'}
+          </p>
+          <div className={`mt-2 space-y-1 text-xs leading-5 ${isSelected ? 'text-slate-600 dark:text-slate-300' : 'text-slate-600 dark:text-slate-300'}`}>
+            <p>Sender: {document.sender || 'Not specified'}</p>
+            {document.bearer && <p>Bearer: {document.bearer}</p>}
+            <p>Originating office: {document.origin_office || document.current_office || document.destination_folder || 'Not specified'}</p>
+            {document.record_type && <p>Record type: {document.record_type}</p>}
+          </div>
+        </div>
+        {isSelected && (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-100 px-2.5 py-2 text-xs font-semibold text-blue-800 dark:bg-blue-900/70 dark:text-blue-100">
+            <Check size={14} /> Selected
+          </span>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
@@ -974,7 +1115,7 @@ export default function ForwardingRecords() {
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Forwarding to Board Room
           </h2>
-          <p className="mt-1 text-sm text-white-500">
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
             Forward documents to the Board Room, confirm returned documents, and assign received documents to releasing staff.
           </p>
         </div>
@@ -1002,7 +1143,7 @@ export default function ForwardingRecords() {
                   <div>
                     <h3 className="font-bold text-slate-900">Urgent Notifications</h3>
                     <p className="text-xs text-slate-500">
-                      {urgentReceivedDocuments.length} new · {urgentReturnedWorkflows.length} returned by Board Room
+                      {urgentReceivedDocuments.length} new Â· {urgentReturnedWorkflows.length} returned by Board Room
                     </p>
                   </div>
                   <button
@@ -1027,12 +1168,12 @@ export default function ForwardingRecords() {
                       <div key={`new-${document.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-red-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number}>
-                            PresOffice No.: {document.reference_number || '—'}
+                            PresOffice No.: {document.reference_number || 'â€”'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600" title={document.system_code || ''}>
-                            System Code: {document.system_code || '—'}
+                            System Code: {document.system_code || 'â€”'}
                           </p>
-                          <p className="mt-1 text-[10px] text-red-700">Urgent · Awaiting forwarding</p>
+                          <p className="mt-1 text-[10px] text-red-700">Urgent Â· Awaiting forwarding</p>
                         </div>
                         <button
                           type="button"
@@ -1048,18 +1189,102 @@ export default function ForwardingRecords() {
                       <div key={`returned-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-amber-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
-                            PresOffice No.: {document?.reference_number || '—'}
+                            PresOffice No.: {document?.reference_number || 'â€”'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
-                            System Code: {document?.system_code || '—'}
+                            System Code: {document?.system_code || 'â€”'}
                           </p>
-                          <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent · Returned by Board Room</p>
+                          <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent Â· Returned by Board Room</p>
                         </div>
                         <button
                           type="button"
                           onClick={() => {
                             setViewingWorkflow({ workflow, document, recordedByName: profiles[workflow.forwarded_by] || workflow.forwarded_by })
                             setUrgentNotificationsOpen(false)
+                          }}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Eye size={13} /> View
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setReturnedNotificationsOpen(open => !open)}
+              aria-label={`Returned documents awaiting receipt: ${returnedAwaitingReceiptWorkflows.length}`}
+              aria-expanded={returnedNotificationsOpen}
+              title="Returned documents awaiting receipt"
+              className="relative inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-3 text-blue-800 shadow-sm transition hover:bg-blue-100 hover:text-blue-900 dark:border-blue-700 dark:bg-blue-950/50 dark:text-blue-200 dark:hover:bg-blue-900/60"
+            >
+              <Undo2 size={18} />
+              <span className="whitespace-nowrap text-xs font-semibold">Returned</span>
+              {returnedAwaitingReceiptWorkflows.length > 0 && (
+                <span className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-slate-900">
+                  {returnedAwaitingReceiptWorkflows.length > 99 ? '99+' : returnedAwaitingReceiptWorkflows.length}
+                </span>
+              )}
+            </button>
+
+            {returnedNotificationsOpen && (
+              <div className="absolute right-0 z-50 mt-2 w-[min(26rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <div>
+                    <h3 className="font-bold text-slate-900">Returned Documents</h3>
+                    <p className="text-xs text-slate-500">
+                      {returnedAwaitingReceiptWorkflows.length} awaiting origin-office receipt
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReturnedNotificationsOpen(false)}
+                    aria-label="Close returned documents"
+                    className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {returnedAwaitingReceiptWorkflows.length === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <CheckCircle2 className="mx-auto text-green-600" size={25} />
+                    <p className="mt-2 text-sm font-semibold text-slate-800">No returned documents awaiting receipt</p>
+                    <p className="mt-1 text-xs text-slate-500">Documents returned by the Board Room will appear here until receipt is confirmed.</p>
+                  </div>
+                ) : (
+                  <div className="max-h-96 divide-y divide-slate-100 overflow-y-auto">
+                    {returnedAwaitingReceiptWorkflows.map(({ workflow, document, recordedByName }) => (
+                      <div key={`returned-pending-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-blue-50/60">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
+                            PresOffice No.: {document?.reference_number || 'â€”'}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
+                            System Code: {document?.system_code || 'â€”'}
+                          </p>
+                          <p className="mt-1 truncate text-xs text-slate-600">
+                            {document?.content || document?.subject || 'No subject provided'}
+                          </p>
+                          <p className="mt-1 text-[10px] font-semibold text-blue-700">
+                            Returned Â· Awaiting receipt confirmation
+                          </p>
+                          {workflow.returned_to_origin_at && (
+                            <p className="mt-0.5 text-[10px] text-slate-500">
+                              Returned: {formatDateTime(workflow.returned_to_origin_at)}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setViewingWorkflow({ workflow, document, recordedByName })
+                            setReturnedNotificationsOpen(false)
                           }}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                         >
@@ -1121,7 +1346,7 @@ export default function ForwardingRecords() {
               <p className="mt-0.5 text-xs text-slate-500">
                 {loading
                   ? 'Loading records...'
-                  : `${filteredWorkflows.length} matching records · ${availableDocuments.length} eligible to forward`}
+                  : `${filteredWorkflows.length} matching records Â· ${availableDocuments.length} eligible to forward`}
               </p>
             </div>
           </div>
@@ -1256,7 +1481,7 @@ export default function ForwardingRecords() {
                         {filteredWorkflows.length - index}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
-                        {document?.reference_number || '—'}
+                        {document?.reference_number || 'â€”'}
                       </td>
 
                       <td
@@ -1264,7 +1489,7 @@ export default function ForwardingRecords() {
                         title={document?.system_code || ''}
                       >
                         <span className="block truncate">
-                          {document?.system_code || '—'}
+                          {document?.system_code || 'â€”'}
                         </span>
                       </td>
 
@@ -1275,7 +1500,7 @@ export default function ForwardingRecords() {
                               Transaction Person
                             </p>
                             <p className="mt-0.5 font-medium text-slate-800">
-                              {workflow.transaction_person || '—'}
+                              {workflow.transaction_person || 'â€”'}
                             </p>
                           </div>
                           <div className="border-t border-slate-100 pt-1.5">
@@ -1317,7 +1542,7 @@ export default function ForwardingRecords() {
                         </span>
                         {workflow.board_room_received_at && (
                           <div className="mt-2 min-w-[150px] space-y-1 text-[10px] text-slate-500">
-                            <p>Receipt confirmed by: {workflow.board_room_received_by ? (profiles[workflow.board_room_received_by] || workflow.board_room_received_by) : '—'}</p>
+                            <p>Receipt confirmed by: {workflow.board_room_received_by ? (profiles[workflow.board_room_received_by] || workflow.board_room_received_by) : 'â€”'}</p>
                             <p>At: {formatDateTime(workflow.board_room_received_at)}</p>
                           </div>
                         )}
@@ -1382,7 +1607,7 @@ export default function ForwardingRecords() {
                             </div>
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">—</span>
+                          <span className="text-xs text-slate-400">â€”</span>
                         )}
                       </td>
 
@@ -1402,7 +1627,7 @@ export default function ForwardingRecords() {
                       </td>
 
                       <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
-                        {workflow.release_instruction || '—'}
+                        {workflow.release_instruction || 'â€”'}
                       </td>
 
                       <td className="px-4 py-3.5">
@@ -1454,7 +1679,7 @@ export default function ForwardingRecords() {
                             Assigned
                           </span>
                         ) : (
-                          <span className="text-xs text-slate-400">—</span>
+                          <span className="text-xs text-slate-400">â€”</span>
                         )}
                         </div>
                       </td>
@@ -1473,8 +1698,8 @@ export default function ForwardingRecords() {
           <section role="dialog" aria-modal="true" aria-labelledby="urgent-document-title" className="my-auto max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
             <div className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-200 bg-white px-6 py-5">
               <div>
-                <h3 id="urgent-document-title" className="text-lg font-bold text-slate-900">Urgent Document Details</h3>
-                <p className="mt-1 text-sm text-slate-500">{viewingUrgentDocument.reference_number || 'Document'}</p>
+                <h3 id="urgent-document-title" className="text-lg font-bold text-slate-900 dark:text-slate-100">Urgent Document Details</h3>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{viewingUrgentDocument.reference_number || 'Document'}</p>
               </div>
               <button type="button" onClick={() => setViewingUrgentDocument(null)} aria-label="Close document details" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={19} /></button>
             </div>
@@ -1494,7 +1719,7 @@ export default function ForwardingRecords() {
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-slate-200 p-3">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || '—'}</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || 'â€”'}</p>
                 </div>
               ))}
             </div>
@@ -1516,10 +1741,10 @@ export default function ForwardingRecords() {
           >
             <div className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-200 bg-white px-6 py-5">
               <div>
-                <h3 id="forwarding-details-title" className="text-lg font-bold text-slate-900">
+                <h3 id="forwarding-details-title" className="text-lg font-bold text-slate-900 dark:text-slate-100">
                   Document Details
                 </h3>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                   {viewingWorkflow.document?.reference_number || 'Document'}
                 </p>
               </div>
@@ -1569,7 +1794,7 @@ export default function ForwardingRecords() {
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-lg border border-slate-200 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || '—'}</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{value || 'â€”'}</p>
                   </div>
                 ))}
               </div>
@@ -1610,7 +1835,7 @@ export default function ForwardingRecords() {
               <div className="min-w-0">
                 <h3
                   id="receipt-confirmation-title"
-                  className="text-lg font-bold text-slate-900"
+                  className="text-lg font-bold text-slate-900 dark:text-slate-100"
                 >
                   Confirm Document Receipt
                 </h3>
@@ -1633,7 +1858,7 @@ export default function ForwardingRecords() {
                   {documents.find(
                     item =>
                       item.id === receiptConfirmation.receiving_record_id,
-                  )?.reference_number || '—'}
+                  )?.reference_number || 'â€”'}
                 </span>
               </div>
 
@@ -1739,10 +1964,10 @@ export default function ForwardingRecords() {
           >
             <div className="flex items-start justify-between border-b border-slate-100 p-6">
               <div>
-                <h3 id="release-assignment-title" className="text-lg font-bold text-slate-900">
+                <h3 id="release-assignment-title" className="text-lg font-bold text-slate-900 dark:text-slate-100">
                   Forward to Releasing Staff
                 </h3>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                   Assign the returned document after Origin Staff confirms physical receipt.
                 </p>
               </div>
@@ -1763,7 +1988,7 @@ export default function ForwardingRecords() {
                 <p className="mt-1 text-sm font-bold text-slate-900">
                   {documents.find(
                     item => item.id === releaseAssignment.receiving_record_id,
-                  )?.reference_number || '—'}
+                  )?.reference_number || 'â€”'}
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
                   {documents.find(
@@ -1946,11 +2171,11 @@ export default function ForwardingRecords() {
               <div>
                 <h3
                   id="forwarding-form-title"
-                  className="text-lg font-bold text-slate-900"
+                  className="text-lg font-bold text-slate-900 dark:text-slate-100"
                 >
                   Forward Documents to Board Room
                 </h3>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                   Select one or more Receiving records and enter the shared
                   forwarding details.
                 </p>
@@ -1998,7 +2223,7 @@ export default function ForwardingRecords() {
                       <p className="text-sm font-semibold text-blue-950">
                         Selected Documents
                       </p>
-                      <p className="mt-1 text-xs text-slate-600">
+                      <p className="mt-1 text-xs text-blue-600">
                         Review your list before forwarding.
                       </p>
                     </div>
@@ -2066,7 +2291,7 @@ export default function ForwardingRecords() {
                   htmlFor="transaction-person"
                   className="text-xs font-semibold text-slate-600"
                 >
-                  Transaction — Person Who Brought the Documents *
+                  Transaction â€” Person Who Brought the Documents *
                 </label>
                 <input
                   id="transaction-person"
@@ -2149,34 +2374,68 @@ export default function ForwardingRecords() {
                 )}
               </fieldset>
 
-              <fieldset>
-                <legend className="text-xs font-semibold text-slate-600">
-                  Urgency *
-                </legend>
-                <div className="mt-2 flex flex-wrap gap-4">
-                  <label className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="radio"
-                      name="urgency"
-                      checked={urgency === 'urgent'}
-                      onChange={() => setUrgency('urgent')}
-                      className="accent-red-600"
-                    />
-                    <AlertTriangle size={15} className="text-red-600" />
-                    Urgent
-                  </label>
-                  <label className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="radio"
-                      name="urgency"
-                      checked={urgency === 'not_urgent'}
-                      onChange={() => setUrgency('not_urgent')}
-                      className="accent-blue-700"
-                    />
-                    Not Urgent
-                  </label>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Urgency for Each Document
+                    </h4>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                      Set urgency separately so urgent and not-urgent documents can be forwarded in one transaction.
+                    </p>
+                  </div>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                    {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'urgent').length} urgent Â· {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'not_urgent').length} not urgent
+                  </span>
                 </div>
-              </fieldset>
+
+                {selectedDocuments.length === 0 ? (
+                  <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+                    Select documents first to set their urgency.
+                  </p>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {selectedDocuments.map(document => {
+                      const selectedUrgency = documentUrgencies[document.id] ?? 'not_urgent'
+                      return (
+                        <div key={document.id} className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700 dark:bg-slate-800">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                              {document.reference_number || 'No reference number'}
+                            </p>
+                            <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300">
+                              {document.content || document.subject || 'No subject'}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-3">
+                            <label className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-slate-700 dark:text-slate-200">
+                              <input
+                                type="radio"
+                                name={`urgency-${document.id}`}
+                                checked={selectedUrgency === 'urgent'}
+                                onChange={() => setSelectedDocumentUrgency(document.id, 'urgent')}
+                                className="accent-red-600"
+                              />
+                              <AlertTriangle size={14} className="text-red-600" />
+                              Urgent
+                            </label>
+                            <label className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-slate-700 dark:text-slate-200">
+                              <input
+                                type="radio"
+                                name={`urgency-${document.id}`}
+                                checked={selectedUrgency === 'not_urgent'}
+                                onChange={() => setSelectedDocumentUrgency(document.id, 'not_urgent')}
+                                className="accent-blue-700"
+                              />
+                              Not Urgent
+                            </label>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
@@ -2266,18 +2525,18 @@ export default function ForwardingRecords() {
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="document-picker-title"
-                className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+                className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               >
-                <div className="border-b border-slate-200 p-5">
+                <div className="border-b border-slate-200 p-5 dark:border-slate-700">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <h3
                         id="document-picker-title"
-                        className="text-lg font-bold text-slate-900"
+                        className="text-lg font-bold text-slate-900 dark:text-slate-100"
                       >
                         Select Documents to Forward
                       </h3>
-                      <p className="mt-1 text-sm text-white-500">
+                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
                         Check multiple documents to forward them as a group.
                       </p>
                     </div>
@@ -2285,7 +2544,7 @@ export default function ForwardingRecords() {
                       type="button"
                       onClick={() => setDocumentPickerOpen(false)}
                       aria-label="Close document search"
-                      className="rounded-lg p-2 text-white-500 hover:bg-slate-100"
+                      className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
                     >
                       <X size={20} />
                     </button>
@@ -2302,124 +2561,70 @@ export default function ForwardingRecords() {
                       value={documentSearch}
                       onChange={event => setDocumentSearch(event.target.value)}
                       placeholder="Search reference, subject, sender, bearer, office..."
-                      className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-4 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                      className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900"
                     />
                   </div>
 
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-blue-50 p-3">
-                    <div>
-                      <p className="font-semibold text-blue-950">
-                        {selectedDocumentIds.length} document(s) selected
-                      </p>
-                      <p className="text-xs text-slate-600">
-                        {filteredPickerDocuments.length} document(s) match this
-                        search
-                      </p>
-                    </div>
-                    <button
+                  <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/50">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-blue-800 dark:text-sky-300">
+                          {selectedDocumentIds.length} document(s) selected
+                        </p>
+                        <p className="text-xs text-blue-600 dark:text-slate-300">
+                          {filteredPickerDocuments.length} document(s) match this search
+                        </p>
+                      </div>
+                      <button
                       type="button"
                       onClick={toggleAllFilteredDocuments}
                       disabled={filteredPickerDocuments.length === 0}
-                      className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-50"
+                      className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:bg-slate-900 dark:text-blue-300 dark:hover:bg-slate-800"
                     >
-                      {allFilteredSelected
-                        ? 'Deselect Search Results'
-                        : 'Select All Search Results'}
-                    </button>
+                        {allFilteredSelected
+                          ? 'Deselect Search Results'
+                          : 'Select All Search Results'}
+                      </button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-2.5 py-1 text-red-800 dark:bg-red-950/70 dark:text-red-300">
+                        <AlertTriangle size={12} />
+                        {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'urgent').length} selected urgent
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-200 px-2.5 py-1 text-slate-800 dark:bg-slate-700 dark:text-slate-200">
+                        <FileText size={12} />
+                        {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'not_urgent').length} selected not urgent
+                      </span>
+                    </div>
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 p-3 dark:bg-slate-950">
                   {filteredPickerDocuments.length === 0 ? (
                     <div className="p-8 text-center">
-                      <FileSearch
-                        size={36}
-                        className="mx-auto text-slate-300"
-                      />
-                      <p className="mt-3 font-semibold text-slate-700">
-                        No matching documents found
-                      </p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        Try a different search term or check whether the
-                        documents have already been forwarded.
+                      <FileSearch size={36} className="mx-auto text-slate-400 dark:text-slate-600" />
+                      <p className="mt-3 font-semibold text-slate-800 dark:text-slate-100">No matching documents found</p>
+                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                        Try a different search term or check whether the documents have already been forwarded.
                       </p>
                     </div>
                   ) : (
-                    filteredPickerDocuments.map(document => {
-                      const isSelected = selectedDocumentIds.includes(
-                        document.id,
-                      )
-
-                      return (
-                        <label
-                          key={document.id}
-                          className={`mb-2 flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${
-                            isSelected
-                              ? 'border-blue-500 bg-blue-50'
-                              : 'border-slate-200 hover:border-blue-300'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() =>
-                              toggleDocumentSelection(document.id)
-                            }
-                            className="mt-1 h-4 w-4 accent-blue-700"
-                          />
-
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-semibold text-blue-950">
-                                {document.reference_number || 'No reference number'}
-                              </p>
-                              <UrgencyBadge urgency={document.urgency} />
-                            </div>
-                            <p className="mt-1 break-words text-sm text-slate-800">
-                              {document.content ||
-                                document.subject ||
-                                'No subject'}
-                            </p>
-                            <div className="mt-2 space-y-1 text-xs text-slate-500">
-                              <p>Sender: {document.sender || 'Not specified'}</p>
-                              {document.bearer && (
-                                <p>Bearer: {document.bearer}</p>
-                              )}
-                              <p>
-                                Originating office:{' '}
-                                {document.origin_office ||
-                                  document.current_office ||
-                                  document.destination_folder ||
-                                  'Not specified'}
-                              </p>
-                              {document.record_type && (
-                                <p>Record type: {document.record_type}</p>
-                              )}
-                            </div>
-                          </div>
-
-                          {isSelected && (
-                            <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-100 px-2.5 py-2 text-xs font-semibold text-blue-700">
-                              <Check size={14} />
-                              Selected
-                            </span>
-                          )}
-                        </label>
-                      )
-                    })
+                    <div className="space-y-2">
+                      {filteredPickerDocuments.map(renderPickerDocumentCard)}
+                    </div>
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 p-4">
-                  <p className="text-sm font-semibold text-slate-600">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                     {selectedDocumentIds.length} selected
                   </p>
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setSelectedDocumentIds([])}
+                      onClick={() => { setSelectedDocumentIds([]); setDocumentUrgencies({}) }}
                       disabled={selectedDocumentIds.length === 0}
-                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                     >
                       Clear Selection
                     </button>

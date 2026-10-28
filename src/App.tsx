@@ -1,4 +1,4 @@
-
+﻿
 import {
   BrowserRouter,
   Navigate,
@@ -45,6 +45,7 @@ import ForwardingRecords from './component/ForwardingRecords'
 import BoardRoomRecords from './component/BoardRoomRecords'
 import UserManagement from './pages/UserManagement'
 import SettingsPage from './pages/Settings'
+import DestinationFolderManagement from './pages/DestinationFolderManagement'
 import OriginOfficeReturns from './component/OriginOfficeReturns'
 import Dashboard from './pages/Dashboard'
 import MyProfile from './pages/MyProfile'
@@ -399,6 +400,11 @@ function DashboardLayout() {
             path: '/settings',
             icon: Settings,
           },
+          {
+            label: 'Destination Folders',
+            path: '/destination-folders',
+            icon: Files,
+          },
         ]
       : sharedNavigation
 
@@ -667,6 +673,16 @@ export default function App() {
                   </AdminOnly>
                 }
               />
+
+              {/* Administrator-only Destination Folder Management */}
+              <Route
+                path="/destination-folders"
+                element={
+                  <AdminOnly>
+                    <DestinationFolderManagement />
+                  </AdminOnly>
+                }
+              />
             </Route>
           </Route>
 
@@ -678,3 +694,4 @@ export default function App() {
     </BrowserRouter>
   )
 }
+

@@ -929,8 +929,8 @@ export default function ReleasingRecords() {
   function urgencyBadge(value: string | null) {
     const urgency = normalizeUrgency(value)
     return urgency === 'urgent'
-      ? { label: 'Urgent', className: 'border-red-200 bg-red-50 text-red-700' }
-      : { label: 'Not Urgent', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
+      ? { label: 'Urgent', className: 'border-red-200 dark:border-red-800 bg-red-50 dark:hover:bg-red-950/30 text-red-700 dark:text-red-300' }
+      : { label: 'Not Urgent', className: 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700' }
   }
 
   // Bell rule: use the same assignment, urgency, and completion rules as the
@@ -965,11 +965,11 @@ export default function ReleasingRecords() {
             presSystem Management Portal
           </p>
 
-          <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
+          <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
             Releasing Documents
           </h2>
 
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             {viewerRole === 'admin'
               ? 'Review release assignments, confirm receipt, and track completed document workflows.'
               : 'Confirm document receipt, manage release details, and track your assigned documents.'}
@@ -985,7 +985,7 @@ export default function ReleasingRecords() {
               aria-label={`Urgent notifications: ${urgentCount}`}
               aria-expanded={urgentNotificationsOpen}
               title="Urgent notifications"
-              className={`relative inline-flex h-10 w-10 items-center justify-center rounded-lg border bg-white shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-100 ${urgentCount > 0 ? 'border-red-200 text-red-700 hover:bg-red-50' : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'}`}
+              className={`relative inline-flex h-10 w-10 items-center justify-center rounded-lg border bg-white dark:bg-slate-900 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-100 ${urgentCount > 0 ? 'border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 hover:bg-red-50 dark:bg-red-950/30' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 dark:bg-slate-800'}`}
             >
               <Bell size={18} />
               {urgentCount > 0 && (
@@ -995,16 +995,16 @@ export default function ReleasingRecords() {
               )}
             </button>
             {urgentNotificationsOpen && (
-              <div className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <div className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 px-4 py-3">
                   <div>
-                    <p className="text-sm font-bold text-slate-900">Urgent Documents</p>
-                    <p className="mt-0.5 text-xs text-slate-500">{viewerRole === 'admin' ? 'Urgent alerts go to the assigned staff account' : 'Urgent papers assigned to your account only'}</p>
+                    <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Urgent Documents</p>
+                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{viewerRole === 'admin' ? 'Urgent alerts go to the assigned staff account' : 'Urgent papers assigned to your account only'}</p>
                   </div>
-                  <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">{urgentCount}</span>
+                  <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700 dark:text-red-300">{urgentCount}</span>
                 </div>
                 {urgentRecords.length === 0 ? (
-                  <p className="px-4 py-6 text-center text-sm text-slate-500">No active urgent documents.</p>
+                  <p className="px-4 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No active urgent documents.</p>
                 ) : (
                   <div className="max-h-72 overflow-y-auto">
                     {urgentRecords.map(record => (
@@ -1017,13 +1017,13 @@ export default function ReleasingRecords() {
                           setSelected(record)
                           setUrgentNotificationsOpen(false)
                         }}
-                        className="flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left transition last:border-b-0 hover:bg-red-50"
+                        className="flex w-full items-start gap-3 border-b border-slate-100 dark:border-slate-700 px-4 py-3 text-left transition last:border-b-0 hover:bg-red-50 dark:bg-red-950/30"
                       >
                         <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-600" />
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold text-slate-900">{record.reference_number}</span>
-                          <span className="mt-0.5 block truncate text-xs text-slate-500">{record.subject || 'No subject'}</span>
-                          <span className="mt-1 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+                          <span className="block truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{record.reference_number}</span>
+                          <span className="mt-0.5 block truncate text-xs text-slate-500 dark:text-slate-400">{record.subject || 'No subject'}</span>
+                          <span className="mt-1 inline-flex rounded-full border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:text-red-300">
                             {(record.workflow_status || '').trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_') === 'returned_to_origin'
                               ? 'Urgent · Returned to origin'
                               : record.release_received_at
@@ -1035,7 +1035,7 @@ export default function ReleasingRecords() {
                     ))}
                   </div>
                 )}
-                <div className="border-t border-slate-100 p-3">
+                <div className="border-t border-slate-100 dark:border-slate-700 p-3">
                   <button
                     type="button"
                     onClick={() => { setUrgencyFilter('URGENT'); setSearch(''); setUrgentNotificationsOpen(false) }}
@@ -1051,7 +1051,7 @@ export default function ReleasingRecords() {
             type="button"
             onClick={() => void loadRecords()}
             disabled={loading}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-sm transition-colors hover:border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:bg-blue-950/40 hover:text-blue-700 dark:text-blue-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             Refresh
@@ -1064,8 +1064,8 @@ export default function ReleasingRecords() {
           role="status"
           className={`flex shrink-0 items-start justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${
             assignmentNotice.urgent
-              ? 'border-red-200 bg-red-50 text-red-800'
-              : 'border-blue-200 bg-blue-50 text-blue-800'
+              ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-red-800'
+              : 'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-800'
           }`}
         >
           <div className="flex items-start gap-2">
@@ -1085,20 +1085,20 @@ export default function ReleasingRecords() {
 
 
       {/* Main table panel */}
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm">
         {/* Table title and controls */}
-        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 dark:border-slate-700 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300">
               <Send size={20} />
             </div>
 
             <div>
-              <h3 className="text-sm font-semibold text-slate-900">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                 {viewerRole === 'admin' ? 'All Releasing Assignments' : 'Documents Assigned to You'}
               </h3>
 
-              <p className="mt-0.5 text-xs text-slate-500">
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                 {loading
                   ? 'Loading records...'
                   : `${filteredRecords.length} of ${records.length} records`}
@@ -1111,14 +1111,14 @@ export default function ReleasingRecords() {
             <div className="relative w-full sm:w-56">
               <Search
                 size={15}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500"
               />
               <input
                 value={search}
                 onChange={event => setSearch(event.target.value)}
                 placeholder="Search records..."
                 aria-label="Search releasing records"
-                className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-9 pr-3 text-xs text-slate-700 dark:text-slate-200 outline-none transition placeholder:text-slate-400 dark:text-slate-500 hover:border-slate-300 dark:border-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               />
             </div>
 
@@ -1126,7 +1126,7 @@ export default function ReleasingRecords() {
               value={releaseStatusFilter}
               onChange={event => setReleaseStatusFilter(event.target.value)}
               aria-label="Filter by release status"
-              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-44"
+              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-xs text-slate-700 dark:text-slate-200 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-44"
             >
               <option value="ACTIVE">Active Assignments</option>
               <option value="ALL">All Assignments (including completed)</option>
@@ -1139,7 +1139,7 @@ export default function ReleasingRecords() {
               value={urgencyFilter}
               onChange={event => setUrgencyFilter(event.target.value)}
               aria-label="Filter by urgency"
-              className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-36"
+              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-xs text-slate-700 dark:text-slate-200 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-36"
             >
               <option value="ALL">All Urgency</option>
               <option value="URGENT">Urgent</option>
@@ -1153,7 +1153,7 @@ export default function ReleasingRecords() {
                 setReleaseStatusFilter('ACTIVE')
                 setUrgencyFilter('ALL')
               }}
-              className="h-9 shrink-0 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+              className="h-9 shrink-0 rounded-lg border border-slate-200 dark:border-slate-700 px-3 text-xs font-medium text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700 dark:bg-slate-800"
             >
               Clear Filters
             </button>
@@ -1162,12 +1162,12 @@ export default function ReleasingRecords() {
         </div>
 
         {actionError && (
-          <div role="alert" className="mx-4 mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <div role="alert" className="mx-4 mt-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
             {actionError}
           </div>
         )}
         {actionSuccess && (
-          <div role="status" className="mx-4 mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
+          <div role="status" className="mx-4 mt-4 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 p-3 text-xs text-emerald-700">
             {actionSuccess}
           </div>
         )}
@@ -1176,7 +1176,7 @@ export default function ReleasingRecords() {
         {error && (
           <div
             role="alert"
-            className="m-4 flex flex-col gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 sm:flex-row sm:items-center sm:justify-between"
+            className="m-4 flex flex-col gap-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300 sm:flex-row sm:items-center sm:justify-between"
           >
             <span>Failed to load releasing records: {error}</span>
 
@@ -1193,50 +1193,50 @@ export default function ReleasingRecords() {
         {/* Data table */}
         <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
           <table className="w-full min-w-[1650px] border-collapse text-left">
-            <thead className="sticky top-0 z-10 bg-slate-50">
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
+              <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+                <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   No.
                 </th>
                 {tableColumns.map(column => (
                   <th
                     key={column.field}
-                    className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+                    className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400"
                   >
                     <button
                       type="button"
                       onClick={() => handleSort(column.field)}
-                      className="inline-flex items-center gap-1.5 transition hover:text-blue-700"
+                      className="inline-flex items-center gap-1.5 transition hover:text-blue-700 dark:text-blue-300"
                       aria-label={`Sort by ${column.label}`}
                     >
                       {column.label}
 
                       {sortField === column.field ? (
-                        <span className="font-bold text-blue-700">
+                        <span className="font-bold text-blue-700 dark:text-blue-300">
                           {sortDirection === 'asc' ? '↑' : '↓'}
                         </span>
                       ) : (
                         <ArrowUpDown
                           size={11}
-                          className="text-slate-400"
+                          className="text-slate-400 dark:text-slate-500"
                         />
                       )}
                     </button>
                   </th>
                 ))}
 
-                <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   Receipt / Details
                 </th>
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
               {loading ? (
                 <tr>
                   <td
                     colSpan={13}
-                    className="px-4 py-14 text-center text-sm text-slate-500"
+                    className="px-4 py-14 text-center text-sm text-slate-500 dark:text-slate-400"
                   >
                     <RefreshCw
                       size={18}
@@ -1249,7 +1249,7 @@ export default function ReleasingRecords() {
                 <tr>
                   <td
                     colSpan={13}
-                    className="px-4 py-14 text-center text-sm text-slate-500"
+                    className="px-4 py-14 text-center text-sm text-slate-500 dark:text-slate-400"
                   >
                     Records could not be loaded. Check the error above.
                   </td>
@@ -1265,13 +1265,13 @@ export default function ReleasingRecords() {
                       className="mx-auto mb-2 text-slate-300"
                     />
 
-                    <p className="text-sm font-medium text-slate-700">
+                    <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
                       {search
                         ? 'No matching records'
                         : 'No outgoing documents yet'}
                     </p>
 
-                    <p className="mt-1 text-xs text-slate-500">
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                       {search
                         ? 'Try another search term.'
                         : 'Outgoing documents will appear here when recorded.'}
@@ -1282,16 +1282,16 @@ export default function ReleasingRecords() {
                 filteredRecords.map((record, index) => (
                   <tr
                     key={record.id}
-                    className="transition-colors duration-150 hover:bg-blue-50/60"
+                    className="transition-colors duration-150 hover:bg-blue-50 dark:bg-blue-950/40/60"
                   >
-                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-500">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400">
                       {filteredRecords.length - index}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-800">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-800 dark:text-slate-200">
                       {record.reference_number || '—'}
                     </td>
 
-                    <td className="max-w-[220px] px-4 py-3 text-xs text-slate-700">
+                    <td className="max-w-[220px] px-4 py-3 text-xs text-slate-700 dark:text-slate-200">
                       <span
                         className="block truncate"
                         title={record.subject || ''}
@@ -1311,25 +1311,25 @@ export default function ReleasingRecords() {
                       })()}
                     </td>
 
-                    <td className="px-4 py-3 text-xs text-slate-600">
+                    <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
                       {record.destination_office || '—'}
                     </td>
 
-                    <td className="px-4 py-3 text-xs text-slate-600">{record.releasing_staff || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{record.releasing_staff || '—'}</td>
 
-                    <td className="px-4 py-3 text-xs text-slate-600">{record.next_action_office_to_forward || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{record.next_action_office_to_forward || '—'}</td>
 
-                    <td className="px-4 py-3 text-xs text-slate-600">{record.next_action_release_to || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{record.next_action_release_to || '—'}</td>
 
-                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600">{record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</td>
 
-                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600">{record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</td>
 
-                    <td className="px-4 py-3 text-xs text-slate-600">{record.next_action_recorded_by_name || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{record.next_action_recorded_by_name || '—'}</td>
 
-                    <td className="min-w-[210px] px-4 py-3 text-xs text-slate-600">
+                    <td className="min-w-[210px] px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
                       <span className="font-semibold">{isReleaseCompleted(record) ? 'Forwarded' : (record.next_action_system_status || 'Not Forwarded')}</span>
-                      <span className="mt-1 block text-[10px] text-slate-500">Date Forwarded: {record.next_action_date_forwarded || record.next_action_release_at ? formatDateTime(record.next_action_date_forwarded || record.next_action_release_at) : '—'}</span>
+                      <span className="mt-1 block text-[10px] text-slate-500 dark:text-slate-400">Date Forwarded: {record.next_action_date_forwarded || record.next_action_release_at ? formatDateTime(record.next_action_date_forwarded || record.next_action_release_at) : '—'}</span>
                     </td>
 
                     <td className="px-4 py-3.5">
@@ -1349,7 +1349,7 @@ export default function ReleasingRecords() {
                           {confirmingId === record.id ? 'Confirming…' : 'Confirm Receipt'}
                         </button>
                       ) : (
-                        <span className="text-[10px] text-amber-700">Awaiting receipt</span>
+                        <span className="text-[10px] text-amber-700 dark:text-amber-300">Awaiting receipt</span>
                       )}
                       {record.release_received_at && (
                         <button
@@ -1373,7 +1373,7 @@ export default function ReleasingRecords() {
                         type="button"
                         onClick={() => setSelected(record)}
                         aria-label={`View ${record.reference_number}`}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700 dark:bg-slate-800"
                       >
                         <Eye size={13} /> View
                       </button>
@@ -1387,12 +1387,12 @@ export default function ReleasingRecords() {
         </div>
 
         {/* Table footer */}
-        <div className="flex flex-col gap-2 border-t border-slate-200 bg-white px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-[11px] text-slate-500">
+        <div className="flex flex-col gap-2 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
             Showing {filteredRecords.length} record(s)
           </p>
 
-          <p className="text-[11px] text-slate-400">
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">
             Select a column heading to sort the records.
           </p>
         </div>
@@ -1408,23 +1408,23 @@ export default function ReleasingRecords() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="releasing-detail-title"
-            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl"
+            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl"
             onClick={event => event.stopPropagation()}
           >
-            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-6 py-5">
               <div>
-                <p className="text-xs font-medium text-slate-500">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
                   Outgoing Document
                 </p>
 
                 <h3
                   id="releasing-detail-title"
-                  className="mt-1 text-xl font-bold text-slate-900"
+                  className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100"
                 >
                   {selected.reference_number}
                 </h3>
 
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                   Complete record information
                 </p>
               </div>
@@ -1433,7 +1433,7 @@ export default function ReleasingRecords() {
                 type="button"
                 onClick={() => setSelected(null)}
                 aria-label="Close details"
-                className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+                className="rounded-lg p-2 text-slate-500 dark:text-slate-400 transition hover:bg-slate-100 dark:hover:bg-slate-700 dark:bg-slate-700 hover:text-slate-800 dark:text-slate-200"
               >
                 <X size={18} />
               </button>
@@ -1457,30 +1457,30 @@ export default function ReleasingRecords() {
                 ].map(([label, value]) => (
                   <div
                     key={label}
-                    className="rounded-lg border border-slate-100 bg-slate-50 p-3.5"
+                    className="rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3.5"
                   >
-                    <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                       {label}
                     </dt>
 
-                    <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800">
+                    <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800 dark:text-slate-200">
                       {value || '—'}
                     </dd>
                   </div>
                 ))}
               </dl>
 
-              <section className="mt-6 rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-                <h4 className="text-sm font-bold text-slate-900">
+              <section className="mt-6 rounded-xl border border-blue-100 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 dark:bg-slate-800 p-4">
+                <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">
                   Physical Receipt Confirmation
                 </h4>
-                <p className="mt-1 text-xs text-slate-600">
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                   Confirm that you have physically received this document from the originating office before proceeding with the next action.
                 </p>
 
                 {selected.release_received_at ? (
-                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                    <p className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
+                  <div className="mt-3 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 p-3">
+                    <p className="flex items-center gap-2 text-sm font-semibold text-emerald-800 dark:text-emerald-300">
                       <CheckCircle2 size={16} />
                       Receipt Confirmed
                     </p>
@@ -1502,7 +1502,7 @@ export default function ReleasingRecords() {
                     {confirmingId === selected.id ? 'Confirming Receipt...' : 'Confirm Receipt'}
                   </button>
                 ) : (
-                  <p className="mt-3 text-xs text-amber-700">
+                  <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
                     Receipt is awaiting confirmation by the assigned releasing staff member.
                   </p>
                 )}
@@ -1510,11 +1510,11 @@ export default function ReleasingRecords() {
               </section>
             </div>
 
-            <div className="flex justify-end border-t border-slate-200 px-6 py-4">
+            <div className="flex justify-end border-t border-slate-200 dark:border-slate-700 px-6 py-4">
               <button
                 type="button"
                 onClick={() => setSelected(null)}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 transition hover:bg-slate-50 dark:hover:bg-slate-700 dark:bg-slate-800"
               >
                 Close
               </button>
@@ -1526,41 +1526,41 @@ export default function ReleasingRecords() {
       {/* Separate Release Panel: intentionally independent from View details. */}
       {releasePanelRecord && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[2px]" onClick={() => setReleasePanelRecord(null)}>
-          <section role="dialog" aria-modal="true" aria-labelledby="release-panel-title" className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl" onClick={event => event.stopPropagation()}>
-            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
+          <section role="dialog" aria-modal="true" aria-labelledby="release-panel-title" className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl" onClick={event => event.stopPropagation()}>
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-6 py-5">
               <div>
-                <p className="text-xs font-medium text-blue-700">Document Workflow</p>
-                <h3 id="release-panel-title" className="mt-1 text-xl font-bold text-slate-900">Release Panel · {releasePanelRecord.reference_number}</h3>
-                <p className="mt-1 text-xs text-slate-500">Record the next destination and release status. Physical receipt must be confirmed first.</p>
+                <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Document Workflow</p>
+                <h3 id="release-panel-title" className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">Release Panel · {releasePanelRecord.reference_number}</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Record the next destination and release status. Physical receipt must be confirmed first.</p>
               </div>
-              <button type="button" onClick={() => setReleasePanelRecord(null)} aria-label="Close release panel" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={18} /></button>
+              <button type="button" onClick={() => setReleasePanelRecord(null)} aria-label="Close release panel" className="rounded-lg p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 dark:bg-slate-700"><X size={18} /></button>
             </div>
             <div className="space-y-5 p-6">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Subject</p><p className="mt-1 text-sm text-slate-800">{releasePanelRecord.subject || '—'}</p></div>
-                <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Physical Receipt</p><p className="mt-1 text-sm font-semibold">{releasePanelRecord.release_received_at ? `Confirmed · ${formatDateTime(releasePanelRecord.release_received_at)}` : 'Awaiting confirmation'}</p></div>
+                <div className="rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Subject</p><p className="mt-1 text-sm text-slate-800 dark:text-slate-200">{releasePanelRecord.subject || '—'}</p></div>
+                <div className="rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Physical Receipt</p><p className="mt-1 text-sm font-semibold">{releasePanelRecord.release_received_at ? `Confirmed · ${formatDateTime(releasePanelRecord.release_received_at)}` : 'Awaiting confirmation'}</p></div>
               </div>
-              <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-                <h4 className="text-sm font-bold text-slate-900">Release Details</h4>
+              <div className="rounded-xl border border-blue-100 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 dark:bg-slate-800 p-4">
+                <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">Release Details</h4>
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <label className="text-xs font-semibold text-slate-600">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
-                  <label className="text-xs font-semibold text-slate-600">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
-                  <label className="text-xs font-semibold text-slate-600">Forward At (Date and Time) *<input type="datetime-local" value={nextActionReleaseAt} onChange={event => setNextActionReleaseAt(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100" /></label>
-                  <div className="text-xs font-semibold text-slate-600">Action Done in Unified System
-                    <p className="mt-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800">Forwarded</p>
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5 text-sm font-normal text-slate-800 dark:text-slate-200 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5 text-sm font-normal text-slate-800 dark:text-slate-200 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Forward At (Date and Time) *<input type="datetime-local" value={nextActionReleaseAt} onChange={event => setNextActionReleaseAt(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} className="mt-1.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5 text-sm font-normal text-slate-800 dark:text-slate-200 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100 dark:bg-slate-700" /></label>
+                  <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">Action Done in Unified System
+                    <p className="mt-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-2.5 text-sm font-semibold text-emerald-800 dark:text-emerald-300">Forwarded</p>
                   </div>
-                  <div className="text-xs font-semibold text-slate-600">Date Forwarded
-                    <p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700">{releasePanelRecord.next_action_date_forwarded ? formatDateTime(releasePanelRecord.next_action_date_forwarded) : 'Recorded automatically when saved'}</p>
+                  <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">Date Forwarded
+                    <p className="mt-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5 text-sm font-normal text-slate-700 dark:text-slate-200">{releasePanelRecord.next_action_date_forwarded ? formatDateTime(releasePanelRecord.next_action_date_forwarded) : 'Recorded automatically when saved'}</p>
                   </div>
                 </div>
-                {releasePanelRecord.next_action_recorded_by && <p className="mt-3 text-xs text-slate-500">Released by: {releasePanelRecord.next_action_recorded_by_name || 'Name unavailable'}</p>}
-                {!releasePanelRecord.release_received_at && <p className="mt-3 text-xs text-amber-700">Confirm physical receipt before releasing this document.</p>}
-                {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-blue-700">{actionError}</p>}
-                {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">{actionSuccess}</p>}
-                {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')}; Forward At: {String(log.previous_values.release_at || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')}; Forward At: {String(log.new_values.release_at || '—')})</p>}</div>)}</div></div>}
+                {releasePanelRecord.next_action_recorded_by && <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Released by: {releasePanelRecord.next_action_recorded_by_name || 'Name unavailable'}</p>}
+                {!releasePanelRecord.release_received_at && <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Confirm physical receipt before releasing this document.</p>}
+                {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-blue-700 dark:text-blue-300">{actionError}</p>}
+                {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 p-3 text-xs text-emerald-700">{actionSuccess}</p>}
+                {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 dark:border-slate-700 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800 dark:text-slate-200">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500 dark:text-slate-400">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600 dark:text-slate-300">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')}; Forward At: {String(log.previous_values.release_at || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600 dark:text-slate-300">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')}; Forward At: {String(log.new_values.release_at || '—')})</p>}</div>)}</div></div>}
                 <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-red-100 pt-4">
                   {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => { setNextActionOffice(releasePanelRecord.next_action_office_to_forward || ''); setNextActionReleaseTo(releasePanelRecord.next_action_release_to || ''); setNextActionReleaseAt(toDateTimeLocalValue(releasePanelRecord.next_action_release_at)); setActionError(''); setNextActionMode('edit') }} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Saving…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
-                  <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close Panel</button>
+                  <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 dark:bg-slate-800">Close Panel</button>
                 </div>
               </div>
             </div>

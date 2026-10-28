@@ -222,6 +222,14 @@ function displayStatus(status: string | null) {
   return (status || 'unknown').replaceAll('_', ' ')
 }
 
+// Format generated reference numbers for display only.
+// The original database value remains unchanged for copying, searching, and editing.
+function formatReferenceNumber(value: string | null | undefined): string {
+  if (!value?.trim()) return '—'
+
+  return value.trim().replace(/_\d{10,}$/, '').replace(/_/g, ' ')
+}
+
 function isValidHttpUrl(value: string): boolean {
   try {
     const url = new URL(value)
@@ -1391,7 +1399,7 @@ export default function ReceivingRecords() {
                         title="Click to copy PresOffice Number"
                         className="cursor-copy rounded px-1 py-0.5 text-left transition hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
                       >
-                        {record.reference_number || '—'}
+                        {formatReferenceNumber(record.reference_number)}
                       </button>
                     </td>
 
@@ -1437,9 +1445,9 @@ export default function ReceivingRecords() {
                     </td>
 
                     <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {record.destination_folder ||
-                        record.current_office ||
-                        '—'}
+                      {formatReferenceNumber(
+                        record.destination_folder || record.current_office,
+                      )}
                     </td>
 
                     <td className="px-4 py-3.5">

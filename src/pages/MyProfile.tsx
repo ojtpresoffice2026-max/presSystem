@@ -272,7 +272,7 @@ export default function MyProfile() {
   const initial = profile.full_name?.trim().charAt(0).toUpperCase() || '?'
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto h-full min-h-0 w-full max-w-4xl space-y-6 overflow-y-auto overscroll-y-contain pb-6">
       <header>
         <p className="text-xs font-medium text-slate-500">
           Workspace / Account

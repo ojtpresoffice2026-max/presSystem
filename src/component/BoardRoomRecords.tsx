@@ -65,8 +65,25 @@ type ReceivingRecord = {
  origin_office: string | null
  destination_folder: string | null
  current_office: string | null
+ system_code?: string | null
+ receiving_staff?: string | null
+ received_at?: string | null
  date_received: string | null
  status: string | null
+ remarks?: string | null
+ created_at?: string | null
+ urgency?: string | boolean | null
+ is_urgent?: boolean | null
+ custom_field_values?: Record<string, unknown> | null
+ [key: string]: unknown
+}
+
+type DestinationFieldDefinition = {
+ id: string
+ folder_id: string
+ field_name: string
+ field_type: string
+ sort_order: number
 }
 
 type DisplayRecord = {
@@ -242,7 +259,11 @@ export default function BoardRoomRecords() {
  const [accountNames, setAccountNames] = useState<Record<string, string>>({})
  const [selectedId, setSelectedId] = useState<string | null>(null)
  const [viewDetailsOpen, setViewDetailsOpen] = useState(false)
+ const [destinationFieldDefinitions, setDestinationFieldDefinitions] = useState<DestinationFieldDefinition[]>([])
+ const [destinationFieldsLoading, setDestinationFieldsLoading] = useState(false)
  const [search, setSearch] = useState('')
+ const [currentPage, setCurrentPage] = useState(1)
+ const pageSize = 10
  const [statusFilter, setStatusFilter] =
  useState<'all' | WorkflowStatus>('all')
 
@@ -335,6 +356,51 @@ export default function BoardRoomRecords() {
  const [returnFolderColor, setReturnFolderColor] = useState('')
  const [returnBoxNumber, setReturnBoxNumber] = useState('')
 
+  async function loadDestinationFieldDefinitions(record: ReceivingRecord | null) {
+    setDestinationFieldDefinitions([])
+    if (!record) return
+
+    const destination = String(record.destination_folder || record.current_office || '').trim()
+    if (!destination) return
+
+    setDestinationFieldsLoading(true)
+    try {
+      const { data: folders, error: folderError } = await supabase
+        .from('office_folders')
+        .select('id, code, name')
+      if (folderError) throw folderError
+
+      // Receiving stores generated destination values such as PR_MABINAY_1793179282728.
+      // Match the configured folder by its stable code/name without changing the stored value.
+      const normalizeFolderKey = (value: unknown) =>
+        String(value ?? '').trim().toUpperCase().replace(/_\d{8,}$/, '').replace(/[^A-Z0-9]/g, '')
+      const destinationKey = normalizeFolderKey(destination)
+      const folder = (folders ?? []).find((item: { id: string; code: string | null; name: string | null }) =>
+        normalizeFolderKey(item.code) === destinationKey ||
+        normalizeFolderKey(item.name) === destinationKey
+      )
+      if (!folder) return
+
+      const { data: fields, error: fieldsError } = await supabase
+        .from('destination_folder_fields')
+        .select('id, folder_id, field_name, field_type, sort_order')
+        .eq('folder_id', folder.id)
+        .order('sort_order', { ascending: true })
+      if (fieldsError) throw fieldsError
+      setDestinationFieldDefinitions((fields ?? []) as DestinationFieldDefinition[])
+    } catch (loadError) {
+      console.error('Unable to load destination-specific fields for Board Room view:', loadError)
+      setDestinationFieldDefinitions([])
+    } finally {
+      setDestinationFieldsLoading(false)
+    }
+  }
+
+  function formatDestinationName(value: string | null | undefined) {
+    if (!value) return '—'
+    return value.trim().replace(/_\d{8,}$/, '').replace(/_/g, ' ')
+  }
+
  const loadRecords = useCallback(async () => {
  setLoading(true)
  setError('')
@@ -388,9 +454,7 @@ export default function BoardRoomRecords() {
  if (receivingIds.length > 0) {
  const { data, error: documentError } = await supabase
  .from('receiving_records')
- .select(
- 'id, reference_number, record_type, subject, content, sender, bearer, origin_office, destination_folder, current_office, date_received, status',
- )
+ .select('*')
  .in('id', receivingIds)
 
  if (documentError) throw documentError
@@ -498,6 +562,20 @@ export default function BoardRoomRecords() {
  .includes(query)
  })
  }, [records, search, statusFilter])
+
+ const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize))
+ const paginatedRecords = useMemo(
+  () => filteredRecords.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+  [filteredRecords, currentPage],
+ )
+
+ useEffect(() => {
+  setCurrentPage(1)
+ }, [search, statusFilter])
+
+ useEffect(() => {
+  if (currentPage > totalPages) setCurrentPage(totalPages)
+ }, [currentPage, totalPages])
 
  const selected =
  records.find(row => row.workflow.id === selectedId) ?? null
@@ -1008,7 +1086,7 @@ export default function BoardRoomRecords() {
  </tr>
  </thead>
  <tbody className="divide-y divide-slate-100">
- {filteredRecords.map(({ workflow, document }, index) => {
+ {paginatedRecords.map(({ workflow, document }, index) => {
  const inCart = cart.some(
  item => item.workflowId === workflow.id,
  )
@@ -1021,7 +1099,7 @@ export default function BoardRoomRecords() {
  className="cursor-pointer bg-white transition-colors hover:bg-slate-50"
  >
  <td className="px-5 py-4 font-semibold tabular-nums text-slate-600">
- {filteredRecords.length - index}
+ {(currentPage - 1) * pageSize + index + 1}
  </td>
  <td className="min-w-[170px] px-5 py-4">
  <button type="button" onClick={(event) => { event.stopPropagation(); void copyDocumentCode(document?.reference_number, event) }} title="Click to copy reference number" className="break-words text-left font-semibold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline">
@@ -1154,7 +1232,9 @@ export default function BoardRoomRecords() {
  type="button"
  onClick={() => {
  setSelectedId(workflow.id)
+ setDestinationFieldDefinitions([])
  setViewDetailsOpen(true)
+ void loadDestinationFieldDefinitions(document)
  }}
  className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
  >
@@ -1212,8 +1292,31 @@ export default function BoardRoomRecords() {
  )}
  </div>
 
- <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500">
- Showing {filteredRecords.length} of {records.length} records
+ <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+  <p className="text-xs text-slate-500">
+   Showing {filteredRecords.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filteredRecords.length)} of {filteredRecords.length} filtered records ({records.length} total)
+  </p>
+  <div className="flex items-center justify-between gap-2 sm:justify-end">
+   <button
+    type="button"
+    onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+    disabled={currentPage === 1}
+    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+   >
+    Previous
+   </button>
+   <span className="whitespace-nowrap text-xs font-medium text-slate-600">
+    Page {currentPage} of {totalPages}
+   </span>
+   <button
+    type="button"
+    onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+    disabled={currentPage >= totalPages}
+    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+   >
+    Next
+   </button>
+  </div>
  </div>
  </section>
  </div>
@@ -1240,12 +1343,6 @@ export default function BoardRoomRecords() {
  >
  {selected.document?.reference_number || 'No reference number'}
  </button>
- <p className="mt-1 text-sm text-slate-500">
- {selected.document?.subject ||
- selected.document?.content ||
- 'No subject provided'}
- </p>
-
  <div className="mt-3 flex flex-wrap gap-2">
  <span
  className={`rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[selected.workflow.workflow_status]}`}
@@ -1281,85 +1378,58 @@ export default function BoardRoomRecords() {
 
  <div className="p-6">
  <h3 className="mb-3 text-sm font-bold text-slate-900">
- Document information
+ Receiving details for {formatDestinationName(selected.document?.destination_folder || selected.document?.current_office)}
  </h3>
+ {destinationFieldsLoading ? (
+ <div className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">Loading receiving details…</div>
+ ) : (
  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
  {[
- ['Record type', selected.document?.record_type],
- ['Sender', selected.document?.sender],
- ['Person who brought it', selected.workflow.transaction_person],
- ['Originating office', selected.document?.origin_office],
- ['Destination folder', selected.document?.destination_folder],
- ['Storage location', getStorageLabel(selected.workflow)],
- [
- 'Urgency',
- selected.workflow.urgency === 'urgent'
- ? 'Urgent'
- : 'Not Urgent',
- ],
- [
- 'Forwarding date',
- formatDateOnly(selected.workflow.forwarding_date),
- ],
- [
- 'Forwarding time',
- formatTime(selected.workflow.forwarding_time),
- ],
- [
- 'Forwarded at',
- formatDateTime(selected.workflow.forwarded_at),
- ],
- [
- 'Forwarded by',
- selected.workflow.forwarded_by
- ? accountNames[selected.workflow.forwarded_by] ||
- 'Account name unavailable'
- : null,
- ],
- [
- 'Board Room receipt',
- formatDateTime(selected.workflow.board_room_received_at),
- ],
- [
- 'Confirmed by',
- selected.workflow.board_room_received_by
- ? accountNames[selected.workflow.board_room_received_by] ||
- 'Account name unavailable'
- : null,
- ],
- ['President action', selected.workflow.president_action_status],
- ['Action remarks', selected.workflow.president_action_remarks],
- [
- 'Returned to origin',
- formatDateTime(selected.workflow.returned_to_origin_at),
- ],
- ['Returned by', selected.workflow.returned_to_origin_person],
- [
- 'Return processed by',
- selected.workflow.returned_to_origin_by
- ? accountNames[selected.workflow.returned_to_origin_by] ||
- 'Account name unavailable'
- : null,
- ],
- ['Return remarks', selected.workflow.returned_to_origin_remarks],
- [
- 'Origin office receipt',
- formatDateTime(selected.workflow.origin_office_received_at),
- ],
- ].map(([label, value]) => (
- <div
- key={label as string}
- className="min-w-0 rounded-lg bg-slate-50 p-3"
- >
- <p className="text-xs font-medium text-slate-500">
- {label}
- </p>
- <p className="mt-1 break-words text-sm font-medium text-slate-900">
- {value ? String(value) : '—'}
- </p>
- </div>
+   { label: 'PresOffice Number', value: selected.document?.reference_number },
+   { label: 'System Code', value: selected.document?.system_code },
+   { label: 'Content / Subject', value: selected.document?.content || selected.document?.subject },
+   { label: 'Bearer / Sender', value: selected.document?.bearer || selected.document?.sender },
+   { label: 'Inputted by', value: selected.document?.receiving_staff },
+   { label: 'Urgency', value: selected.document?.is_urgent === true || (typeof selected.document?.urgency === 'string' && ['urgent', 'high', 'yes', 'true'].includes(selected.document.urgency.trim().toLowerCase())) ? 'Urgent' : '' },
+   { label: 'Destination Folder', value: formatDestinationName(selected.document?.destination_folder || selected.document?.current_office) },
+   { label: 'Date / Time Received', value: selected.document?.received_at ? formatDateTime(selected.document.received_at) : formatDateOnly(selected.document?.date_received) },
+   { label: 'Status', value: selected.document?.status },
+ ].map(({ label, value }) => (
+   <div key={String(label)} className="min-w-0 rounded-lg bg-slate-50 p-3">
+     <p className="text-xs font-semibold text-slate-500">{label}</p>
+     <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-900">{value === null || value === undefined || value === '' ? '—' : String(value)}</p>
+   </div>
  ))}
+ {destinationFieldDefinitions.map(field => {
+   const values = selected.document?.custom_field_values
+   const normalizedFieldName = (value: unknown) => String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+   const valueEntries = values && typeof values === 'object' ? Object.entries(values) : []
+   const matchedEntry = valueEntries.find(([key]) => normalizedFieldName(key) === normalizedFieldName(field.field_name))
+   const value = values && typeof values === 'object' ? (values[field.id] ?? values[field.field_name] ?? matchedEntry?.[1]) : undefined
+   return (
+     <div key={field.id} className="min-w-0 rounded-lg bg-slate-50 p-3">
+       <p className="text-xs font-semibold text-slate-500">{field.field_name}</p>
+       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-900">{value === null || value === undefined || value === '' ? '—' : String(value)}</p>
+     </div>
+   )
+ })}
+ {selected.document?.remarks ? (
+   <div className="min-w-0 rounded-lg bg-slate-50 p-3">
+     <p className="text-xs font-semibold text-slate-500">Remarks</p>
+     <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-900">{selected.document.remarks}</p>
+   </div>
+ ) : null}
+ {selected.document?.created_at ? (
+   <div className="min-w-0 rounded-lg bg-slate-50 p-3">
+     <p className="text-xs font-semibold text-slate-500">Created At</p>
+     <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-900">{formatDateTime(selected.document.created_at)}</p>
+   </div>
+ ) : null}
+ {destinationFieldDefinitions.length === 0 && (
+   <p className="text-sm text-slate-500 sm:col-span-2">No additional custom fields are configured for this destination folder.</p>
+ )}
  </div>
+ )}
  </div>
 
  <div className="flex justify-end border-t border-slate-200 px-6 py-4">

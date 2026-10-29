@@ -51,6 +51,7 @@ import Dashboard from './pages/Dashboard'
 import MyProfile from './pages/MyProfile'
 import StaffGroupChat from './component/StaffGroupChat'
 import ThemeToggle from './component/ThemeToggle'
+import SeasonalDecorations from './component/SeasonalDecorations'
 
 import './dark-mode.css'
 
@@ -416,7 +417,9 @@ function DashboardLayout() {
   return (
     <div className="pres-system-shell flex h-screen w-full overflow-hidden bg-slate-50 text-slate-800">
       {/* Fixed-width sidebar */}
-      <aside className="relative flex h-full w-64 shrink-0 flex-col overflow-x-hidden overflow-y-auto bg-[#172554] p-5 text-white">
+      <aside className="relative isolate flex h-full w-64 shrink-0 flex-col overflow-x-hidden overflow-y-auto bg-[#172554] p-5 text-white">
+        {/* Seasonal decorations are confined to the sidebar. */}
+        <SeasonalDecorations />
         {/* Logo and application name */}
         <div className="relative z-10 mb-10 flex shrink-0 items-center gap-3">
           <div className="relative h-12 w-12 shrink-0 rounded-xl border border-white/20 bg-white p-1">
@@ -694,4 +697,6 @@ export default function App() {
     </BrowserRouter>
   )
 }
+
+
 

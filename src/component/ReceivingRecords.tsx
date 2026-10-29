@@ -57,7 +57,16 @@ type ReceivingRecord = {
   amount_to_adjust: number | string | null
   adjusted_amount: number | string | null
   scan_file_url?: string | null
+  custom_field_values?: Record<string, unknown> | null
   [key: string]: unknown
+}
+
+type DestinationFieldDefinition = {
+  id: string
+  folder_id: string
+  field_name: string
+  field_type: string
+  sort_order: number
 }
 
 type WorkflowTimelineRow = {
@@ -134,13 +143,7 @@ const DESTINATION_FOLDERS = [
   'NORSA/NBURSA',
 ]
 
-const SPECIAL_DESTINATIONS = [
-  'BAIS',
-  'SIATION',
-  'MABINAY',
-  'GUIHULNGAN',
-  'BAYAWAN',
-]
+
 
 const inputClass =
   'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
@@ -156,22 +159,7 @@ const tableColumns: { label: string; field: SortField }[] = [
   { label: 'Status', field: 'status' },
 ]
 
-function money(value: number | string | null | undefined) {
-  if (value === null || value === undefined || value === '') {
-    return '—'
-  }
 
-  const amount = Number(value)
-
-  if (!Number.isFinite(amount)) {
-    return String(value)
-  }
-
-  return `₱${amount.toLocaleString('en-PH', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`
-}
 
 function valueOrDash(value: unknown): string {
   if (value === null || value === undefined || value === '') {
@@ -228,6 +216,13 @@ function formatReferenceNumber(value: string | null | undefined): string {
   if (!value?.trim()) return '—'
 
   return value.trim().replace(/_\d{10,}$/, '').replace(/_/g, ' ')
+}
+
+// Format destination folder codes for display only; keep the stored code intact.
+function formatDestinationFolder(value: string | null | undefined): string {
+  if (!value?.trim()) return '—'
+
+  return value.trim().replace(/_\d{8,}$/, '').replace(/_/g, ' ').replace(/\s+/g, ' ')
 }
 
 function isValidHttpUrl(value: string): boolean {
@@ -297,11 +292,15 @@ export default function ReceivingRecords() {
   const [timelineAccountNames, setTimelineAccountNames] = useState<Record<string, string>>({})
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [timelineError, setTimelineError] = useState('')
+  const [destinationFieldDefinitions, setDestinationFieldDefinitions] = useState<DestinationFieldDefinition[]>([])
+  const [destinationFieldsLoading, setDestinationFieldsLoading] = useState(false)
 
   const [sortField, setSortField] =
     useState<SortField>('created_at')
   const [sortDirection, setSortDirection] =
     useState<'asc' | 'desc'>('desc')
+  const [currentPage, setCurrentPage] = useState(1)
+  const rowsPerPage = 10
 
   async function copyRecordValue(
     event: MouseEvent<HTMLButtonElement>,
@@ -600,8 +599,43 @@ export default function ReceivingRecords() {
     return isUuid ? 'Name unavailable' : value
   }
 
+  async function loadDestinationFieldDefinitions(record: ReceivingRecord) {
+    setDestinationFieldDefinitions([])
+    const destination = String(record.destination_folder || record.current_office || '').trim()
+    if (!destination) return
+
+    setDestinationFieldsLoading(true)
+    try {
+      const { data: folders, error: folderError } = await supabase
+        .from('office_folders')
+        .select('id, code, name')
+      if (folderError) throw folderError
+
+      const normalizedDestination = destination.toUpperCase().replace(/_\d{8,}$/, '')
+      const folder = (folders ?? []).find((item: { id: string; code: string; name: string }) =>
+        String(item.code ?? '').trim().toUpperCase() === normalizedDestination ||
+        String(item.name ?? '').trim().toUpperCase() === normalizedDestination
+      )
+      if (!folder) return
+
+      const { data: fields, error: fieldsError } = await supabase
+        .from('destination_folder_fields')
+        .select('id, folder_id, field_name, field_type, sort_order')
+        .eq('folder_id', folder.id)
+        .order('sort_order', { ascending: true })
+      if (fieldsError) throw fieldsError
+      setDestinationFieldDefinitions((fields ?? []) as DestinationFieldDefinition[])
+    } catch (err) {
+      console.error('Unable to load destination-specific field definitions:', err)
+      setDestinationFieldDefinitions([])
+    } finally {
+      setDestinationFieldsLoading(false)
+    }
+  }
+
   function openRecord(record: ReceivingRecord) {
     setSelected(record)
+    void loadDestinationFieldDefinitions(record)
     setDraft(createDraft(record))
     setEditMode(false)
     setEditFolderDropdownOpen(false)
@@ -650,6 +684,7 @@ export default function ReceivingRecords() {
     setTimelineRows([])
     setTimelineAccountNames({})
     setTimelineError('')
+    setDestinationFieldDefinitions([])
   }
 
   function updateDraft<K extends keyof EditableRecord>(
@@ -888,6 +923,22 @@ export default function ReceivingRecords() {
     sortDirection,
   ])
 
+  // Paginate the filtered/sorted results so the table displays only 10 rows.
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / rowsPerPage))
+  const paginatedRecords = useMemo(
+    () => filteredRecords.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage),
+    [filteredRecords, currentPage],
+  )
+
+  // Return to page 1 when the user changes filters, search, or sorting.
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [appliedSearch, selectedFolder, sortField, sortDirection])
+
+  useEffect(() => {
+    setCurrentPage(page => Math.min(page, totalPages))
+  }, [totalPages])
+
   function detail(
     label: string,
     value: unknown,
@@ -917,24 +968,14 @@ export default function ReceivingRecords() {
   }
 
   function renderRecordDetails(record: ReceivingRecord): ReactNode[] {
-    const destination = (
-      record.destination_folder ||
-      record.current_office ||
-      ''
-    )
-      .trim()
-      .toUpperCase()
-
     const details: ReactNode[] = [
       detail('PresOffice Number', record.reference_number),
       detail('System Code', record.system_code),
       detail('Content / Subject', record.content || record.subject),
       detail('Bearer / Sender', record.bearer || record.sender),
-      detail('Origin of Document / Office', record.origin_office),
-      detail('Payee', record.payee),
       detail('Inputed by', record.receiving_staff),
       detail('Urgency', record.is_urgent === true || (typeof record.urgency === 'string' && ['urgent', 'high', 'yes', 'true'].includes(record.urgency.trim().toLowerCase())) ? 'Urgent' : ''),
-      detail('Destination Folder', record.destination_folder),
+      detail('Destination Folder', formatDestinationFolder(record.destination_folder || record.current_office)),
       detail(
         'Date / Time Received',
         record.received_at || record.date_received,
@@ -943,62 +984,13 @@ export default function ReceivingRecords() {
       detail('Status', displayStatus(record.status)),
     ]
 
-    if (destination === 'LDDAP') {
-      details.push(
-        detail('Amount (₱)', record.amount_peso, money),
-        detail('Other Notes / Remarks', record.other_notes_remarks),
-      )
-    }
-
-    if (destination === 'ORS/BURS') {
-      details.push(
-        detail('ORS / BURS Type', record.document_type),
-        detail('ORS / BURS Amount', record.ors_burs_amount, money),
-        detail('Other Notes / Remarks', record.other_notes_remarks),
-      )
-    }
-
-    // Show the fields associated with the selected destination folder.
-    // DV MAIN and other DV destinations include all DV-related values captured
-    // on the receiving form, in addition to the common document information above.
-    if (destination.startsWith('DV')) {
-      details.push(
-        detail('Document Type', record.document_type),
-        detail('Document Codes', record.document_code),
-        detail('Amount (₱)', record.amount_peso, money),
-        detail('ORS / BURS Amount', record.ors_burs_amount, money),
-        detail('DV Amount', record.dv_amount, money),
-        detail('Check Amount', record.check_amount, money),
-        detail('Other Notes / Remarks', record.other_notes_remarks),
-      )
-    }
-
-    if (destination === 'PACSVAL') {
-      details.push(
-        detail('Campus', record.campus),
-        detail('Document Date', record.document_date, formatDate),
-        detail('Batch No.', record.batch_no),
-        detail('Total Amount', record.total_amount, money),
-        detail('Other Notes / Remarks', record.other_notes_remarks),
-      )
-    }
-
-    if (destination === 'NORSA/NBURSA') {
-      details.push(
-        detail('NORSA / NBURSA Type', record.norsa_type),
-        detail('Serial Number', record.serial_number),
-        detail('Amount to Adjust', record.amount_to_adjust, money),
-        detail('Adjusted Amount', record.adjusted_amount, money),
-        detail('Other Notes / Remarks', record.other_notes_remarks),
-      )
-    }
-
-    if (SPECIAL_DESTINATIONS.includes(destination)) {
-      details.push(
-        detail('Office / Designation', record.office_designation),
-        detail('Date of Letter', record.date_of_letter, formatDate),
-        detail('Other Notes / Remarks', record.other_notes_remarks),
-      )
+    // Custom fields are defined per destination folder in the folder settings.
+    // Their values are saved by Receiving in custom_field_values, keyed by field ID.
+    const customValues = record.custom_field_values
+    if (customValues && typeof customValues === 'object') {
+      const customDetails = destinationFieldDefinitions
+        .map(field => detail(field.field_name, customValues[field.id]))
+      details.push(...customDetails)
     }
 
     details.push(
@@ -1384,13 +1376,13 @@ export default function ReceivingRecords() {
                   </td>
                 </tr>
               ) : (
-                filteredRecords.map((record, index) => (
+                paginatedRecords.map((record, index) => (
                   <tr
                     key={record.id}
                     className="transition-colors hover:bg-slate-50"
                   >
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-500">
-                      {filteredRecords.length - index}
+                      {(currentPage - 1) * rowsPerPage + index + 1}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                       <button
@@ -1474,15 +1466,35 @@ export default function ReceivingRecords() {
           </table>
         </div>
 
-        {/* Table footer */}
-        <div className="flex flex-col gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+        {/* Table footer with 10-row pagination */}
+        <div className="flex flex-col gap-3 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[11px] text-slate-500">
-            Showing {filteredRecords.length} record(s)
+            Showing {filteredRecords.length === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1}–{Math.min(currentPage * rowsPerPage, filteredRecords.length)} of {filteredRecords.length} records · {rowsPerPage} rows per page
           </p>
 
-          <p className="text-[11px] text-slate-400">
-            Select a column heading to sort.
-          </p>
+          <div className="flex items-center justify-between gap-3 sm:justify-end">
+            <p className="text-[11px] text-slate-400">
+              Page {currentPage} of {totalPages}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+                disabled={currentPage <= 1}
+                className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+                disabled={currentPage >= totalPages}
+                className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1820,6 +1832,9 @@ export default function ReceivingRecords() {
                     </div>
                   )}
 
+                  {destinationFieldsLoading && (
+                    <p className="mb-3 text-xs text-slate-500">Loading destination-specific fields…</p>
+                  )}
                   <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {renderRecordDetails(selected)}
                   </dl>

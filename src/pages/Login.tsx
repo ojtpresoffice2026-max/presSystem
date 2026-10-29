@@ -1,4 +1,4 @@
-
+﻿
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import ThemeToggle from '../component/ThemeToggle'
+import SeasonalDecorations from '../component/SeasonalDecorations'
 
 type UserRole = 'admin' | 'staff'
 
@@ -167,6 +168,7 @@ export default function Login() {
 
   return (
     <main className="relative flex min-h-screen items-center justify-center bg-slate-100 p-4 transition-colors duration-300">
+      <SeasonalDecorations />
       <div className="fixed right-5 top-5 z-50">
         <ThemeToggle />
       </div>
@@ -351,3 +353,6 @@ export default function Login() {
     </main>
   )
 }
+
+
+

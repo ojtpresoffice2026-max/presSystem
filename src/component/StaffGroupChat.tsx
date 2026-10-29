@@ -1,4 +1,4 @@
-
+﻿
 import {
   useCallback,
   useEffect,
@@ -518,10 +518,11 @@ export default function StaffGroupChat() {
     }
   }
 
-  // Soft-delete a message so everyone can see who deleted it.
-  // Supabase RLS must authorize this UPDATE for admins.
+  // Soft-delete a message so everyone sees a deletion notice.
+  // Users may delete their own messages; admins may delete any message.
   async function deleteMessage(message: ChatMessage) {
-    if (!isAdmin || deletingId) return
+    const canDelete = isAdmin || message.sender_id === userId
+    if (!canDelete || deletingId) return
 
     setDeletingId(message.id)
     setMessagePendingDelete(null)
@@ -542,7 +543,7 @@ export default function StaffGroupChat() {
 
       if (deleteError) throw deleteError
       if (!updatedMessage) {
-        throw new Error('No message was marked as deleted. Check the admin UPDATE RLS policy and confirm your profiles.role is admin.')
+        throw new Error('No message was marked as deleted. Check the staff chat UPDATE RLS policy for own-message deletion.')
       }
 
       setMessages((current) => current.map((item) =>
@@ -697,11 +698,9 @@ export default function StaffGroupChat() {
               const avatarUrl = own
                 ? myAvatar
                 : profile?.avatarUrl || null
-              const deletedByProfile = message.deleted_by ? profiles[message.deleted_by] : null
               const deletedByName = message.deleted_by === userId
                 ? myName
-                : deletedByProfile?.name || 'An administrator'
-
+                : (message.deleted_by ? profiles[message.deleted_by]?.name : null) || 'Account'
               return (
                 <div
                   key={message.id}
@@ -752,7 +751,7 @@ export default function StaffGroupChat() {
                         </p>
                       </div>
 
-                      {isAdmin && !message.deleted_at && (
+                      {(isAdmin || own) && !message.deleted_at && (
                         <button
                           type="button"
                           onClick={() => setMessagePendingDelete(message)}
@@ -836,7 +835,7 @@ export default function StaffGroupChat() {
           </form>
 
           {/* In-chat delete confirmation; avoids the browser alert dialog. */}
-          {isAdmin && messagePendingDelete && (
+          {messagePendingDelete && (isAdmin || messagePendingDelete.sender_id === userId) && (
             <div
               className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
               role="presentation"
@@ -891,3 +890,5 @@ export default function StaffGroupChat() {
     </div>
   )
 }
+
+

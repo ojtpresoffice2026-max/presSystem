@@ -18,7 +18,7 @@ import {
   LoaderCircle,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import AuditHistory from './AuditHistory'
+
 
 type ReceivingRecord = {
   id: string
@@ -33,8 +33,18 @@ type ReceivingRecord = {
   current_office?: string | null
   destination_folder?: string | null
   date_received?: string | null
+  custom_field_values?: Record<string, unknown> | null
   urgency?: string | null
   status?: string | null
+  remarks?: string | null
+}
+
+type DestinationFieldDefinition = {
+  id: string
+  folder_id: string
+  field_name: string
+  field_type?: string | null
+  sort_order?: number | null
 }
 
 type WorkflowRecord = {
@@ -188,6 +198,33 @@ function matchesDocument(document: ReceivingRecord, search: string) {
   ].some(value => String(value ?? '').toLowerCase().includes(term))
 }
 
+function displayOfficeName(value?: string | null) {
+  if (!value) return '—'
+  return value
+    .trim()
+    .replace(/^(?:PR|DV)_/i, '')
+    .replace(/_\d{8,}$/i, '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizeFolderKey(value?: string | null) {
+  return displayOfficeName(value).toUpperCase().replace(/\s+/g, ' ').trim()
+}
+
+function resolveOfficeFolderName(value: string | null | undefined, names: Record<string, string>) {
+  if (!value) return '—'
+  const raw = value.trim()
+  const normalized = normalizeFolderKey(raw)
+  const resolved = names[normalized]
+  if (resolved) return resolved
+  // Legacy receiving records sometimes store generated folder codes such as
+  // PR_MABINAY_1793179282728 instead of the configured folder display name.
+  const cleaned = raw.replace(/^(?:PR|DV)_/i, '').replace(/_\d{8,}$/i, '')
+  return displayOfficeName(cleaned)
+}
+
 function getStorageLabel(workflow: WorkflowRecord) {
   return workflow.storage_type === 'folder'
     ? `Folder: ${workflow.folder_color || 'Not specified'}`
@@ -222,9 +259,12 @@ export default function ForwardingRecords() {
   const [documents, setDocuments] = useState<ReceivingRecord[]>([])
   const [workflows, setWorkflows] = useState<WorkflowWithDocument[]>([])
   const [profiles, setProfiles] = useState<Record<string, string>>({})
+  const [officeFolderNames, setOfficeFolderNames] = useState<Record<string, string>>({})
 
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 10
   const [showForm, setShowForm] = useState(false)
   const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
   const [returnedNotificationsOpen, setReturnedNotificationsOpen] = useState(false)
@@ -256,6 +296,10 @@ export default function ForwardingRecords() {
     useState<WorkflowRecord | null>(null)
   const [viewingWorkflow, setViewingWorkflow] =
     useState<WorkflowWithDocument | null>(null)
+  const [viewDestinationFields, setViewDestinationFields] =
+    useState<DestinationFieldDefinition[]>([])
+  const [viewDestinationFieldsLoading, setViewDestinationFieldsLoading] =
+    useState(false)
   const [viewingUrgentDocument, setViewingUrgentDocument] =
     useState<ReceivingRecord | null>(null)
   const [releaseAssignment, setReleaseAssignment] =
@@ -272,6 +316,69 @@ export default function ForwardingRecords() {
 
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+
+  // Load only the custom fields configured for the destination folder of the
+  // document currently being viewed. Field values are stored by field ID.
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadViewDestinationFields() {
+      setViewDestinationFields([])
+      const document = viewingWorkflow?.document
+      const destination = String(
+        document?.destination_folder || document?.current_office || '',
+      ).trim()
+
+      if (!document || !destination) {
+        setViewDestinationFieldsLoading(false)
+        return
+      }
+
+      setViewDestinationFieldsLoading(true)
+      try {
+        const { data: folders, error: folderError } = await supabase
+          .from('office_folders')
+          .select('id, code, name')
+
+        if (folderError) throw folderError
+
+        const normalizedDestination = normalizeFolderKey(destination)
+
+        const folder = (folders ?? []).find(
+          (item: { id: string; code: string | null; name: string | null }) =>
+            normalizeFolderKey(item.code) === normalizedDestination ||
+            normalizeFolderKey(item.name) === normalizedDestination,
+        )
+
+        if (!folder) return
+
+        const { data: fields, error: fieldsError } = await supabase
+          .from('destination_folder_fields')
+          .select('id, folder_id, field_name, field_type, sort_order')
+          .eq('folder_id', folder.id)
+          .order('sort_order', { ascending: true })
+
+        if (fieldsError) throw fieldsError
+        if (!cancelled) {
+          setViewDestinationFields((fields ?? []) as DestinationFieldDefinition[])
+        }
+      } catch (err) {
+        console.error('Unable to load destination fields for document view:', err)
+        if (!cancelled) setViewDestinationFields([])
+      } finally {
+        if (!cancelled) setViewDestinationFieldsLoading(false)
+      }
+    }
+
+    void loadViewDestinationFields()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    viewingWorkflow?.document?.id,
+    viewingWorkflow?.document?.destination_folder,
+    viewingWorkflow?.document?.current_office,
+  ])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -334,23 +441,46 @@ export default function ForwardingRecords() {
         }
       }
 
-      // Load every user with the staff role dynamically, so newly added staff appear without code changes.
+      // Only active staff accounts may be assigned for releasing.
+      // User Management stores this flag in profiles.is_active.
       setLoadingReleasingStaff(true)
       const { data: releasingStaffRows, error: releasingStaffError } = await supabase
         .from('profiles')
-        .select('full_name')
+        .select('full_name, is_active')
         .eq('role', 'staff')
+        .eq('is_active', true)
         .order('full_name', { ascending: true })
 
       if (releasingStaffError) {
-        console.warn('Could not load releasing staff:', releasingStaffError)
+        console.warn('Could not load active releasing staff:', releasingStaffError)
+        setReleasingStaffOptions([])
       } else {
         const names = (releasingStaffRows ?? [])
+          .filter(row => row.is_active === true)
           .map(row => String(row.full_name ?? '').trim())
           .filter(Boolean)
         setReleasingStaffOptions([...new Set(names)])
       }
       setLoadingReleasingStaff(false)
+
+      const { data: officeFolders, error: officeFoldersError } = await supabase
+        .from('office_folders')
+        .select('code, name')
+
+      if (officeFoldersError) {
+        console.warn('Could not load office/folder display names:', officeFoldersError)
+      } else {
+        const folderNames: Record<string, string> = {}
+        for (const folder of officeFolders ?? []) {
+          const name = String(folder.name ?? '').trim()
+          const code = String(folder.code ?? '').trim()
+          if (name) {
+            if (code) folderNames[normalizeFolderKey(code)] = name
+            folderNames[normalizeFolderKey(name)] = name
+          }
+        }
+        setOfficeFolderNames(folderNames)
+      }
 
       setDocuments(receivedDocuments)
       setProfiles(profileMap)
@@ -655,6 +785,24 @@ export default function ForwardingRecords() {
     })
   }, [workflows, statusFilter, search])
 
+  const filteredUntouchedDocuments = useMemo(() => {
+    // Untouched Received papers remain actionable regardless of Board Room status filters.
+    return availableDocuments.filter(document => matchesDocument(document, search))
+  }, [availableDocuments, search])
+
+  const totalTableRows = filteredUntouchedDocuments.length + filteredWorkflows.length
+  const totalPages = Math.max(1, Math.ceil(totalTableRows / pageSize))
+  const safeCurrentPage = Math.min(currentPage, totalPages)
+  const pageStart = (safeCurrentPage - 1) * pageSize
+  const visibleUntouchedDocuments = filteredUntouchedDocuments.slice(pageStart, pageStart + pageSize)
+  const workflowPageStart = Math.max(0, pageStart - filteredUntouchedDocuments.length)
+  const workflowPageEnd = Math.max(0, Math.min(filteredWorkflows.length, pageStart + pageSize - filteredUntouchedDocuments.length))
+  const visibleWorkflows = filteredWorkflows.slice(workflowPageStart, workflowPageEnd)
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, statusFilter])
+
   const selectedDocuments = useMemo(
     () =>
       documents.filter(document =>
@@ -915,6 +1063,64 @@ export default function ForwardingRecords() {
     }
   }
 
+  async function handleStartDirectRelease(document: ReceivingRecord) {
+    setError('')
+    setSuccess('')
+
+    // Only untouched Received records can start this direct-release route.
+    if (!availableDocuments.some(item => item.id === document.id)) {
+      setError('This paper already has a workflow action. Refresh the page and try again.')
+      return
+    }
+
+    setSavingReleaseAssignment(true)
+    try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError) throw authError
+      if (!user) throw new Error('Your session has expired. Please sign in again.')
+
+      const now = new Date()
+      const forwardingTimeValue = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      const { data, error: insertError } = await supabase
+        .from('document_workflow')
+        .insert({
+          receiving_record_id: document.id,
+          transaction_person: document.sender || document.bearer || 'Direct release',
+          // The database storage check requires a folder color when storage_type is folder.
+          // Direct-to-release papers still need a valid storage classification.
+          storage_type: 'folder',
+          folder_color: 'Other',
+          box_number: null,
+          urgency: String(document.urgency ?? '').toLowerCase() === 'urgent' ? 'urgent' : 'not_urgent',
+          forwarding_date: now.toISOString().slice(0, 10),
+          forwarding_time: forwardingTimeValue,
+          forwarded_at: now.toISOString(),
+          forwarded_by: user.id,
+          workflow_status: 'forwarded',
+        })
+        .select('*')
+        .single()
+
+      if (insertError) {
+        if (insertError.code === '23505') throw new Error('This paper already has a workflow action. Refresh the page and review it.')
+        throw insertError
+      }
+
+      setReleaseAssignment(data as WorkflowRecord)
+      setReleaseUrgency(String(document.urgency ?? '').toLowerCase() === 'urgent' ? 'urgent' : 'not_urgent')
+      await loadData()
+    } catch (err) {
+      const detail = typeof err === 'object' && err !== null ? err as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown } : null
+      const message = [detail?.message, detail?.details, detail?.hint, detail?.code]
+        .filter(value => typeof value === 'string' && value.trim())
+        .join(' — ')
+      console.error('Unable to start direct release forwarding:', err)
+      setError(message || (err instanceof Error ? err.message : 'Unable to start direct release forwarding. Check the browser console for the Supabase error.'))
+    } finally {
+      setSavingReleaseAssignment(false)
+    }
+  }
+
   async function handleForwardToReleasingStaff(
     event: FormEvent<HTMLFormElement>,
   ) {
@@ -936,12 +1142,37 @@ export default function ForwardingRecords() {
     }
 
     if (!releasingStaffOptions.includes(releaseStaff)) {
-      setError('Please select a releasing staff member from the search results.')
+      setError('Please select an active releasing staff member from the search results.')
       return
     }
 
-    if (releaseAssignment.workflow_status !== 'completed') {
-      setError('The originating office must confirm physical receipt first.')
+    // Re-check the account against Supabase before saving. This prevents an
+    // account deactivated after the dropdown loaded from receiving an assignment.
+    const { data: activeStaff, error: activeStaffError } = await supabase
+      .from('profiles')
+      .select('id, full_name, is_active')
+      .eq('role', 'staff')
+      .eq('is_active', true)
+      .eq('full_name', releaseStaff)
+      .limit(1)
+      .maybeSingle()
+
+    if (activeStaffError) {
+      setError(`Unable to verify releasing staff status: ${activeStaffError.message}`)
+      return
+    }
+
+    if (!activeStaff || activeStaff.is_active !== true) {
+      setReleasingStaffOptions(current => current.filter(name => name !== releaseStaff))
+      setReleaseStaff('')
+      setReleaseStaffSearch('')
+      setError('This staff account is inactive or no longer available. Select an active staff member.')
+      return
+    }
+
+    const eligibleReleaseStatuses = ['forwarded', 'in_progress', 'completed']
+    if (!eligibleReleaseStatuses.includes(releaseAssignment.workflow_status)) {
+      setError('This paper cannot be forwarded to Releasing Staff from its current status. If it was returned to the originating office, confirm physical receipt first.')
       return
     }
 
@@ -973,7 +1204,7 @@ export default function ForwardingRecords() {
           release_forwarded_by: user.id,
         })
         .eq('id', releaseAssignment.id)
-        .eq('workflow_status', 'completed')
+        .in('workflow_status', ['forwarded', 'in_progress', 'completed'])
         .is('release_assigned_to', null)
         .select('id')
         .maybeSingle()
@@ -1089,11 +1320,9 @@ export default function ForwardingRecords() {
           <p className={`mt-3 break-words text-sm font-medium ${isSelected ? 'text-slate-900 dark:text-slate-100' : 'text-slate-800 dark:text-slate-100'}`}>
             {document.content || document.subject || 'No subject'}
           </p>
-          <div className={`mt-2 space-y-1 text-xs leading-5 ${isSelected ? 'text-slate-600 dark:text-slate-300' : 'text-slate-600 dark:text-slate-300'}`}>
-            <p>Sender: {document.sender || 'Not specified'}</p>
-            {document.bearer && <p>Bearer: {document.bearer}</p>}
-            <p>Originating office: {document.origin_office || document.current_office || document.destination_folder || 'Not specified'}</p>
-            {document.record_type && <p>Record type: {document.record_type}</p>}
+          {/* Keep the forwarding picker focused on the document content only. */}
+          <div className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
+            {document.content || document.subject || 'No content provided'}
           </div>
         </div>
         {isSelected && (
@@ -1170,7 +1399,7 @@ export default function ForwardingRecords() {
                           <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number}>
                             PresOffice No.: {document.reference_number || '—'}
                           </p>
-                          <p className="mt-0.5 truncate text-xs text-slate-600" title={document.system_code || ''}>
+                          <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document.system_code || ''}>
                             System Code: {document.system_code || '—'}
                           </p>
                           <p className="mt-1 text-[10px] text-red-700">Urgent · Awaiting forwarding</p>
@@ -1191,7 +1420,7 @@ export default function ForwardingRecords() {
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
                             PresOffice No.: {document?.reference_number || '—'}
                           </p>
-                          <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
+                          <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document?.system_code || ''}>
                             System Code: {document?.system_code || '—'}
                           </p>
                           <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent · Returned by Board Room</p>
@@ -1265,10 +1494,10 @@ export default function ForwardingRecords() {
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
                             PresOffice No.: {document?.reference_number || '—'}
                           </p>
-                          <p className="mt-0.5 truncate text-xs text-slate-600" title={document?.system_code || ''}>
+                          <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document?.system_code || ''}>
                             System Code: {document?.system_code || '—'}
                           </p>
-                          <p className="mt-1 truncate text-xs text-slate-600">
+                          <p className="mt-1 truncate text-xs text-slate-600 dark:text-slate-300">
                             {document?.content || document?.subject || 'No subject provided'}
                           </p>
                           <p className="mt-1 text-[10px] font-semibold text-blue-700">
@@ -1333,7 +1562,7 @@ export default function ForwardingRecords() {
       )}
 
 
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
         <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
@@ -1346,7 +1575,7 @@ export default function ForwardingRecords() {
               <p className="mt-0.5 text-xs text-slate-500">
                 {loading
                   ? 'Loading records...'
-                  : `${filteredWorkflows.length} matching records · ${availableDocuments.length} eligible to forward`}
+                  : `${filteredWorkflows.length + availableDocuments.length} total papers · ${availableDocuments.length} awaiting first action`}
               </p>
             </div>
           </div>
@@ -1369,7 +1598,7 @@ export default function ForwardingRecords() {
                   value={search}
                   onChange={event => setSearch(event.target.value)}
                   placeholder="Reference, subject, sender, office, remarks..."
-                  className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-blue-400 dark:focus:ring-blue-900"
                 />
               </div>
             </div>
@@ -1424,8 +1653,8 @@ export default function ForwardingRecords() {
 
         <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
           <table className="w-full min-w-[1450px] border-collapse text-left">
-            <thead className="sticky top-0 z-10 bg-slate-50">
-              <tr className="border-b border-slate-200 bg-slate-50">
+            <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
+              <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
                 {[
                   'No.',
                   'PresOffice No.',
@@ -1435,13 +1664,12 @@ export default function ForwardingRecords() {
                   'Forwarded',
                   'Workflow Status',
                   'Return Remarks',
-                  'Releasing Staff',
-                  'Release Instruction',
+                  'Releasing Staff / Release Instruction',
                   'Action',
                 ].map(label => (
                   <th
                     key={label}
-                    className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+                    className="whitespace-nowrap px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-300"
                   >
                     {label}
                   </th>
@@ -1449,43 +1677,80 @@ export default function ForwardingRecords() {
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {loading ? (
                 <tr>
                   <td
-                    colSpan={11}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
                     Loading forwarding records...
                   </td>
                 </tr>
-              ) : filteredWorkflows.length === 0 ? (
+              ) : totalTableRows === 0 ? (
                 <tr>
                   <td
-                    colSpan={11}
+                    colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
-                    {workflows.length === 0
-                      ? 'No documents have been forwarded yet.'
+                    {workflows.length === 0 && availableDocuments.length === 0
+                      ? 'No received papers or forwarding records found.'
                       : 'No matching forwarding records found.'}
                   </td>
                 </tr>
               ) : (
-                filteredWorkflows.map(
+                <>
+                {visibleUntouchedDocuments
+                  .map((document, index) => (
+                    <tr key={`untouched-${document.id}`} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                      <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-500">{pageStart + index + 1}</td>
+                      <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800 dark:text-slate-100">{document.reference_number || '—'}</td>
+                      <td className="max-w-[240px] px-4 py-3.5 text-xs text-slate-700 dark:text-slate-200" title={document.content || document.subject || ''}>
+                        <span className="block truncate">{document.content || document.subject || document.system_code || '—'}</span>
+                        <span className="mt-1 block text-[10px] text-slate-500 dark:text-slate-400">{document.system_code || ''}</span>
+                      </td>
+                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600 dark:text-slate-300">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Origin / Sender</p>
+                        <p className="mt-0.5 font-medium text-slate-800 dark:text-slate-100">{document.origin_office || document.sender || document.bearer || '—'}</p>
+                        <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Received · No action yet</p>
+                      </td>
+                      <td className="px-4 py-3.5"><UrgencyBadge urgency={document.urgency} /></td>
+                      <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400">—</td>
+                      <td className="px-4 py-3.5"><span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">Received · No action</span></td>
+                      <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400">—</td>
+                      <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400">
+                        <div className="space-y-1">
+                          <p className="font-medium">Not assigned</p>
+                          <p className="text-[10px] text-slate-400">No release instruction yet</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <div className="flex min-w-[190px] flex-wrap items-center gap-2">
+                          <button type="button" onClick={() => setViewingUrgentDocument(document)} className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                            <Eye size={14} /> View
+                          </button>
+                          <button type="button" onClick={() => void handleStartDirectRelease(document)} disabled={savingReleaseAssignment || loading} className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50">
+                            <Send size={14} /> Forward to Releasing Staff
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                {visibleWorkflows.map(
                   ({ workflow, document, recordedByName }, index) => (
                     <tr
                       key={workflow.id}
-                      className="transition-colors hover:bg-slate-50"
+                      className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
                     >
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-500">
-                        {filteredWorkflows.length - index}
+                        {filteredUntouchedDocuments.length + workflowPageStart + index + 1}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
                         {document?.reference_number || '—'}
                       </td>
 
                       <td
-                        className="max-w-[240px] px-4 py-3.5 text-xs text-slate-700"
+                        className="max-w-[240px] px-4 py-3.5 text-xs text-slate-700 dark:text-slate-200"
                         title={document?.system_code || ''}
                       >
                         <span className="block truncate">
@@ -1493,7 +1758,7 @@ export default function ForwardingRecords() {
                         </span>
                       </td>
 
-                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600">
+                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600 dark:text-slate-300">
                         <div className="space-y-1.5">
                           <div>
                             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
@@ -1516,7 +1781,7 @@ export default function ForwardingRecords() {
                         <UrgencyBadge urgency={workflow.urgency || document?.urgency} />
                       </td>
 
-                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600">
+                      <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600 dark:text-slate-300">
                         <div className="space-y-1">
                           <p className="font-medium text-slate-800">
                             {formatDate(workflow.forwarding_date)}
@@ -1611,23 +1876,24 @@ export default function ForwardingRecords() {
                         )}
                       </td>
 
-                      <td className="px-4 py-3.5 text-xs text-slate-700">
-                        {workflow.release_assigned_to ? (
-                          <div className="space-y-1">
-                            <p className="font-semibold">{workflow.release_assigned_to}</p>
-                            {workflow.release_forwarded_at && (
-                              <p className="text-[10px] text-slate-400">
-                                {new Date(workflow.release_forwarded_at).toLocaleString('en-PH')}
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-slate-400">Not assigned</span>
-                        )}
-                      </td>
-
-                      <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
-                        {workflow.release_instruction || '—'}
+                      <td className="max-w-[260px] px-4 py-3.5 text-xs text-slate-700 dark:text-slate-200">
+                        <div className="space-y-1">
+                          {workflow.release_assigned_to ? (
+                            <>
+                              <p className="font-semibold">{workflow.release_assigned_to}</p>
+                              {workflow.release_forwarded_at && (
+                                <p className="text-[10px] text-slate-400">
+                                  {new Date(workflow.release_forwarded_at).toLocaleString('en-PH')}
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <p className="text-slate-400">Not assigned</p>
+                          )}
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {workflow.release_instruction || 'No release instruction yet'}
+                          </p>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3.5">
@@ -1637,7 +1903,7 @@ export default function ForwardingRecords() {
                             onClick={() =>
                               setViewingWorkflow({ workflow, document, recordedByName })
                             }
-                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
                           >
                             <Eye size={14} />
                             View
@@ -1656,14 +1922,14 @@ export default function ForwardingRecords() {
                             <CheckCircle2 size={14} />
                             Confirm Receipt
                           </button>
-                        ) : workflow.workflow_status === 'completed' && !workflow.release_assigned_to ? (
+                        ) : ['forwarded', 'in_progress', 'completed'].includes(workflow.workflow_status) && !workflow.release_assigned_to ? (
                           <button
                             type="button"
                             onClick={() => {
                               setError('')
                               setSuccess('')
                               setReleaseStaff('')
-      setReleaseStaffSearch('')
+                              setReleaseStaffSearch('')
                               setReleaseInstruction('For Release')
                               setReleaseCustomInstruction('')
                               setReleaseAssignment(workflow)
@@ -1673,7 +1939,7 @@ export default function ForwardingRecords() {
                             <Send size={14} />
                             Forward to Releasing Staff
                           </button>
-                        ) : workflow.workflow_status === 'completed' ? (
+                        ) : workflow.release_assigned_to ? (
                           <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-green-700">
                             <CheckCircle2 size={14} />
                             Assigned
@@ -1685,10 +1951,21 @@ export default function ForwardingRecords() {
                       </td>
                     </tr>
                   ),
-                )
+                )}
+                </>
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {totalTableRows === 0 ? 'Showing 0 papers' : `Showing ${pageStart + 1}–${Math.min(pageStart + pageSize, totalTableRows)} of ${totalTableRows} papers`} · 10 rows per page
+          </p>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setCurrentPage(page => Math.max(1, page - 1))} disabled={safeCurrentPage <= 1} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-800">Previous</button>
+            <span className="min-w-[100px] text-center text-xs font-semibold text-slate-600 dark:text-slate-300">Page {safeCurrentPage} of {totalPages}</span>
+            <button type="button" onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))} disabled={safeCurrentPage >= totalPages} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-800">Next</button>
+          </div>
         </div>
       </section>
 
@@ -1707,12 +1984,11 @@ export default function ForwardingRecords() {
               {[
                 ['PresOffice No.', viewingUrgentDocument.reference_number],
                 ['System Code / Subject', viewingUrgentDocument.content || viewingUrgentDocument.subject],
-                ['Record Type', viewingUrgentDocument.record_type],
                 ['Sender', viewingUrgentDocument.sender],
                 ['Bearer', viewingUrgentDocument.bearer],
                 ['Origin Office', viewingUrgentDocument.origin_office],
-                ['Current Office', viewingUrgentDocument.current_office],
-                ['Destination Folder', viewingUrgentDocument.destination_folder],
+                ['Current Office', resolveOfficeFolderName(viewingUrgentDocument.current_office, officeFolderNames)],
+                ['Destination Folder', resolveOfficeFolderName(viewingUrgentDocument.destination_folder, officeFolderNames)],
                 ['Date Received', viewingUrgentDocument.date_received ? formatDate(viewingUrgentDocument.date_received) : null],
                 ['Urgency', viewingUrgentDocument.urgency],
                 ['Status', viewingUrgentDocument.status],
@@ -1761,36 +2037,27 @@ export default function ForwardingRecords() {
             <div className="space-y-6 p-6">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {[
-                  ['Reference Number', viewingWorkflow.document?.reference_number],
-                  ['Subject', viewingWorkflow.document?.subject || viewingWorkflow.document?.content],
-                  ['Record Type', viewingWorkflow.document?.record_type],
+                  ['PresOffice Number', viewingWorkflow.document?.reference_number],
+                  ['System Code', viewingWorkflow.document?.system_code],
+                  ['Content / Subject', viewingWorkflow.document?.subject || viewingWorkflow.document?.content],
                   ['Sender', viewingWorkflow.document?.sender],
                   ['Bearer', viewingWorkflow.document?.bearer],
-                  ['Origin Office', viewingWorkflow.document?.origin_office],
-                  ['Current Office', viewingWorkflow.document?.current_office],
-                  ['Destination Folder', viewingWorkflow.document?.destination_folder],
+                  ['Origin Office', displayOfficeName(viewingWorkflow.document?.origin_office)],
+                  ['Current Office', resolveOfficeFolderName(viewingWorkflow.document?.current_office, officeFolderNames)],
+                  ['Destination Folder', resolveOfficeFolderName(viewingWorkflow.document?.destination_folder, officeFolderNames)],
+                  ...viewDestinationFields.map(field => {
+                    const rawValue = viewingWorkflow.document?.custom_field_values?.[field.id]
+                    const value =
+                      rawValue === null || rawValue === undefined
+                        ? ''
+                        : typeof rawValue === 'object'
+                          ? JSON.stringify(rawValue)
+                          : String(rawValue)
+                    return [field.field_name, value] as [string, string]
+                  }),
                   ['Date Received', viewingWorkflow.document?.date_received ? formatDate(viewingWorkflow.document.date_received) : null],
-                  ['Transaction Person', viewingWorkflow.workflow.transaction_person],
-                  ['Storage', getStorageLabel(viewingWorkflow.workflow)],
                   ['Urgency', displayStatus(String(viewingWorkflow.document?.urgency ?? viewingWorkflow.workflow.urgency ?? 'not_urgent'))],
-                  ['Forwarding Date', formatDate(viewingWorkflow.workflow.forwarding_date)],
-                  ['Forwarding Time (Entered)', formatTime(viewingWorkflow.workflow.forwarding_time)],
-                  ['Forwarding Recorded At', viewingWorkflow.workflow.forwarded_at ? formatDateTime(viewingWorkflow.workflow.forwarded_at) : null],
-                  ['Forwarded By', profiles[viewingWorkflow.workflow.forwarded_by] || viewingWorkflow.recordedByName],
-                  ['Board Room Receipt Confirmed By', viewingWorkflow.workflow.board_room_received_by ? (profiles[viewingWorkflow.workflow.board_room_received_by] || viewingWorkflow.workflow.board_room_received_by) : null],
-                  ['Board Room Receipt Confirmed At', viewingWorkflow.workflow.board_room_received_at ? formatDateTime(viewingWorkflow.workflow.board_room_received_at) : null],
-                  ['Return Processed By', viewingWorkflow.workflow.returned_to_origin_by ? (profiles[viewingWorkflow.workflow.returned_to_origin_by] || viewingWorkflow.workflow.returned_to_origin_by) : null],
-                  ['Return Processed At', viewingWorkflow.workflow.returned_to_origin_at ? formatDateTime(viewingWorkflow.workflow.returned_to_origin_at) : null],
-                  ['Origin Office Receipt Confirmed By', viewingWorkflow.workflow.origin_office_received_by ? (profiles[viewingWorkflow.workflow.origin_office_received_by] || viewingWorkflow.workflow.origin_office_received_by) : null],
-                  ['Origin Office Receipt Confirmed At', viewingWorkflow.workflow.origin_office_received_at ? formatDateTime(viewingWorkflow.workflow.origin_office_received_at) : null],
-                  ['Release Forwarded By', viewingWorkflow.workflow.release_forwarded_by ? (profiles[viewingWorkflow.workflow.release_forwarded_by] || viewingWorkflow.workflow.release_forwarded_by) : null],
-                  ['Recorded By', profiles[viewingWorkflow.workflow.forwarded_by] || viewingWorkflow.recordedByName],
-                  ['Workflow Status', displayStatus(viewingWorkflow.workflow.workflow_status)],
-                  ['Returned To Origin Person', viewingWorkflow.workflow.returned_to_origin_person],
-                  ['Return Remarks', viewingWorkflow.workflow.returned_to_origin_remarks],
-                  ['Release Assigned To', viewingWorkflow.workflow.release_assigned_to],
-                  ['Release Instruction', viewingWorkflow.workflow.release_instruction],
-                  ['Release Forwarded At', viewingWorkflow.workflow.release_forwarded_at ? new Date(viewingWorkflow.workflow.release_forwarded_at).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }) : null],
+                  ['Remarks', viewingWorkflow.document?.remarks],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-lg border border-slate-200 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
@@ -1799,9 +2066,10 @@ export default function ForwardingRecords() {
                 ))}
               </div>
 
-              {viewingWorkflow.document?.id && (
-                <AuditHistory documentId={viewingWorkflow.document.id} />
+              {viewDestinationFieldsLoading && (
+                <p className="text-xs text-slate-500">Loading destination-specific fields...</p>
               )}
+
             </div>
 
             <div className="flex justify-end border-t border-slate-200 p-5">
@@ -1968,7 +2236,7 @@ export default function ForwardingRecords() {
                   Forward to Releasing Staff
                 </h3>
                 <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                  Assign the returned document after Origin Staff confirms physical receipt.
+Assign this paper directly to an active Releasing Staff member. Returned papers still require receipt confirmation first.
                 </p>
               </div>
               <button
@@ -2247,7 +2515,7 @@ export default function ForwardingRecords() {
                             <p className="text-sm font-semibold text-slate-900">
                               {document.reference_number}
                             </p>
-                            <p className="mt-1 text-xs text-slate-600">
+                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                               {document.content ||
                                 document.subject ||
                                 'No subject'}

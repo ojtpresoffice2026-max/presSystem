@@ -39,6 +39,16 @@ type ReleasingRecord = {
   next_action_date_forwarded: string | null
   next_action_recorded_by: string | null
   next_action_recorded_by_name: string | null
+  document_details: Record<string, unknown>
+  workflow_details: Record<string, unknown>
+}
+
+type DestinationFolderField = {
+  id: string
+  folder_id: string
+  field_name: string
+  field_type: string
+  sort_order: number
 }
 
 type SortField =
@@ -76,6 +86,8 @@ export default function ReleasingRecords() {
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 10
   const [selected, setSelected] = useState<ReleasingRecord | null>(null)
+  const [destinationFolderFields, setDestinationFolderFields] = useState<DestinationFolderField[]>([])
+  const [destinationFolderFieldsLoading, setDestinationFolderFieldsLoading] = useState(false)
   const [releasePanelRecord, setReleasePanelRecord] = useState<ReleasingRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -84,7 +96,7 @@ export default function ReleasingRecords() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [nextActionOffice, setNextActionOffice] = useState('')
   const [nextActionReleaseTo, setNextActionReleaseTo] = useState('')
-  const [nextActionReleaseAt, setNextActionReleaseAt] = useState('')
+  const [, setNextActionReleaseAt] = useState('')
   const [liveDateTime, setLiveDateTime] = useState(() => toDateTimeLocalValue(new Date().toISOString()))
   const [savingNextAction, setSavingNextAction] = useState(false)
   const [nextActionMode, setNextActionMode] = useState<'view' | 'edit'>('view')
@@ -225,9 +237,11 @@ export default function ReleasingRecords() {
       // view documents assigned to their own profile name.
       let assignmentsQuery = supabase
         .from('document_workflow')
-        .select(
-          'id, receiving_record_id, release_assigned_to, release_instruction, release_forwarded_at, release_forwarded_by, workflow_status, urgency, release_received_at, release_received_by, release_received_by_name, next_action_office_to_forward, next_action_release_to, next_action_release_at, next_action_system_status, next_action_date_forwarded, next_action_recorded_by, next_action_recorded_by_name',
-        )
+        .select('*')
+        // The Releasing page must show only documents explicitly assigned
+        // through the direct-to-Releasing-Staff route. Board Room forwards
+        // belong exclusively on the Board Room page.
+        .eq('workflow_route', 'direct_release')
         .order('release_forwarded_at', { ascending: false })
 
       const { data: assignments, error: assignmentError } =
@@ -283,9 +297,7 @@ export default function ReleasingRecords() {
 
       const { data: documents, error: documentsError } = await supabase
         .from('receiving_records')
-        .select(
-          'id, reference_number, subject, content, sender, bearer, origin_office, date_received, created_at, urgency',
-        )
+        .select('*')
         .in('id', receivingIds)
 
       if (documentsError) throw documentsError
@@ -347,6 +359,8 @@ export default function ReleasingRecords() {
           next_action_date_forwarded: workflow.next_action_date_forwarded || null,
           next_action_recorded_by: workflow.next_action_recorded_by || null,
           next_action_recorded_by_name: workflow.next_action_recorded_by_name || null,
+          document_details: (document ?? {}) as Record<string, unknown>,
+          workflow_details: workflow as Record<string, unknown>,
         }
       })
 
@@ -552,6 +566,59 @@ export default function ReleasingRecords() {
       setConfirmingId(null)
     }
   }
+
+  async function loadDestinationFolderFields(record: ReleasingRecord) {
+    setDestinationFolderFields([])
+    setDestinationFolderFieldsLoading(true)
+
+    try {
+      const document = record.document_details || {}
+      const destination = String(
+        document.destination_folder || document.current_office || record.destination_office || '',
+      ).trim()
+
+      if (!destination) return
+
+      // Resolve the exact folder selected on the receiving record, then load
+      // only the custom fields configured for that folder.
+      const { data: folders, error: folderError } = await supabase
+        .from('office_folders')
+        .select('id, code, name')
+
+      if (folderError) throw folderError
+
+      const destinationKey = destination.toUpperCase()
+      const folder = (folders ?? []).find((item: { id: string; code: string | null; name: string | null }) =>
+        String(item.code ?? '').trim().toUpperCase() === destinationKey ||
+        String(item.name ?? '').trim().toUpperCase() === destinationKey,
+      )
+
+      if (!folder) return
+
+      const { data: fields, error: fieldsError } = await supabase
+        .from('destination_folder_fields')
+        .select('id, folder_id, field_name, field_type, sort_order')
+        .eq('folder_id', folder.id)
+        .order('sort_order', { ascending: true })
+
+      if (fieldsError) throw fieldsError
+      setDestinationFolderFields((fields ?? []) as DestinationFolderField[])
+    } catch (error) {
+      console.error('Unable to load destination-folder custom fields:', error)
+      setDestinationFolderFields([])
+    } finally {
+      setDestinationFolderFieldsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (selected) {
+      void loadDestinationFolderFields(selected)
+    } else {
+      setDestinationFolderFields([])
+      setDestinationFolderFieldsLoading(false)
+    }
+  }, [selected?.id])
 
   async function loadNextActionLogs(recordId: string) {
     const { data, error: logsError } = await supabase
@@ -935,6 +1002,21 @@ export default function ReleasingRecords() {
     return completedStatuses.includes(workflowStatus) ||
       completedStatuses.includes(nextActionStatus) ||
       nextActionStatus === 'forwarded'
+  }
+
+ 
+
+  function formatFieldValue(value: unknown): string {
+    if (value === null || value === undefined || value === '') return '—'
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2)
+      } catch {
+        return String(value)
+      }
+    }
+    return String(value)
   }
 
   function normalizeUrgency(value: string | null): 'urgent' | 'not urgent' {
@@ -1476,7 +1558,7 @@ export default function ReleasingRecords() {
                 </h3>
 
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Complete record information
+                  Document summary and destination-folder fields
                 </p>
               </div>
 
@@ -1499,7 +1581,7 @@ export default function ReleasingRecords() {
                   ['Destination Office', selected.destination_office],
                   ['Releasing Staff', selected.releasing_staff],
                   ['Release Date', formatDate(selected.release_date)],
-                  ['Release Time', selected.release_time],
+                  ['Release Time', formatReleaseTime(selected.release_time)],
                   ['Status', displayStatus(selected.status)],
                   ['Remarks', selected.remarks],
                   ['Released By', selected.next_action_recorded_by_name || 'Not released yet'],
@@ -1520,6 +1602,44 @@ export default function ReleasingRecords() {
                   </div>
                 ))}
               </dl>
+
+              <section className="mt-6">
+                <div className="mb-3">
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">Destination Folder Custom Fields</h4>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Only fields configured for this document's destination folder are shown here.
+                  </p>
+                </div>
+
+                {destinationFolderFieldsLoading ? (
+                  <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-500 dark:text-slate-400">
+                    Loading folder-specific fields...
+                  </div>
+                ) : destinationFolderFields.length > 0 ? (
+                  <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {destinationFolderFields.map(field => {
+                      const customValues = selected.document_details?.custom_field_values
+                      const values = customValues && typeof customValues === 'object'
+                        ? customValues as Record<string, unknown>
+                        : {}
+                      return (
+                        <div key={field.id} className="min-w-0 rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3.5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            {field.field_name}
+                          </dt>
+                          <dd className="mt-1.5 whitespace-pre-wrap break-words text-sm text-slate-800 dark:text-slate-200">
+                            {formatFieldValue(values[field.id])}
+                          </dd>
+                        </div>
+                      )
+                    })}
+                  </dl>
+                ) : (
+                  <p className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-500 dark:text-slate-400">
+                    No custom fields are configured for this destination folder.
+                  </p>
+                )}
+              </section>
 
               <section className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4 text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
                 <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">

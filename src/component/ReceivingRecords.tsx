@@ -611,10 +611,40 @@ export default function ReceivingRecords() {
         .select('id, code, name')
       if (folderError) throw folderError
 
-      const normalizedDestination = destination.toUpperCase().replace(/_\d{8,}$/, '')
-      const folder = (folders ?? []).find((item: { id: string; code: string; name: string }) =>
-        String(item.code ?? '').trim().toUpperCase() === normalizedDestination ||
-        String(item.name ?? '').trim().toUpperCase() === normalizedDestination
+      // Match the record's saved destination to the actual configured folder.
+      // Some records store generated values such as PR_MABINAY_1793179282728,
+      // while the configured folder code is simply MABINAY.
+      const normalizeFolderKey = (value: unknown) =>
+        String(value ?? '')
+          .trim()
+          .toUpperCase()
+          .replace(/_\d{8,}$/, '')
+          .replace(/[^A-Z0-9]/g, '')
+
+      const destinationKey = normalizeFolderKey(destination)
+      const destinationParts = destination
+        .trim()
+        .toUpperCase()
+        .replace(/_\d{8,}$/, '')
+        .split(/[^A-Z0-9]+/)
+        .filter(Boolean)
+
+      const folder = (folders ?? []).find(
+        (item: { id: string; code: string | null; name: string | null }) => {
+          const code = String(item.code ?? '').trim()
+          const name = String(item.name ?? '').trim()
+          const codeKey = normalizeFolderKey(code)
+          const nameKey = normalizeFolderKey(name)
+
+          return (
+            (codeKey !== '' && destinationKey === codeKey) ||
+            (nameKey !== '' && destinationKey === nameKey) ||
+            (codeKey !== '' && destinationParts.some(part => normalizeFolderKey(part) === codeKey)) ||
+            (nameKey !== '' && destinationParts.some(part => normalizeFolderKey(part) === nameKey)) ||
+            (codeKey.length >= 4 && destinationKey.includes(codeKey)) ||
+            (nameKey.length >= 4 && destinationKey.includes(nameKey))
+          )
+        },
       )
       if (!folder) return
 
@@ -984,12 +1014,26 @@ export default function ReceivingRecords() {
       detail('Status', displayStatus(record.status)),
     ]
 
-    // Custom fields are defined per destination folder in the folder settings.
-    // Their values are saved by Receiving in custom_field_values, keyed by field ID.
-    const customValues = record.custom_field_values
-    if (customValues && typeof customValues === 'object') {
-      const customDetails = destinationFieldDefinitions
-        .map(field => detail(field.field_name, customValues[field.id]))
+    // Always render the configured fields for this record's destination folder,
+    // even when no custom values have been saved yet. Otherwise the fields appear
+    // to be missing in View Details for new/older records with an empty value map.
+    const customValues =
+      record.custom_field_values && typeof record.custom_field_values === 'object'
+        ? record.custom_field_values
+        : {}
+
+    if (destinationFieldsLoading) {
+      details.push(detail('Destination Folder Fields', 'Loading…'))
+    } else if (destinationFieldDefinitions.length > 0) {
+      const customDetails = destinationFieldDefinitions.map(field => {
+        // Field values are normally stored by field ID. The name fallback
+        // also supports records created before field IDs were used as keys.
+        const fieldValue = Object.prototype.hasOwnProperty.call(customValues, field.id)
+          ? customValues[field.id]
+          : customValues[field.field_name]
+
+        return detail(field.field_name, fieldValue)
+      })
       details.push(...customDetails)
     }
 

@@ -11,9 +11,7 @@ import {
   ChevronDown,
   Search,
 } from 'lucide-react'
-
 import { supabase } from '../lib/supabase'
-
 type OfficeFolder = {
   id: string
   code: string
@@ -21,7 +19,6 @@ type OfficeFolder = {
   is_active: boolean
   sort_order: number
 }
-
 type DestinationField = {
   id: string
   folder_id: string
@@ -31,9 +28,7 @@ type DestinationField = {
   options: string[] | null
   sort_order: number
 }
-
 type CustomFieldValue = string | boolean
-
 /** Return a readable folder label without changing the database code. */
 function getFolderDisplayName(
   folder?: Pick<OfficeFolder, 'code' | 'name'>,
@@ -42,7 +37,6 @@ function getFolderDisplayName(
   const code = folder?.code?.trim() || fallback.trim()
   const name = folder?.name?.trim() || ''
   const rawLabel = name && name.toUpperCase() !== code.toUpperCase() ? name : code
-
   // Some folder codes/names contain a generated numeric suffix, e.g. DV_MAIN_179317...
   return rawLabel
     .replace(/_\d{8,}$/, '')
@@ -50,7 +44,6 @@ function getFolderDisplayName(
     .replace(/\s+/g, ' ')
     .trim()
 }
-
 const DESTINATION_FOLDERS = [
   'CAFF',
   'CTED',
@@ -79,7 +72,6 @@ const DESTINATION_FOLDERS = [
   'PACSVAL',
   'NORSA/NBURSA',
 ]
-
 const SPECIAL_DESTINATIONS = [
   'BAIS',
   'SIATION',
@@ -87,22 +79,7 @@ const SPECIAL_DESTINATIONS = [
   'GUIHULNGAN',
   'BAYAWAN',
 ]
-
-const NEW_DESTINATIONS = [
-  'LDDAP',
-  'ORS/BURS',
-  'DV MAIN',
-  'DV BAIS',
-  'DV BAYAWAN',
-  'DV GUIHULNGAN',
-  'DV MABINAY',
-  'DV SIATION',
-  'PACSVAL',
-  'NORSA/NBURSA',
-]
-
 const DOCUMENT_CODES = ['BURS', 'DV', 'ORS', 'Payroll', 'Check']
-
 const CAMPUSES = [
   'Main Campus',
   'Bais Campus',
@@ -111,10 +88,8 @@ const CAMPUSES = [
   'Mabinay Campus',
   'Siaton Campus',
 ]
-
 const inputClass =
   'mt-2 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100'
-
 const initialForm = {
   systemCode: '',
   bearer: '',
@@ -123,10 +98,7 @@ const initialForm = {
   receivingStaff: '',
   urgency: '',
   receiveTime: '',
-  originOffice: '',
-  payee: '',
   amountPeso: '',
-  documentType: '',
   selectedCodes: [] as string[],
   orsBursAmount: '',
   dvAmount: '',
@@ -143,10 +115,8 @@ const initialForm = {
   dateOfLetter: '',
   otherNotesRemarks: '',
 }
-
 const PRESOFFICE_CHARACTERS =
   'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-
 function generatePresOfficeNumber(): string {
   const values = new Uint32Array(5)
   crypto.getRandomValues(values)
@@ -169,7 +139,6 @@ function generatePresOfficeNumber(): string {
  *
  * Empty fields return null.
  */
-
 function toAmount(value: string): number | null {
   if (!value.trim()) return null
   const normalized = value
@@ -189,7 +158,6 @@ function toAmount(value: string): number | null {
   }
   return amount
 }
-
 function AmountInput({
   label,
   value,
@@ -223,7 +191,6 @@ function AmountInput({
     </label>
   )
 }
-
 export default function Receiving() {
   const [folders, setFolders] = useState<OfficeFolder[]>([])
   const [loading, setLoading] = useState(true)
@@ -266,15 +233,22 @@ export default function Receiving() {
   const selectedDestination = selectedFolderLabel.toUpperCase()
   const showAdditionalFields =
     SPECIAL_DESTINATIONS.includes(selectedDestination)
+  // Only these destinations use Document Codes and the ORS/BURS, DV, and Check amounts.
+  // DV MAIN is intentionally excluded.
+  const DV_FIELD_DESTINATIONS = [
+    'DV BAIS',
+    'DV BAYAWAN',
+    'DV GUIHULNGAN',
+    'DV MABINAY',
+    'DV SIATION',
+  ]
   const showDvFields =
-    selectedDestination.startsWith('DV') ||
+    DV_FIELD_DESTINATIONS.includes(selectedDestination) ||
     selectedDestination === 'ORS/BURS'
   const showPacsvalFields =
     selectedDestination === 'PACSVAL'
   const showNorsaFields =
     selectedDestination === 'NORSA/NBURSA'
-  const isNewDestination =
-    NEW_DESTINATIONS.includes(selectedDestination)
   const showLddapFields =
     selectedDestination === 'LDDAP'
   async function loadData() {
@@ -422,7 +396,6 @@ export default function Receiving() {
           : '')
       if (
         !bearer ||
-        !content ||
         !receivingStaff ||
         !form.receiveTime ||
         !destinationCode
@@ -539,13 +512,6 @@ export default function Receiving() {
           record.office_designation = officeDesignation
           record.date_of_letter = dateOfLetter
           record.other_notes_remarks = otherNotesRemarks
-        }
-        if (isNewDestination) {
-          record.origin_office =
-            form.originOffice.trim() || null
-          record.payee = form.payee.trim() || null
-          record.document_type =
-            form.documentType.trim() || null
         }
         if (showLddapFields) {
           record.amount_peso = amountPeso
@@ -971,43 +937,6 @@ export default function Receiving() {
                   Choose Urgent only if the document needs priority handling. Otherwise, leave this blank.
                 </span>
               </label>
-            {isNewDestination && (
-              <>
-                <label className="text-sm font-semibold">
-                  Origin of Document / Office
-                  <input
-                    value={form.originOffice}
-                    onChange={event =>
-                      updateField('originOffice', event.target.value)
-                    }
-                    placeholder="Enter originating office"
-                    className={inputClass}
-                  />
-                </label>
-                <label className="text-sm font-semibold">
-                  Payee
-                  <input
-                    value={form.payee}
-                    onChange={event =>
-                      updateField('payee', event.target.value)
-                    }
-                    placeholder="Enter payee name"
-                    className={inputClass}
-                  />
-                </label>
-                <label className="text-sm font-semibold">
-                  Document Type
-                  <input
-                    value={form.documentType}
-                    onChange={event =>
-                      updateField('documentType', event.target.value)
-                    }
-                    placeholder="Enter document type"
-                    className={inputClass}
-                  />
-                </label>
-              </>
-            )}
             {showLddapFields && (
               <div className="md:col-span-2 xl:col-span-3">
                 <AmountInput
@@ -1022,9 +951,8 @@ export default function Receiving() {
             )}
           </div>
           <label className="block text-sm font-semibold">
-            Content / Document Description *
+            Content / Document Description
             <textarea
-              required
               rows={4}
               value={form.content}
               onChange={event =>

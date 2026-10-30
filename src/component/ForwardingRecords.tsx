@@ -342,12 +342,37 @@ export default function ForwardingRecords() {
 
         if (folderError) throw folderError
 
-        const normalizedDestination = normalizeFolderKey(destination)
+        const normalizeMatchKey = (value: unknown) =>
+          String(value ?? '')
+            .trim()
+            .toUpperCase()
+            .replace(/^(?:PR|DV)_/i, '')
+            .replace(/_\\d{8,}$/i, '')
+            .replace(/[^A-Z0-9]/g, '')
+
+        const normalizedDestination = normalizeMatchKey(destination)
+        const destinationParts = destination
+          .trim()
+          .toUpperCase()
+          .replace(/^(?:PR|DV)_/i, '')
+          .replace(/_\\d{8,}$/i, '')
+          .split(/[^A-Z0-9]+/)
+          .filter(Boolean)
 
         const folder = (folders ?? []).find(
-          (item: { id: string; code: string | null; name: string | null }) =>
-            normalizeFolderKey(item.code) === normalizedDestination ||
-            normalizeFolderKey(item.name) === normalizedDestination,
+          (item: { id: string; code: string | null; name: string | null }) => {
+            const codeKey = normalizeMatchKey(item.code)
+            const nameKey = normalizeMatchKey(item.name)
+
+            return (
+              (codeKey !== '' && codeKey === normalizedDestination) ||
+              (nameKey !== '' && nameKey === normalizedDestination) ||
+              (codeKey.length >= 4 && destinationParts.some(part => normalizeMatchKey(part) === codeKey)) ||
+              (nameKey.length >= 4 && destinationParts.some(part => normalizeMatchKey(part) === nameKey)) ||
+              (codeKey.length >= 4 && normalizedDestination.includes(codeKey)) ||
+              (nameKey.length >= 4 && normalizedDestination.includes(nameKey))
+            )
+          },
         )
 
         if (!folder) return
@@ -2046,7 +2071,12 @@ export default function ForwardingRecords() {
                   ['Current Office', resolveOfficeFolderName(viewingWorkflow.document?.current_office, officeFolderNames)],
                   ['Destination Folder', resolveOfficeFolderName(viewingWorkflow.document?.destination_folder, officeFolderNames)],
                   ...viewDestinationFields.map(field => {
-                    const rawValue = viewingWorkflow.document?.custom_field_values?.[field.id]
+                    const customValues = viewingWorkflow.document?.custom_field_values
+                    const rawValue = customValues
+                      ? Object.prototype.hasOwnProperty.call(customValues, field.id)
+                        ? customValues[field.id]
+                        : customValues[field.field_name]
+                      : undefined
                     const value =
                       rawValue === null || rawValue === undefined
                         ? ''

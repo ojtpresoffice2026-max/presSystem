@@ -100,6 +100,7 @@ type EditableRecord = {
   remarks: string
   urgency: string
   scan_file_url: string
+  custom_field_values: Record<string, unknown>
 }
 
 type SortField =
@@ -524,6 +525,9 @@ export default function ReceivingRecords() {
       remarks: record.remarks ?? '',
       urgency: typeof record.urgency === 'string' ? record.urgency : record.is_urgent ? 'Urgent' : '',
       scan_file_url: record.scan_file_url ?? '',
+      custom_field_values: record.custom_field_values && typeof record.custom_field_values === 'object'
+        ? { ...record.custom_field_values }
+        : {},
     }
   }
 
@@ -729,6 +733,92 @@ export default function ReceivingRecords() {
     setSuccess('')
   }
 
+  function updateCustomField(fieldId: string, value: unknown) {
+    setDraft(current => current
+      ? {
+          ...current,
+          custom_field_values: {
+            ...current.custom_field_values,
+            [fieldId]: value,
+          },
+        }
+      : current)
+    setSaveError('')
+    setSuccess('')
+  }
+
+  function renderEditableDestinationFields() {
+    if (destinationFieldsLoading) {
+      return (
+        <div className="sm:col-span-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-3 text-xs text-blue-700">
+          Loading fields configured for this destination folder…
+        </div>
+      )
+    }
+
+    if (destinationFieldDefinitions.length === 0) {
+      return (
+        <div className="sm:col-span-2 rounded-lg border border-dashed border-slate-200 px-3 py-3 text-xs text-slate-500">
+          No additional fields are configured for this destination folder.
+        </div>
+      )
+    }
+
+    return destinationFieldDefinitions.map(field => {
+      const value = draft?.custom_field_values?.[field.id] ??
+        draft?.custom_field_values?.[field.field_name] ?? ''
+      const fieldType = String(field.field_type || 'text').toLowerCase()
+      const commonClass = inputClass
+
+      if (fieldType === 'textarea' || fieldType === 'long_text') {
+        return (
+          <label key={field.id} className="text-xs font-semibold text-slate-600 sm:col-span-2">
+            {field.field_name}
+            <textarea
+              rows={3}
+              value={String(value ?? '')}
+              onChange={event => updateCustomField(field.id, event.target.value)}
+              className={commonClass}
+            />
+          </label>
+        )
+      }
+
+      if (fieldType === 'checkbox' || fieldType === 'boolean') {
+        return (
+          <label key={field.id} className="flex items-center gap-2 self-end rounded-lg border border-slate-200 px-3 py-3 text-xs font-semibold text-slate-700">
+            <input
+              type="checkbox"
+              checked={value === true || value === 'true' || value === 'yes'}
+              onChange={event => updateCustomField(field.id, event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-500"
+            />
+            {field.field_name}
+          </label>
+        )
+      }
+
+      const inputType = ['number', 'date', 'email', 'url', 'tel'].includes(fieldType)
+        ? fieldType
+        : 'text'
+
+      return (
+        <label key={field.id} className="text-xs font-semibold text-slate-600">
+          {field.field_name}
+          <input
+            type={inputType}
+            value={String(value ?? '')}
+            onChange={event => updateCustomField(
+              field.id,
+              inputType === 'number' ? event.target.value : event.target.value,
+            )}
+            className={commonClass}
+          />
+        </label>
+      )
+    })
+  }
+
   async function saveChanges() {
     if (!selected || !draft) return
 
@@ -789,6 +879,7 @@ export default function ReceivingRecords() {
           remarks: draft.remarks.trim() || null,
           urgency: draft.urgency.trim() || null,
           scan_file_url: draft.scan_file_url.trim() || null,
+          custom_field_values: draft.custom_field_values,
           updated_at: new Date().toISOString(),
         })
         .eq('id', selected.id)
@@ -1724,7 +1815,15 @@ export default function ReceivingRecords() {
                           if (event.key === 'Enter' && editFolderDropdownOpen) {
                             event.preventDefault()
                             if (editFolderOptions.length > 0) {
-                              updateDraft('destination_folder', editFolderOptions[0])
+                              const nextFolder = editFolderOptions[0]
+                              updateDraft('destination_folder', nextFolder)
+                              if (selected) {
+                                void loadDestinationFieldDefinitions({
+                                  ...selected,
+                                  destination_folder: nextFolder,
+                                  current_office: nextFolder,
+                                })
+                              }
                               setEditFolderSearch('')
                               setEditFolderDropdownOpen(false)
                             }
@@ -1767,6 +1866,13 @@ export default function ReceivingRecords() {
                               onMouseDown={event => event.preventDefault()}
                               onClick={() => {
                                 updateDraft('destination_folder', folder)
+                                if (selected) {
+                                  void loadDestinationFieldDefinitions({
+                                    ...selected,
+                                    destination_folder: folder,
+                                    current_office: folder,
+                                  })
+                                }
                                 setEditFolderSearch('')
                                 setEditFolderDropdownOpen(false)
                               }}
@@ -1787,6 +1893,8 @@ export default function ReceivingRecords() {
                       </div>
                     )}
                   </div>
+
+                  {renderEditableDestinationFields()}
 
                   <label className="text-xs font-semibold text-slate-600">
                     Date Received *

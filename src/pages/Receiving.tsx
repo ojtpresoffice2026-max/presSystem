@@ -39,8 +39,8 @@ function getFolderDisplayName(
   const rawLabel = name && name.toUpperCase() !== code.toUpperCase() ? name : code
   // Some folder codes/names contain a generated numeric suffix, e.g. DV_MAIN_179317...
   return rawLabel
-    .replace(/_\d{8,}$/, '')
-    .replace(/_/g, ' ')
+    .replace(/\_\d{8,}$/, '')
+    .replace(/\_/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -496,7 +496,7 @@ export default function Receiving() {
           date_received: localDate,
           received_at: receivedAt.toISOString(),
           receiving_staff: receivingStaff,
-          urgency: form.urgency || null,
+          urgency: form.urgency.trim().toLowerCase() === 'urgent' ? 'urgent' : null,
           custom_field_values: Object.fromEntries(
             customFields.map(field => [
               field.id,
@@ -927,11 +927,13 @@ export default function Receiving() {
                 </span>
                 <select
                   value={form.urgency}
-                  onChange={event => updateField('urgency', event.target.value)}
+                  onChange={event =>
+                    setForm(previous => ({ ...previous, urgency: event.target.value }))
+                  }
                   className={inputClass}
                 >
                   <option value="">Leave blank if not urgent</option>
-                  <option value="Urgent">Urgent</option>
+                  <option value="urgent">Urgent</option>
                 </select>
                 <span className="mt-1 block text-xs font-normal text-slate-500">
                   Choose Urgent only if the document needs priority handling. Otherwise, leave this blank.

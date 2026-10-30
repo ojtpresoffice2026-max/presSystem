@@ -85,6 +85,7 @@ export default function ReleasingRecords() {
   const [nextActionOffice, setNextActionOffice] = useState('')
   const [nextActionReleaseTo, setNextActionReleaseTo] = useState('')
   const [nextActionReleaseAt, setNextActionReleaseAt] = useState('')
+  const [liveDateTime, setLiveDateTime] = useState(() => toDateTimeLocalValue(new Date().toISOString()))
   const [savingNextAction, setSavingNextAction] = useState(false)
   const [nextActionMode, setNextActionMode] = useState<'view' | 'edit'>('view')
   const [auditLogs, setAuditLogs] = useState<Array<{ id: string; edited_by_name: string; edited_at: string; change_type: string; previous_values: Record<string, unknown> | null; new_values: Record<string, unknown> | null }>>([])
@@ -567,6 +568,13 @@ export default function ReleasingRecords() {
     setAuditLogs(data ?? [])
   }
 
+  useEffect(() => {
+    const updateClock = () => setLiveDateTime(toDateTimeLocalValue(new Date().toISOString()))
+    updateClock()
+    const timer = window.setInterval(updateClock, 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   async function saveNextAction(record: ReleasingRecord) {
     setActionError('')
     setActionSuccess('')
@@ -579,16 +587,14 @@ export default function ReleasingRecords() {
     const office = nextActionOffice.trim()
     const releaseTo = nextActionReleaseTo.trim()
 
-    if (!office || !releaseTo || !nextActionReleaseAt) {
-      setActionError('Please enter Office to Forward, Release To, and Date/Time Release.')
+    if (!office || !releaseTo) {
+      setActionError('Please enter Office to Forward and Release To.')
       return
     }
 
-    const releaseDate = new Date(nextActionReleaseAt)
-    if (Number.isNaN(releaseDate.getTime())) {
-      setActionError('Please enter a valid release date and time.')
-      return
-    }
+    // Capture the actual current time when the user confirms the release.
+    // The timestamp is system-generated and cannot be manually edited.
+    const releaseDate = new Date()
 
     const {
       data: { user },
@@ -622,6 +628,7 @@ export default function ReleasingRecords() {
 
       const now = new Date().toISOString()
       const releaseAt = releaseDate.toISOString()
+      setNextActionReleaseAt(toDateTimeLocalValue(releaseAt))
       const isEdit = Boolean(record.next_action_release_at)
       const previousValues = {
         office_to_forward: record.next_action_office_to_forward,
@@ -1384,7 +1391,7 @@ export default function ReleasingRecords() {
                             setActionSuccess('')
                             setNextActionOffice(record.next_action_office_to_forward || '')
                             setNextActionReleaseTo(record.next_action_release_to || '')
-                            setNextActionReleaseAt(toDateTimeLocalValue(record.next_action_release_at))
+                            setNextActionReleaseAt(record.next_action_release_at ? toDateTimeLocalValue(record.next_action_release_at) : toDateTimeLocalValue(new Date().toISOString()))
                             void loadNextActionLogs(record.id)
                           }}
                           className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-800"
@@ -1589,7 +1596,18 @@ export default function ReleasingRecords() {
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-blue-900" /></label>
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-blue-900" /></label>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Forward At (Date and Time) *<input type="datetime-local" value={nextActionReleaseAt} onChange={event => setNextActionReleaseAt(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-blue-900 dark:disabled:bg-slate-700" /></label>
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Forward At (Automatic Date and Time)
+                    <input
+                      type="text"
+                      value={nextActionMode === 'view' && releasePanelRecord.next_action_release_at
+                        ? formatDateTime(releasePanelRecord.next_action_release_at)
+                        : new Date(`${liveDateTime}:00`).toLocaleString('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'medium', timeStyle: 'medium' })}
+                      readOnly
+                      aria-readonly="true"
+                      className="mt-1.5 w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2.5 text-sm font-normal text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    />
+                    <span className="mt-1 block text-[10px] font-normal text-slate-500">Automatically updated from the system clock. The exact timestamp is saved when you click Release Document.</span>
+                  </label>
                   <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">Action Done in Unified System
                     <p className="mt-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">Forwarded</p>
                   </div>
@@ -1603,7 +1621,7 @@ export default function ReleasingRecords() {
                 {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700 dark:!border-emerald-800 dark:!bg-emerald-950/30 dark:!text-emerald-300">{actionSuccess}</p>}
                 {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 dark:border-slate-700 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800 dark:text-slate-200">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500 dark:text-slate-400">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600 dark:text-slate-300">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')}; Forward At: {String(log.previous_values.release_at || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600 dark:text-slate-300">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')}; Forward At: {String(log.new_values.release_at || '—')})</p>}</div>)}</div></div>}
                 <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
-                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => { setNextActionOffice(releasePanelRecord.next_action_office_to_forward || ''); setNextActionReleaseTo(releasePanelRecord.next_action_release_to || ''); setNextActionReleaseAt(toDateTimeLocalValue(releasePanelRecord.next_action_release_at)); setActionError(''); setNextActionMode('edit') }} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Saving…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
+                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => { setNextActionOffice(releasePanelRecord.next_action_office_to_forward || ''); setNextActionReleaseTo(releasePanelRecord.next_action_release_to || ''); setNextActionReleaseAt(toDateTimeLocalValue(new Date().toISOString())); setActionError(''); setNextActionMode('edit') }} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Saving…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
                   <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Close Panel</button>
                 </div>
               </div>

@@ -51,6 +51,7 @@ type WorkflowRecord = {
  origin_office_received_at: string | null
  origin_office_received_by: string | null
  workflow_status: WorkflowStatus
+ workflow_route?: 'board_room' | 'direct_release' | null
  created_at: string
 }
 
@@ -105,7 +106,7 @@ type ReturnCartItem = {
 
 const statusLabels: Record<WorkflowStatus, string> = {
  forwarded: 'Awaiting receipt',
- board_room_received: 'Received by Board Room',
+ board_room_received: 'Ready to return',
  action_in_progress: 'In progress',
  action_completed: 'Ready to return',
  returned_to_origin: 'Returned to origin',
@@ -114,7 +115,7 @@ const statusLabels: Record<WorkflowStatus, string> = {
 
 const statusClasses: Record<WorkflowStatus, string> = {
  forwarded: 'bg-amber-100 text-amber-800',
- board_room_received: 'bg-blue-100 text-blue-800',
+ board_room_received: 'bg-emerald-100 text-emerald-800',
  action_in_progress: 'bg-violet-100 text-violet-800',
  action_completed: 'bg-emerald-100 text-emerald-800',
  returned_to_origin: 'bg-orange-100 text-orange-800',
@@ -124,15 +125,12 @@ const statusClasses: Record<WorkflowStatus, string> = {
 const inputClass =
  'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
 
-// A document can be returned to its originating office only after the
-// Board Room has confirmed physical receipt AND the action is completed.
-const returnableStatuses: WorkflowStatus[] = ['action_completed']
+// Confirming receipt immediately makes a document eligible for return.
+// action_completed remains returnable for records created by the older workflow.
+const returnableStatuses: WorkflowStatus[] = ['board_room_received', 'action_completed']
 
 function isReadyToReturn(row: DisplayRecord) {
- return (
-  returnableStatuses.includes(row.workflow.workflow_status) &&
-  Boolean(row.workflow.board_room_received_at)
- )
+ return returnableStatuses.includes(row.workflow.workflow_status)
 }
 
 function formatDateOnly(value: string | null | undefined) {
@@ -413,7 +411,11 @@ export default function BoardRoomRecords() {
 
  if (workflowError) throw workflowError
 
- const workflowRows = (workflows ?? []) as WorkflowRecord[]
+ // Only records routed to the Board Room belong on this page.
+ // Keep null-route rows visible for legacy records created before route separation.
+ let workflowRows = ((workflows ?? []) as WorkflowRecord[]).filter(
+  workflow => workflow.workflow_route !== 'direct_release',
+ )
 
  // Resolve the accounts that forwarded, confirmed receipt, or processed returns.
  const accountIds = [
@@ -516,6 +518,7 @@ export default function BoardRoomRecords() {
  payload => {
  const row = payload.new as Partial<WorkflowRecord>
  if (
+ row.workflow_route !== 'direct_release' &&
  row.urgency === 'urgent' &&
  row.workflow_status === 'forwarded' &&
  row.id
@@ -669,27 +672,84 @@ export default function BoardRoomRecords() {
  }, [loading, urgentIncomingRecords, playUrgentSound])
 
  async function receiveDocument(workflowId: string) {
- if (processing) return
+  if (processing) return
 
- setProcessing(true)
- setError('')
- setSuccess('')
+  setProcessing(true)
+  setError('')
+  setSuccess('')
 
- try {
- const { error: rpcError } = await supabase.rpc(
- 'board_room_receive',
- { p_workflow_id: workflowId },
- )
+  try {
+   // The database RPC records who received the document and when.
+   const { error: rpcError } = await supabase.rpc(
+    'board_room_receive',
+    { p_workflow_id: workflowId },
+   )
+   if (rpcError) {
+    // If the receipt was already recorded by an earlier attempt, recover the
+    // workflow below instead of leaving the record stuck in an intermediate state.
+    const { data: current, error: currentError } = await supabase
+     .from('document_workflow')
+     .select('id, workflow_status, board_room_received_at, workflow_route')
+     .eq('id', workflowId)
+     .maybeSingle()
 
- if (rpcError) throw rpcError
+    if (currentError) throw currentError
+    if (
+     !current ||
+     current.workflow_route === 'direct_release' ||
+     !current.board_room_received_at ||
+     !['board_room_received', 'action_in_progress', 'action_completed'].includes(current.workflow_status)
+    ) {
+     throw rpcError
+    }
+   }
 
- setSuccess('Board Room receipt recorded successfully.')
- await loadRecords()
- } catch (actionError) {
- setError(getErrorMessage(actionError))
- } finally {
- setProcessing(false)
- }
+   // Record the authenticated account together with the completion timestamp.
+   // The database action_completion_pair constraint requires both values.
+   const { data: authData, error: authError } = await supabase.auth.getUser()
+   if (authError) throw authError
+   if (!authData.user) throw new Error('Your session has expired. Please sign in again.')
+
+   // Confirming receipt immediately makes the paper ready for return.
+   const { data: readyRecord, error: readyError } = await supabase
+    .from('document_workflow')
+    .update({
+     workflow_status: 'action_completed',
+     president_action_status: 'completed',
+     president_action_completed_at: new Date().toISOString(),
+     president_action_completed_by: authData.user.id,
+    })
+    .eq('id', workflowId)
+    .in('workflow_status', ['forwarded', 'board_room_received', 'action_in_progress', 'action_completed'])
+    .select('id')
+    .maybeSingle()
+
+   if (readyError) throw readyError
+   if (!readyRecord) {
+    const { data: current, error: currentError } = await supabase
+     .from('document_workflow')
+     .select('id, workflow_status, board_room_received_at, workflow_route')
+     .eq('id', workflowId)
+     .maybeSingle()
+
+    if (currentError) throw currentError
+    if (
+     !current ||
+     current.workflow_route === 'direct_release' ||
+     !current.board_room_received_at ||
+     current.workflow_status !== 'action_completed'
+    ) {
+     throw new Error('Receipt was recorded, but this document could not be marked Ready to return. Refresh and try again.')
+    }
+   }
+
+   setSuccess('Receipt confirmed. The document is now Ready to return.')
+   await loadRecords()
+  } catch (actionError) {
+   setError(getErrorMessage(actionError))
+  } finally {
+   setProcessing(false)
+  }
  }
 
  function openCart() {
@@ -804,12 +864,12 @@ export default function BoardRoomRecords() {
  const items: ReturnCartItem[] = cartRecords.map(row => ({
   workflow_id: row.workflow.id,
   remarks: row.cartRemarks.trim(),
-  urgency: row.workflow.urgency === 'urgent' ? 'urgent' : 'not_urgent',
+  urgency: row.cartUrgency,
 }))
 
  // Re-check readiness immediately before submitting the return transaction.
  if (cartRecords.some(row => !isReadyToReturn(row))) {
- setError('Only documents received by the Board Room and marked Ready to return can be returned to their originating offices. Reload the page and try again.')
+ setError('Only documents confirmed as received by the Board Room can be returned to their originating offices. Reload the page and try again.')
  return
  }
 
@@ -823,6 +883,27 @@ export default function BoardRoomRecords() {
 
  if (!authData.user) {
  throw new Error('Your session has expired. Please sign in again.')
+ }
+
+ // Normalize previously confirmed records to the return-ready status expected
+ // by the existing return transaction.
+ const legacyReceivedIds = cartRecords
+  .filter(row => row.workflow.workflow_status === 'board_room_received')
+  .map(row => row.workflow.id)
+
+ if (legacyReceivedIds.length > 0) {
+  const { error: normalizeError } = await supabase
+   .from('document_workflow')
+   .update({
+    workflow_status: 'action_completed',
+    president_action_status: 'completed',
+    president_action_completed_at: new Date().toISOString(),
+    president_action_completed_by: authData.user.id,
+   })
+   .in('id', legacyReceivedIds)
+   .eq('workflow_status', 'board_room_received')
+
+  if (normalizeError) throw normalizeError
  }
 
  const { data, error: rpcError } = await supabase.rpc(
@@ -1019,7 +1100,7 @@ export default function BoardRoomRecords() {
  Forwarded Documents
  </h2>
  <p className="mt-1 text-sm text-slate-500">
- Confirm Board Room receipt or select received documents for return.
+ Confirm receipt, then select documents whenever they are ready to be returned.
  </p>
 
  <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_190px]">
@@ -1248,14 +1329,7 @@ export default function BoardRoomRecords() {
  onClick={() => void receiveDocument(workflow.id)}
  className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-green-800 disabled:opacity-50"
  >
- {processing ? (
- <LoaderCircle
- size={14}
- className="animate-spin"
- />
- ) : (
- <CheckCircle2 size={14} />
- )}
+ {processing ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
  Confirm Receipt
  </button>
  )}
@@ -1277,6 +1351,7 @@ export default function BoardRoomRecords() {
  )}
 
  {workflow.workflow_status !== 'forwarded' &&
+ workflow.workflow_status !== 'action_in_progress' &&
  !canReturn && (
  <span className="text-xs text-slate-400">
  No actions
@@ -1537,7 +1612,7 @@ export default function BoardRoomRecords() {
  No eligible documents found
  </p>
  <p className="mt-1 text-xs text-slate-500">
- Only documents received by the Board Room and not yet returned can be selected.
+ Only documents confirmed as received by the Board Room can be selected for return.
  </p>
  </div>
  ) : (

@@ -61,6 +61,7 @@ type WorkflowRecord = {
   forwarded_at: string
   board_room_received_at?: string | null
   board_room_received_by?: string | null
+  workflow_route?: 'board_room' | 'direct_release' | null
   workflow_status: string
   returned_to_origin_person?: string | null
   returned_to_origin_remarks?: string | null
@@ -72,6 +73,7 @@ type WorkflowRecord = {
   release_instruction?: string | null
   release_forwarded_at?: string | null
   release_forwarded_by?: string | null
+  release_received_at?: string | null
   next_action_system_status?: string | null
   next_action_release_at?: string | null
   next_action_date_forwarded?: string | null
@@ -555,41 +557,48 @@ export default function ForwardingRecords() {
     }
   }, [loadData])
 
-  // A document that has already entered a workflow must not be forwarded
-  // to the Board Room again. Explicitly treat a recorded paper release as
-  // completed even if the receiving-record status was not updated consistently.
+  // Only a real Board Room forwarding or an actual releasing-staff assignment
+  // consumes a received document. An unassigned direct-release row is a
+  // cancellable draft and remains eligible for Board Room forwarding.
   const completedOrReleasedDocumentIds = useMemo(() => {
     const ids = new Set<string>()
 
     for (const item of workflows) {
       const workflow = item.workflow
+      const route = String(workflow.workflow_route ?? 'board_room').toLowerCase()
+      // Legacy direct-release rows may contain a forwarded timestamp even
+      // though no staff member was ever assigned. If they have no assignee
+      // and no staff receipt, treat them as cancelled/unassigned drafts.
+      const isUnassignedDirectReleaseDraft =
+        route === 'direct_release' &&
+        !workflow.release_assigned_to &&
+        !workflow.release_received_at
+
+      if (!isUnassignedDirectReleaseDraft) {
+        ids.add(workflow.receiving_record_id)
+      }
+
       const nextStatus = String(workflow.next_action_system_status ?? '')
         .trim()
         .toLowerCase()
-        .replace(/[\\s-]+/g, '_')
-
+        .replace(/[\s-]+/g, '_')
       const documentStatus = String(item.document?.status ?? '')
         .trim()
         .toLowerCase()
-        .replace(/[\\s-]+/g, '_')
-
+        .replace(/[\s-]+/g, '_')
       const paperReleased =
         Boolean(workflow.next_action_release_at) ||
         ['released', 'paper_released', 'release_completed', 'completed'].includes(nextStatus) ||
         ['paper_released', 'released', 'completed'].includes(documentStatus)
 
-      if (paperReleased || workflow.receiving_record_id) {
-        ids.add(workflow.receiving_record_id)
-      }
+      if (paperReleased) ids.add(workflow.receiving_record_id)
     }
 
-    // Also exclude records whose own status already says they are released/done,
-    // even if a workflow row is missing.
     for (const document of documents) {
       const status = String(document.status ?? '')
         .trim()
         .toLowerCase()
-        .replace(/[\\s-]+/g, '_')
+        .replace(/[\s-]+/g, '_')
       if (['paper_released', 'released', 'completed', 'done'].includes(status)) {
         ids.add(document.id)
       }
@@ -598,8 +607,13 @@ export default function ForwardingRecords() {
     return ids
   }, [workflows, documents])
 
+  // Documents that have not entered an active forwarding/releasing workflow.
+  // Unassigned direct-release drafts are intentionally kept available.
   const availableDocuments = useMemo(
-    () => documents.filter(document => !completedOrReleasedDocumentIds.has(document.id)),
+    () =>
+      documents.filter(
+        document => !completedOrReleasedDocumentIds.has(document.id),
+      ),
     [documents, completedOrReleasedDocumentIds],
   )
 
@@ -779,6 +793,15 @@ export default function ForwardingRecords() {
 
     return workflows.filter(item => {
       const { workflow, document } = item
+
+      // Do not render legacy unassigned direct-release drafts as separate
+      // workflow rows. Their receiving records are shown above as untouched
+      // papers with only View and Release to Staff actions.
+      const isUnassignedDirectReleaseDraft =
+        String(workflow.workflow_route ?? '').toLowerCase() === 'direct_release' &&
+        !workflow.release_assigned_to &&
+        !workflow.release_received_at
+      if (isUnassignedDirectReleaseDraft) return false
 
       if (
         statusFilter !== 'ALL' &&
@@ -965,26 +988,74 @@ export default function ForwardingRecords() {
         urgency: documentUrgencies[receivingRecordId] ?? 'not_urgent',
         forwarding_time: forwardingTime,
         forwarded_by: user.id,
+        workflow_route: 'board_room',
         workflow_status: 'forwarded',
       }))
 
-      const { data, error: insertError } = await supabase
+      // Older versions created an unassigned direct-release row as soon as
+      // the user opened the assignment form. If that form was cancelled, reuse
+      // that row and convert it to the Board Room route instead of inserting a
+      // duplicate receiving_record_id.
+      const { data: oldDraftRows, error: draftLookupError } = await supabase
         .from('document_workflow')
-        .insert(payload)
         .select('id, receiving_record_id')
+        .in('receiving_record_id', selectedDocumentIds)
+        .eq('workflow_route', 'direct_release')
+        .is('release_assigned_to', null)
+        .is('release_received_at', null)
 
-      if (insertError) {
-        if (insertError.code === '23505') {
-          throw new Error(
-            'One or more documents have already been forwarded. Refresh and try again.',
-          )
-        }
+      if (draftLookupError) throw draftLookupError
 
-        throw insertError
+      const oldDraftByDocument = new Map(
+        (oldDraftRows ?? []).map(row => [row.receiving_record_id, row.id]),
+      )
+      const rowsToInsert = payload.filter(row => !oldDraftByDocument.has(row.receiving_record_id))
+      const now = new Date()
+      const forwardingDate = now.toISOString().slice(0, 10)
+      const forwardingTimestamp = now.toISOString()
+
+      for (const row of payload) {
+        const existingId = oldDraftByDocument.get(row.receiving_record_id)
+        if (!existingId) continue
+
+        const { error: convertError } = await supabase
+          .from('document_workflow')
+          .update({
+            ...row,
+            forwarding_date: forwardingDate,
+            forwarded_at: forwardingTimestamp,
+            release_assigned_to: null,
+            release_instruction: null,
+            release_forwarded_at: null,
+            release_forwarded_by: null,
+          })
+          .eq('id', existingId)
+          .is('release_assigned_to', null)
+
+        if (convertError) throw convertError
       }
 
+      let insertedCount = 0
+      if (rowsToInsert.length > 0) {
+        const { data, error: insertError } = await supabase
+          .from('document_workflow')
+          .insert(rowsToInsert)
+          .select('id, receiving_record_id')
+
+        if (insertError) {
+          if (insertError.code === '23505') {
+            throw new Error(
+              'One or more documents have already been forwarded. Refresh and try again.',
+            )
+          }
+          throw insertError
+        }
+        insertedCount = data?.length ?? 0
+      }
+
+      const forwardedCount = insertedCount + oldDraftByDocument.size
       setSuccess(
-        `${data?.length ?? 0} of ${selectedDocumentIds.length} document(s) forwarded successfully.`,
+        `${forwardedCount} of ${selectedDocumentIds.length} document(s) forwarded successfully.`,
       )
 
       setShowForm(false)
@@ -1088,62 +1159,63 @@ export default function ForwardingRecords() {
     }
   }
 
-  async function handleStartDirectRelease(document: ReceivingRecord) {
+  async function handleStartDirectRelease(
+    document: ReceivingRecord,
+    returnedWorkflow?: WorkflowRecord,
+  ) {
     setError('')
     setSuccess('')
 
-    // Only untouched Received records can start this direct-release route.
-    if (!availableDocuments.some(item => item.id === document.id)) {
-      setError('This paper already has a workflow action. Refresh the page and try again.')
+    // A returned paper becomes eligible for Releasing only after the
+    // originating office confirms physical receipt. Reuse that same workflow
+    // row so the Board Room return history is preserved and no duplicate
+    // receiving_record_id is inserted.
+    const isConfirmedReturn =
+      Boolean(returnedWorkflow?.origin_office_received_at) &&
+      returnedWorkflow?.workflow_status === 'completed' &&
+      !returnedWorkflow.release_assigned_to
+
+    if (
+      !isConfirmedReturn &&
+      !availableDocuments.some(item => item.id === document.id)
+    ) {
+      setError('This paper already has a Board Room action or a confirmed releasing-staff assignment.')
       return
     }
 
-    setSavingReleaseAssignment(true)
-    try {
-      const { data: { user }, error: authError } = await supabase.auth.getUser()
-      if (authError) throw authError
-      if (!user) throw new Error('Your session has expired. Please sign in again.')
+    // Prefer the confirmed returned workflow. Otherwise reuse an old
+    // unassigned direct-release draft or create a local-only draft.
+    const existingDraft = returnedWorkflow ?? workflows.find(({ workflow }) =>
+      workflow.receiving_record_id === document.id &&
+      workflow.workflow_route === 'direct_release' &&
+      !workflow.release_assigned_to &&
+      !workflow.release_received_at
+    )?.workflow
 
-      const now = new Date()
-      const forwardingTimeValue = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-      const { data, error: insertError } = await supabase
-        .from('document_workflow')
-        .insert({
-          receiving_record_id: document.id,
-          transaction_person: document.sender || document.bearer || 'Direct release',
-          // The database storage check requires a folder color when storage_type is folder.
-          // Direct-to-release papers still need a valid storage classification.
-          storage_type: 'folder',
-          folder_color: 'Other',
-          box_number: null,
-          urgency: String(document.urgency ?? '').toLowerCase() === 'urgent' ? 'urgent' : 'not_urgent',
-          forwarding_date: now.toISOString().slice(0, 10),
-          forwarding_time: forwardingTimeValue,
-          forwarded_at: now.toISOString(),
-          forwarded_by: user.id,
-          workflow_status: 'forwarded',
-        })
-        .select('*')
-        .single()
-
-      if (insertError) {
-        if (insertError.code === '23505') throw new Error('This paper already has a workflow action. Refresh the page and review it.')
-        throw insertError
-      }
-
-      setReleaseAssignment(data as WorkflowRecord)
-      setReleaseUrgency(String(document.urgency ?? '').toLowerCase() === 'urgent' ? 'urgent' : 'not_urgent')
-      await loadData()
-    } catch (err) {
-      const detail = typeof err === 'object' && err !== null ? err as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown } : null
-      const message = [detail?.message, detail?.details, detail?.hint, detail?.code]
-        .filter(value => typeof value === 'string' && value.trim())
-        .join(' — ')
-      console.error('Unable to start direct release forwarding:', err)
-      setError(message || (err instanceof Error ? err.message : 'Unable to start direct release forwarding. Check the browser console for the Supabase error.'))
-    } finally {
-      setSavingReleaseAssignment(false)
+    const now = new Date()
+    const forwardingTimeValue = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+    const draft: WorkflowRecord = existingDraft ?? {
+      id: `draft-release:${document.id}`,
+      receiving_record_id: document.id,
+      transaction_person: document.sender || document.bearer || 'Direct release',
+      storage_type: 'folder',
+      folder_color: 'Other',
+      box_number: null,
+      urgency: String(document.urgency ?? '').toLowerCase() === 'urgent' ? 'urgent' : 'not_urgent',
+      forwarding_date: now.toISOString().slice(0, 10),
+      forwarding_time: forwardingTimeValue,
+      forwarded_by: '',
+      forwarded_at: now.toISOString(),
+      workflow_route: 'direct_release',
+      workflow_status: 'forwarded',
     }
+
+    setReleaseStaff('')
+    setReleaseStaffSearch('')
+    setReleaseInstruction('For Release')
+    setReleaseCustomInstruction('')
+    setReleaseUrgency(draft.urgency)
+    setReleaseAssignment(draft)
   }
 
   async function handleForwardToReleasingStaff(
@@ -1219,26 +1291,55 @@ export default function ForwardingRecords() {
         throw new Error('Your session has expired. Please sign in again.')
       }
 
-      const { data, error: updateError } = await supabase
-        .from('document_workflow')
-        .update({
-          release_assigned_to: releaseStaff,
-          release_instruction: instruction,
-          urgency: releaseUrgency,
-          release_forwarded_at: new Date().toISOString(),
-          release_forwarded_by: user.id,
-        })
-        .eq('id', releaseAssignment.id)
-        .in('workflow_status', ['forwarded', 'in_progress', 'completed'])
-        .is('release_assigned_to', null)
-        .select('id')
-        .maybeSingle()
+      const releaseTimestamp = new Date().toISOString()
+      const isLocalDraft = releaseAssignment.id.startsWith('draft-release:')
 
-      if (updateError) throw updateError
-      if (!data) {
-        throw new Error(
-          'The document was already assigned or its status changed. Refresh and try again.',
-        )
+      if (isLocalDraft) {
+        const { error: insertError } = await supabase
+          .from('document_workflow')
+          .insert({
+            receiving_record_id: releaseAssignment.receiving_record_id,
+            transaction_person: releaseAssignment.transaction_person,
+            storage_type: releaseAssignment.storage_type,
+            folder_color: releaseAssignment.folder_color,
+            box_number: releaseAssignment.box_number,
+            urgency: releaseUrgency,
+            forwarding_date: releaseAssignment.forwarding_date,
+            forwarding_time: releaseAssignment.forwarding_time,
+            forwarded_at: releaseAssignment.forwarded_at,
+            forwarded_by: user.id,
+            workflow_route: 'direct_release',
+            workflow_status: 'forwarded',
+            release_assigned_to: releaseStaff,
+            release_instruction: instruction,
+            release_forwarded_at: releaseTimestamp,
+            release_forwarded_by: user.id,
+          })
+
+        if (insertError) throw insertError
+      } else {
+        const { data, error: updateError } = await supabase
+          .from('document_workflow')
+          .update({
+            workflow_route: 'direct_release',
+            release_assigned_to: releaseStaff,
+            release_instruction: instruction,
+            urgency: releaseUrgency,
+            release_forwarded_at: releaseTimestamp,
+            release_forwarded_by: user.id,
+          })
+          .eq('id', releaseAssignment.id)
+          .in('workflow_status', ['forwarded', 'in_progress', 'completed'])
+          .is('release_assigned_to', null)
+          .select('id')
+          .maybeSingle()
+
+        if (updateError) throw updateError
+        if (!data) {
+          throw new Error(
+            'The document was already assigned or its status changed. Refresh and try again.',
+          )
+        }
       }
 
       const document = documents.find(
@@ -1370,7 +1471,7 @@ export default function ForwardingRecords() {
             Forwarding to Board Room
           </h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            Forward documents to the Board Room, confirm returned documents, and assign received documents to releasing staff.
+            Review documents received from Receiving and choose whether each goes to the Board Room or directly to Releasing Staff.
           </p>
         </div>
 
@@ -1750,12 +1851,21 @@ export default function ForwardingRecords() {
                         </div>
                       </td>
                       <td className="px-4 py-3.5">
-                        <div className="flex min-w-[190px] flex-wrap items-center gap-2">
-                          <button type="button" onClick={() => setViewingUrgentDocument(document)} className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                        <div className="flex min-w-[250px] flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setViewingUrgentDocument(document)}
+                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                          >
                             <Eye size={14} /> View
                           </button>
-                          <button type="button" onClick={() => void handleStartDirectRelease(document)} disabled={savingReleaseAssignment || loading} className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50">
-                            <Send size={14} /> Forward to Releasing Staff
+                          <button
+                            type="button"
+                            onClick={() => void handleStartDirectRelease(document)}
+                            disabled={savingReleaseAssignment || loading}
+                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Send size={14} /> Release to Staff
                           </button>
                         </div>
                       </td>
@@ -1823,12 +1933,24 @@ export default function ForwardingRecords() {
 
                       <td className="px-4 py-3.5">
                         <span
-                          className={`inline-flex whitespace-nowrap rounded-full border px-2.5 py-1 text-[10px] font-semibold capitalize ${statusClass(workflow.workflow_status)}`}
+                          className={`inline-flex whitespace-nowrap rounded-full border px-2.5 py-1 text-[10px] font-semibold ${
+                            workflow.workflow_route === 'direct_release' && !workflow.release_received_at
+                              ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+                              : statusClass(workflow.workflow_status)
+                          }`}
                         >
-                          {workflow.workflow_status === 'completed' && (
-                            <CheckCircle2 size={12} className="mr-1" />
-                          )}
-                          {displayStatus(workflow.workflow_status)}
+                          {workflow.workflow_route === 'direct_release' && !workflow.release_received_at
+                            ? 'Received - No action'
+                            : <>
+                                {workflow.workflow_status === 'completed' && (
+                                  <CheckCircle2 size={12} className="mr-1" />
+                                )}
+                                {workflow.origin_office_received_at &&
+                                  workflow.workflow_status === 'completed' &&
+                                  !workflow.release_assigned_to
+                                  ? 'Receipt Confirmed · Ready for Releasing'
+                                  : displayStatus(workflow.workflow_status)}
+                              </>}
                         </span>
                         {workflow.board_room_received_at && (
                           <div className="mt-2 min-w-[150px] space-y-1 text-[10px] text-slate-500">
@@ -1947,22 +2069,19 @@ export default function ForwardingRecords() {
                             <CheckCircle2 size={14} />
                             Confirm Receipt
                           </button>
-                        ) : ['forwarded', 'in_progress', 'completed'].includes(workflow.workflow_status) && !workflow.release_assigned_to ? (
+                        ) : workflow.origin_office_received_at &&
+                          workflow.workflow_status === 'completed' &&
+                          !workflow.release_assigned_to ? (
                           <button
                             type="button"
                             onClick={() => {
-                              setError('')
-                              setSuccess('')
-                              setReleaseStaff('')
-                              setReleaseStaffSearch('')
-                              setReleaseInstruction('For Release')
-                              setReleaseCustomInstruction('')
-                              setReleaseAssignment(workflow)
+                              if (document) void handleStartDirectRelease(document, workflow)
                             }}
-                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-800"
+                            disabled={savingReleaseAssignment || loading}
+                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <Send size={14} />
-                            Forward to Releasing Staff
+                            Release to Staff
                           </button>
                         ) : workflow.release_assigned_to ? (
                           <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-green-700">
@@ -2266,7 +2385,7 @@ export default function ForwardingRecords() {
                   Forward to Releasing Staff
                 </h3>
                 <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-Assign this paper directly to an active Releasing Staff member. Returned papers still require receipt confirmation first.
+Choose an active Releasing Staff member. Nothing is saved until you click Forward Document; Cancel leaves this paper available for Board Room forwarding.
                 </p>
               </div>
               <button
@@ -2426,7 +2545,7 @@ Assign this paper directly to an active Releasing Staff member. Returned papers 
               </div>
 
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                The originating office must confirm receipt before this document can be assigned. Existing workflow history will be preserved.
+                This assignment is saved only after you click Forward Document. If you cancel, the paper remains available under Forward Documents for Board Room forwarding.
               </div>
 
               <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end">

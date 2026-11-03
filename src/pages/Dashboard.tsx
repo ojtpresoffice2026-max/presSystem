@@ -235,7 +235,7 @@ export default function Dashboard() {
               </h3>
             ) : (
               <h3 className="text-xl font-bold tracking-tight md:text-3xl">
-                Welcome to presSystem
+                Welcome to Office of The University President! - NORSU
               </h3>
             )}
             <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-blue-100 md:text-sm">

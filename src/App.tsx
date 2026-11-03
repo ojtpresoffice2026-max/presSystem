@@ -431,7 +431,7 @@ function DashboardLayout() {
           </div>
 
           <div className="min-w-0">
-            <h1 className="text-lg font-bold">presSystem</h1>
+            <h1 className="text-lg font-bold">OTUP - System</h1>
             <p className="text-xs text-blue-200">
               Management Portal
             </p>

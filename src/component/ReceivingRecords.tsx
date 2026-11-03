@@ -12,6 +12,7 @@ import {
   Save,
   Ban,
   ChevronDown,
+  MessageSquareReply,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import AuditHistory from './AuditHistory'
@@ -279,6 +280,16 @@ export default function ReceivingRecords() {
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [replyOpen, setReplyOpen] = useState(false)
+  const [replySaving, setReplySaving] = useState(false)
+  const [replyError, setReplyError] = useState('')
+  const [replyCreatedConfirmation, setReplyCreatedConfirmation] = useState<{ reference: string } | null>(null)
+  const [replyDraft, setReplyDraft] = useState({
+    content: '',
+    bearer: '',
+    office_designation: '',
+    destination_folder: '',
+  })
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [success, setSuccess] = useState('')
@@ -911,6 +922,135 @@ export default function ReceivingRecords() {
     }
   }
 
+  function getReplyRootReference(record: ReceivingRecord): string {
+    const values = record.custom_field_values && typeof record.custom_field_values === 'object'
+      ? record.custom_field_values as Record<string, unknown>
+      : {}
+    const savedRoot = values._reply_root_reference
+    return typeof savedRoot === 'string' && savedRoot.trim()
+      ? savedRoot.trim()
+      : record.reference_number.trim()
+  }
+
+  function openReplyForm(record: ReceivingRecord) {
+    setReplyError('')
+    setReplyDraft({
+      content: '',
+      bearer: '',
+      office_designation: '',
+      destination_folder: record.destination_folder || record.current_office || '',
+    })
+    setReplyOpen(true)
+  }
+
+  function letterSuffix(index: number): string {
+    let value = index
+    let suffix = ''
+    while (value > 0) {
+      value -= 1
+      suffix = String.fromCharCode(65 + (value % 26)) + suffix
+      value = Math.floor(value / 26)
+    }
+    return suffix
+  }
+
+  async function createReply() {
+    if (!selected) return
+    const originalDestination = (selected.destination_folder || selected.current_office || '').trim()
+    if (!replyDraft.content.trim() || !replyDraft.bearer.trim() ||
+        !replyDraft.office_designation.trim() || !originalDestination) {
+      setReplyError('Complete the letter sender, office/designation, and content/description. The original record must also have a destination folder.')
+      return
+    }
+
+    setReplySaving(true)
+    setReplyError('')
+    try {
+      const rootReference = getReplyRootReference(selected)
+      const { data: existingRows, error: existingError } = await supabase
+        .from('receiving_records')
+        .select('reference_number')
+        .ilike('reference_number', `${rootReference}-%`)
+      if (existingError) throw existingError
+
+      const usedSuffixes = (existingRows ?? [])
+        .map(row => String(row.reference_number ?? '').trim())
+        .filter(reference => reference.startsWith(`${rootReference}-`))
+        .map(reference => reference.slice(rootReference.length + 1).toUpperCase())
+        .filter(suffix => /^[A-Z]+$/.test(suffix))
+
+      const suffixValue = (suffix: string) => [...suffix].reduce(
+        (total, character) => total * 26 + character.charCodeAt(0) - 64, 0,
+      )
+      const nextIndex = usedSuffixes.reduce((max, suffix) => Math.max(max, suffixValue(suffix)), 0) + 1
+      const replyReference = `${rootReference}-${letterSuffix(nextIndex)}`
+
+      const { data: authData, error: authError } = await supabase.auth.getUser()
+      if (authError) throw authError
+      if (!authData.user) throw new Error('Your account session could not be verified. Please sign in again.')
+
+      const { data: accountProfile, error: accountProfileError } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', authData.user.id)
+        .maybeSingle()
+      if (accountProfileError) throw accountProfileError
+      const accountName = accountProfile?.full_name?.trim()
+        || String(authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || authData.user.email || 'Unknown account')
+      const now = new Date()
+      const localDateReceived = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(now)
+      const recordedAt = now.toISOString()
+
+      const { data: created, error: insertError } = await supabase
+        .from('receiving_records')
+        .insert({
+          reference_number: replyReference,
+          system_code: selected.system_code || null,
+          record_type: 'Reply',
+          content: replyDraft.content.trim(),
+          subject: replyDraft.content.trim(),
+          bearer: replyDraft.bearer.trim().toUpperCase(),
+          sender: replyDraft.bearer.trim().toUpperCase(),
+          receiving_staff: accountName.toUpperCase(),
+          destination_folder: originalDestination.toUpperCase(),
+          current_office: originalDestination.toUpperCase(),
+          date_received: localDateReceived,
+          received_at: recordedAt,
+          status: 'received',
+          remarks: `Reply to ${rootReference}`,
+          origin_office: selected.origin_office || selected.destination_folder || selected.current_office || null,
+          created_by: authData.user?.id || null,
+          custom_field_values: {
+            _record_kind: 'reply',
+            _reply_root_reference: rootReference,
+            _reply_parent_record_id: selected.id,
+            _reply_parent_reference: selected.reference_number,
+            _reply_sequence: letterSuffix(nextIndex),
+            _reply_office_designation: replyDraft.office_designation.trim().toUpperCase(),
+          },
+        })
+        .select('*')
+        .single()
+
+      if (insertError) throw insertError
+
+      const createdRecord = created as ReceivingRecord
+      setRecords(current => [createdRecord, ...current])
+      setReplyOpen(false)
+      setSuccess('')
+      setReplyCreatedConfirmation({ reference: replyReference })
+    } catch (err) {
+      const message = err && typeof err === 'object' && 'message' in err
+        ? String((err as { message?: unknown }).message)
+        : 'Unable to create the reply record.'
+      setReplyError(message)
+    } finally {
+      setReplySaving(false)
+    }
+  }
+
   function handleSort(field: SortField) {
     if (sortField === field) {
       setSortDirection(current =>
@@ -1088,7 +1228,24 @@ export default function ReceivingRecords() {
     )
   }
 
+  function getRepliesForRecord(record: ReceivingRecord): ReceivingRecord[] {
+    const rootReference = getReplyRootReference(record)
+    return records
+      .filter(candidate => {
+        const metadata = candidate.custom_field_values && typeof candidate.custom_field_values === 'object'
+          ? candidate.custom_field_values as Record<string, unknown>
+          : {}
+        return metadata._record_kind === 'reply' &&
+          (metadata._reply_parent_record_id === record.id ||
+            metadata._reply_root_reference === rootReference)
+      })
+      .sort((a, b) => a.reference_number.localeCompare(b.reference_number, undefined, { numeric: true }))
+  }
+
   function renderRecordDetails(record: ReceivingRecord): ReactNode[] {
+    const replyMetadata = record.custom_field_values && typeof record.custom_field_values === 'object'
+      ? record.custom_field_values as Record<string, unknown>
+      : {}
     const details: ReactNode[] = [
       detail('PresOffice Number', record.reference_number),
       detail('System Code', record.system_code),
@@ -1104,6 +1261,30 @@ export default function ReceivingRecords() {
       ),
       detail('Status', displayStatus(record.status)),
     ]
+
+    if (replyMetadata._record_kind === 'reply') {
+      details.push(
+        detail('Record Type', 'REPLY'),
+        detail('Reply To', replyMetadata._reply_parent_reference),
+        detail('Office / Designation', replyMetadata._reply_office_designation),
+      )
+    } else {
+      const createdReplies = getRepliesForRecord(record)
+      details.push(
+        detail(
+          'Reply Status',
+          createdReplies.length > 0
+            ? `REPLY CREATED (${createdReplies.length})`
+            : 'NO REPLY CREATED',
+        ),
+        detail(
+          'Created Reply Number(s)',
+          createdReplies.length > 0
+            ? createdReplies.map(reply => reply.reference_number).join(', ')
+            : '—',
+        ),
+      )
+    }
 
     // Always render the configured fields for this record's destination folder,
     // even when no custom values have been saved yet. Otherwise the fields appear
@@ -1528,6 +1709,17 @@ export default function ReceivingRecords() {
                       >
                         {formatReferenceNumber(record.reference_number)}
                       </button>
+                      {record.custom_field_values?._record_kind === 'reply' && (
+                        <span className="ml-1 inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-800">
+                          REPLY
+                        </span>
+                      )}
+                      {record.custom_field_values?._record_kind !== 'reply' &&
+                        getRepliesForRecord(record).length > 0 && (
+                          <span className="ml-1 inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-[9px] font-bold uppercase text-blue-800">
+                            REPLY CREATED
+                          </span>
+                        )}
                     </td>
 
                     <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">
@@ -2321,6 +2513,15 @@ export default function ReceivingRecords() {
                   <>
                     <button
                       type="button"
+                      onClick={() => openReplyForm(selected)}
+                      className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+                    >
+                      <MessageSquareReply size={15} />
+                      Create Reply
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={closeModal}
                       className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
                     >
@@ -2339,6 +2540,116 @@ export default function ReceivingRecords() {
                 )}
               </div>
             </div>
+          </section>
+        </div>
+      )}
+
+      {replyOpen && selected && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[2px]"
+          onClick={() => !replySaving && setReplyOpen(false)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-reply-title"
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-2xl"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Reply to incoming document</p>
+                <h3 id="create-reply-title" className="mt-1 text-xl font-bold text-slate-900">Create Reply</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Original PresOffice No.: <strong>{getReplyRootReference(selected)}</strong>
+                  {' · '}New reply number will be generated automatically.
+                </p>
+              </div>
+              <button type="button" disabled={replySaving} onClick={() => setReplyOpen(false)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50" aria-label="Close reply form">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-6">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="text-xs font-semibold text-emerald-800">Reply reference format</p>
+                <p className="mt-1 text-sm font-bold text-emerald-900">{getReplyRootReference(selected)}-A, -B, -C...</p>
+                <p className="mt-1 text-xs text-emerald-700">The original record will not be overwritten. The reply is saved as a separate Receiving Record.</p>
+              </div>
+
+              {replyError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{replyError}</p>}
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="text-xs font-semibold text-slate-600">
+                  Letter Sender *
+                  <input value={replyDraft.bearer} onChange={event => setReplyDraft(current => ({ ...current, bearer: event.target.value }))} className={`${inputClass} uppercase`} placeholder="Name of the letter sender" />
+                </label>
+                <label className="text-xs font-semibold text-slate-600">
+                  Office / Designation *
+                  <input value={replyDraft.office_designation} onChange={event => setReplyDraft(current => ({ ...current, office_designation: event.target.value }))} className={`${inputClass} uppercase`} placeholder="Sender's office or designation" />
+                </label>
+                <label className="text-xs font-semibold text-slate-600 sm:col-span-2">
+                  Content / Description *
+                  <textarea rows={4} value={replyDraft.content} onChange={event => setReplyDraft(current => ({ ...current, content: event.target.value }))} className={inputClass} placeholder="Enter the reply content or description" />
+                </label>
+                <label className="text-xs font-semibold text-slate-600 sm:col-span-2">
+                  Destination Folder
+                  <input
+                    value={formatDestinationFolder(selected.destination_folder || selected.current_office)}
+                    readOnly
+                    aria-readonly="true"
+                    className={`${inputClass} cursor-not-allowed bg-slate-100 text-slate-600`}
+                  />
+                  <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                    Automatically inherited from the original record and cannot be changed here.
+                  </span>
+                </label>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                <p><strong>Inputted by:</strong> Automatically recorded from your signed-in account.</p>
+                <p className="mt-1"><strong>Date and time:</strong> Automatically recorded when you create the reply (Philippine time).</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-4">
+              <button type="button" disabled={replySaving} onClick={() => setReplyOpen(false)} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={replySaving} onClick={() => void createReply()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">
+                <MessageSquareReply size={15} />
+                {replySaving ? 'Creating Reply...' : 'Create Reply Record'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {replyCreatedConfirmation && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[2px]">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reply-created-title"
+            className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 text-center shadow-2xl"
+          >
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-9 w-9" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
+              </svg>
+            </div>
+            <p className="mt-4 text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Receiving Records</p>
+            <h3 id="reply-created-title" className="mt-2 text-xl font-bold text-slate-900">Reply Created Successfully!</h3>
+            <p className="mt-2 text-sm text-slate-600">Your reply has been saved as a new record in the system.</p>
+            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Generated Reply Number</p>
+              <p className="mt-1 break-all text-2xl font-extrabold tracking-wide text-emerald-900">{replyCreatedConfirmation.reference}</p>
+              <p className="mt-2 text-xs font-semibold text-emerald-700">Successfully saved in Receiving Records</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyCreatedConfirmation(null)}
+              className="mt-6 inline-flex w-full items-center justify-center rounded-lg bg-emerald-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
+            >
+              Done
+            </button>
           </section>
         </div>
       )}

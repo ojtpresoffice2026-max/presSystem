@@ -96,6 +96,7 @@ export default function ReleasingRecords() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [nextActionOffice, setNextActionOffice] = useState('')
   const [nextActionReleaseTo, setNextActionReleaseTo] = useState('')
+  const [nextActionType, setNextActionType] = useState<'forward' | 'file'>('forward')
   const [, setNextActionReleaseAt] = useState('')
   const [liveDateTime, setLiveDateTime] = useState(() => toDateTimeLocalValue(new Date().toISOString()))
   const [savingNextAction, setSavingNextAction] = useState(false)
@@ -653,9 +654,10 @@ export default function ReleasingRecords() {
 
     const office = nextActionOffice.trim()
     const releaseTo = nextActionReleaseTo.trim()
+    const isForwardAction = nextActionType === 'forward'
 
-    if (!office || !releaseTo) {
-      setActionError('Please enter Office to Forward and Release To.')
+    if (isForwardAction && (!office || !releaseTo)) {
+      setActionError('For Release, enter both Office to Forward and Release To. For File does not require forwarding details.')
       return
     }
 
@@ -705,11 +707,12 @@ export default function ReleasingRecords() {
         date_forwarded: record.next_action_date_forwarded,
       }
       const newValues = {
-        office_to_forward: office,
-        release_to: releaseTo,
+        action_type: isForwardAction ? 'For Release' : 'For File',
+        office_to_forward: isForwardAction ? office : null,
+        release_to: isForwardAction ? releaseTo : null,
         release_at: releaseAt,
-        system_status: 'Forwarded',
-        date_forwarded: record.next_action_date_forwarded || now,
+        system_status: isForwardAction ? 'Forwarded' : 'For File',
+        date_forwarded: isForwardAction ? (record.next_action_date_forwarded || now) : null,
       }
 
       // Editing a completed document must not reactivate its workflow.
@@ -720,14 +723,14 @@ export default function ReleasingRecords() {
       const { data: updatedRows, error: updateError } = await supabase
         .from('document_workflow')
         .update({
-          next_action_office_to_forward: office,
-          next_action_release_to: releaseTo,
+          next_action_office_to_forward: isForwardAction ? office : null,
+          next_action_release_to: isForwardAction ? releaseTo : null,
           next_action_release_at: releaseAt,
-          next_action_system_status: 'Forwarded',
-          next_action_date_forwarded: newValues.date_forwarded,
+          next_action_system_status: isForwardAction ? 'Forwarded' : 'For File',
+          next_action_date_forwarded: isForwardAction ? newValues.date_forwarded : null,
           next_action_recorded_by: user.id,
           next_action_recorded_by_name: editorName,
-          workflow_status: workflowStatus,
+          workflow_status: isForwardAction ? workflowStatus : 'action_completed',
           updated_at: now,
         })
         .eq('id', record.id)
@@ -760,15 +763,15 @@ export default function ReleasingRecords() {
 
       const updatedRecord: ReleasingRecord = {
         ...record,
-        next_action_office_to_forward: office,
-        next_action_release_to: releaseTo,
+        next_action_office_to_forward: isForwardAction ? office : null,
+        next_action_release_to: isForwardAction ? releaseTo : null,
         next_action_release_at: releaseAt,
-        next_action_system_status: 'Forwarded',
-        next_action_date_forwarded: newValues.date_forwarded,
+        next_action_system_status: isForwardAction ? 'Forwarded' : 'For File',
+        next_action_date_forwarded: isForwardAction ? newValues.date_forwarded : null,
         next_action_recorded_by: user.id,
         next_action_recorded_by_name: editorName,
-        workflow_status: workflowStatus,
-        status: workflowStatus,
+        workflow_status: isForwardAction ? workflowStatus : 'action_completed',
+        status: isForwardAction ? workflowStatus : 'action_completed',
       }
 
       setRecords(current =>
@@ -779,13 +782,27 @@ export default function ReleasingRecords() {
       await loadNextActionLogs(record.id)
       setActionSuccess(
         isEdit
-          ? `Release details for ${record.reference_number} were updated successfully.`
-          : `Document ${record.reference_number} was marked Forwarded successfully.`,
+          ? `${record.reference_number} was updated as ${isForwardAction ? 'Forwarded' : 'For File'}.`
+          : `${record.reference_number} was recorded as ${isForwardAction ? 'Forwarded' : 'For File'}.`,
       )
     } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : 'Unable to save Next Action.',
-      )
+      // Supabase/PostgREST errors are plain objects in some environments and
+      // are not always instanceof Error. Preserve the actual database message.
+      console.error('Unable to save releasing next action:', err)
+      const dbError = err as {
+        message?: string
+        details?: string
+        hint?: string
+        code?: string
+      } | null
+      const message = dbError && typeof dbError.message === 'string'
+        ? [dbError.message, dbError.details, dbError.hint, dbError.code ? `Code: ${dbError.code}` : null]
+            .filter(Boolean)
+            .join(' ')
+        : err instanceof Error
+          ? err.message
+          : String(err ?? 'Unknown database error')
+      setActionError(`Unable to save Next Action: ${message}`)
     } finally {
       setSavingNextAction(false)
     }
@@ -859,7 +876,7 @@ export default function ReleasingRecords() {
       if (releaseStatusFilter === 'ACTIVE' && completed) return false
       if (releaseStatusFilter === 'AWAITING_RECEIPT' && (record.release_received_at || completed)) return false
       if (releaseStatusFilter === 'READY_TO_RELEASE' && (!record.release_received_at || completed)) return false
-      if (releaseStatusFilter === 'RELEASED' && !completed) return false
+      if (releaseStatusFilter === 'RELEASED' && !isForwardedAction(record)) return false
       if (urgencyFilter === 'URGENT' && recordUrgency !== 'urgent') return false
       if (urgencyFilter === 'NOT_URGENT' && recordUrgency !== 'not urgent') return false
 
@@ -1002,6 +1019,15 @@ export default function ReleasingRecords() {
     return completedStatuses.includes(workflowStatus) ||
       completedStatuses.includes(nextActionStatus) ||
       nextActionStatus === 'forwarded'
+  }
+
+  function isForwardedAction(record: ReleasingRecord) {
+    const status = String(record.next_action_system_status ?? '')
+      .trim()
+      .toLowerCase()
+      .replaceAll('-', '_')
+      .replaceAll(' ', '_')
+    return ['forwarded', 'released', 'paper_released', 'release_completed'].includes(status)
   }
 
  
@@ -1426,11 +1452,11 @@ export default function ReleasingRecords() {
                         </div>
                         <div className="min-w-0">
                           <span className="block text-[9px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Date Release</span>
-                          <span className="mt-0.5 block text-xs text-slate-700 dark:text-slate-200">{record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</span>
+                          <span className="mt-0.5 block text-xs text-slate-700 dark:text-slate-200">{record.next_action_system_status === 'For File' ? '—' : record.next_action_release_at ? formatDate(record.next_action_release_at) : '—'}</span>
                         </div>
                         <div className="min-w-0">
                           <span className="block text-[9px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Time Release</span>
-                          <span className="mt-0.5 block text-xs text-slate-700 dark:text-slate-200">{record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</span>
+                          <span className="mt-0.5 block text-xs text-slate-700 dark:text-slate-200">{record.next_action_system_status === 'For File' ? '—' : record.next_action_release_at ? formatReleaseTime(record.next_action_release_at) : '—'}</span>
                         </div>
                         <div className="col-span-2 border-t border-slate-200 pt-2 dark:border-slate-700">
                           <span className="block text-[9px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Released By</span>
@@ -1440,7 +1466,7 @@ export default function ReleasingRecords() {
                     </td>
 
                     <td className="min-w-[210px] px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
-                      <span className="font-semibold">{isReleaseCompleted(record) ? 'Forwarded' : (record.next_action_system_status || 'Not Forwarded')}</span>
+                      <span className={`font-semibold ${record.next_action_system_status === 'For File' ? 'text-amber-700 dark:text-amber-300' : isForwardedAction(record) ? 'text-emerald-700 dark:text-emerald-300' : ''}`}>{record.next_action_system_status === 'For File' ? 'Filed' : record.next_action_system_status || 'Not Forwarded'}</span>
                     </td>
 
                     <td className="px-4 py-3.5">
@@ -1471,6 +1497,7 @@ export default function ReleasingRecords() {
                             setNextActionMode(record.next_action_release_at ? 'view' : 'edit')
                             setActionError('')
                             setActionSuccess('')
+                            setNextActionType(record.next_action_system_status?.toLowerCase() === 'for file' ? 'file' : 'forward')
                             setNextActionOffice(record.next_action_office_to_forward || '')
                             setNextActionReleaseTo(record.next_action_release_to || '')
                             setNextActionReleaseAt(record.next_action_release_at ? toDateTimeLocalValue(record.next_action_release_at) : toDateTimeLocalValue(new Date().toISOString()))
@@ -1702,7 +1729,7 @@ export default function ReleasingRecords() {
               <div>
                 <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Document Workflow</p>
                 <h3 id="release-panel-title" className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">Release Panel · {releasePanelRecord.reference_number}</h3>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Record the next destination and release status. Physical receipt must be confirmed first.</p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose For Release to forward the paper, or For File to keep it for filing only. Physical receipt must be confirmed first.</p>
               </div>
               <button type="button" onClick={() => setReleasePanelRecord(null)} aria-label="Close release panel" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700"><X size={18} /></button>
             </div>
@@ -1712,8 +1739,27 @@ export default function ReleasingRecords() {
                 <div className="rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Physical Receipt</p><p className="mt-1 text-sm font-semibold">{releasePanelRecord.release_received_at ? `Confirmed · ${formatDateTime(releasePanelRecord.release_received_at)}` : 'Awaiting confirmation'}</p></div>
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
-                <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">Release Details</h4>
-                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">Action Type</h4>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose whether this paper must be forwarded to another office/person or kept for filing only.</p>
+                <select
+                  value={nextActionType}
+                  onChange={event => {
+                    const value = event.target.value as 'forward' | 'file'
+                    setNextActionType(value)
+                    if (value === 'file') {
+                      setNextActionOffice('')
+                      setNextActionReleaseTo('')
+                    }
+                  }}
+                  disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))}
+                  className="mt-3 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 sm:max-w-xs"
+                >
+                  <option value="forward">For Release — Forward the paper</option>
+                  <option value="file">For File — Keep for filing only</option>
+                </select>
+                {nextActionType === 'file' && <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">This paper will be marked For File. No destination office or receiving person will be recorded, and it will not be marked Forwarded.</p>}
+                <h4 className="mt-5 text-sm font-bold text-slate-900 dark:text-slate-100">{nextActionType === 'forward' ? 'Forwarding Details' : 'Filing Details'}</h4>
+                {nextActionType === 'forward' && <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Office to Forward *<input value={nextActionOffice} onChange={event => setNextActionOffice(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter destination office" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-blue-900" /></label>
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Release To *<input value={nextActionReleaseTo} onChange={event => setNextActionReleaseTo(event.target.value)} disabled={!releasePanelRecord.release_received_at || (nextActionMode === 'view' && Boolean(releasePanelRecord.next_action_release_at))} placeholder="Enter receiving person" className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-blue-900" /></label>
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Forward At (Automatic Date and Time)
@@ -1726,7 +1772,7 @@ export default function ReleasingRecords() {
                       aria-readonly="true"
                       className="mt-1.5 w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2.5 text-sm font-normal text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                     />
-                    <span className="mt-1 block text-[10px] font-normal text-slate-500">Automatically updated from the system clock. The exact timestamp is saved when you click Release Document.</span>
+                    <span className="mt-1 block text-[10px] font-normal text-slate-500">Automatically updated from the system clock. The exact timestamp is saved when you confirm this action.</span>
                   </label>
                   <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">Action Done in Unified System
                     <p className="mt-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">Forwarded</p>
@@ -1734,14 +1780,15 @@ export default function ReleasingRecords() {
                   <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">Date Forwarded
                     <p className="mt-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">{releasePanelRecord.next_action_date_forwarded ? formatDateTime(releasePanelRecord.next_action_date_forwarded) : 'Recorded automatically when saved'}</p>
                   </div>
-                </div>
-                {releasePanelRecord.next_action_recorded_by && <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Released by: {releasePanelRecord.next_action_recorded_by_name || 'Name unavailable'}</p>}
+                </div>}
+                {nextActionType === 'file' && <div className="mt-3 rounded-lg border border-amber-200 bg-white p-3 text-sm text-slate-700 dark:border-amber-800 dark:bg-slate-900 dark:text-slate-200">Filing only. This action will not route the paper to another office or person.</div>}
+                {releasePanelRecord.next_action_recorded_by && <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Recorded by: {releasePanelRecord.next_action_recorded_by_name || 'Name unavailable'}</p>}
                 {!releasePanelRecord.release_received_at && <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Confirm physical receipt before releasing this document.</p>}
                 {actionError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:!border-red-800 dark:!bg-red-950/30 dark:!text-red-300">{actionError}</p>}
                 {actionSuccess && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700 dark:!border-emerald-800 dark:!bg-emerald-950/30 dark:!text-emerald-300">{actionSuccess}</p>}
                 {auditLogs.length > 0 && <div className="mt-5 border-t border-slate-200 dark:border-slate-700 pt-4"><h5 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">Edit History / Audit Log</h5><div className="mt-3 space-y-2">{auditLogs.map(log => <div key={log.id} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold text-slate-800 dark:text-slate-200">{log.edited_by_name} · {log.change_type === 'CREATE' ? 'Created Next Action' : 'Edited Next Action'}</span><span className="text-slate-500 dark:text-slate-400">{formatDateTime(log.edited_at)}</span></div>{log.previous_values && log.change_type === 'EDIT' && <p className="mt-2 text-slate-600 dark:text-slate-300">Previous: {String(log.previous_values.office_to_forward || '—')} → {String(log.previous_values.release_to || '—')} ({String(log.previous_values.system_status || '—')}; Forward At: {String(log.previous_values.release_at || '—')})</p>}{log.new_values && <p className="mt-1 text-slate-600 dark:text-slate-300">Saved: {String(log.new_values.office_to_forward || '—')} → {String(log.new_values.release_to || '—')} ({String(log.new_values.system_status || '—')}; Forward At: {String(log.new_values.release_at || '—')})</p>}</div>)}</div></div>}
                 <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
-                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => { setNextActionOffice(releasePanelRecord.next_action_office_to_forward || ''); setNextActionReleaseTo(releasePanelRecord.next_action_release_to || ''); setNextActionReleaseAt(toDateTimeLocalValue(new Date().toISOString())); setActionError(''); setNextActionMode('edit') }} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Saving…' : releasePanelRecord.next_action_release_at ? 'Save Release Changes' : 'Release Document'}</button>}
+                  {releasePanelRecord.next_action_release_at && nextActionMode === 'view' ? <button type="button" onClick={() => { setNextActionType(releasePanelRecord.next_action_system_status?.toLowerCase() === 'for file' ? 'file' : 'forward'); setNextActionOffice(releasePanelRecord.next_action_office_to_forward || ''); setNextActionReleaseTo(releasePanelRecord.next_action_release_to || ''); setNextActionReleaseAt(toDateTimeLocalValue(new Date().toISOString())); setActionError(''); setNextActionMode('edit') }} disabled={!releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">Edit Release</button> : <button type="button" onClick={() => void saveNextAction(releasePanelRecord)} disabled={savingNextAction || !releasePanelRecord.release_received_at} className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">{savingNextAction ? 'Saving…' : releasePanelRecord.next_action_release_at ? 'Save Action Changes' : nextActionType === 'forward' ? 'Forward Document' : 'Mark For File'}</button>}
                   <button type="button" onClick={() => setReleasePanelRecord(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Close Panel</button>
                 </div>
               </div>

@@ -39,8 +39,8 @@ function getFolderDisplayName(
   const rawLabel = name && name.toUpperCase() !== code.toUpperCase() ? name : code
   // Some folder codes/names contain a generated numeric suffix, e.g. DV_MAIN_179317...
   return rawLabel
-    .replace(/\_\d{8,}$/, '')
-    .replace(/\_/g, ' ')
+    .replace(/_\d{8,}$/, '')
+    .replace(/_/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -97,6 +97,7 @@ const initialForm = {
   destinationFolder: '',
   receivingStaff: '',
   urgency: '',
+  status: 'Received',
   receiveTime: '',
   amountPeso: '',
   selectedCodes: [] as string[],
@@ -124,7 +125,7 @@ function generatePresOfficeNumber(): string {
     values,
     value =>
       PRESOFFICE_CHARACTERS[
-        value % PRESOFFICE_CHARACTERS.length
+      value % PRESOFFICE_CHARACTERS.length
       ],
   ).join('')
 }
@@ -222,9 +223,9 @@ export default function Receiving() {
   const selectedFolder = folders.find(
     folder =>
       folder.code.trim().toUpperCase() ===
-        form.destinationFolder.trim().toUpperCase() ||
+      form.destinationFolder.trim().toUpperCase() ||
       folder.name.trim().toUpperCase() ===
-        form.destinationFolder.trim().toUpperCase(),
+      form.destinationFolder.trim().toUpperCase(),
   )
   const selectedFolderLabel = getFolderDisplayName(
     selectedFolder,
@@ -291,20 +292,20 @@ export default function Receiving() {
     return () => window.clearInterval(intervalId)
   }, [])
   function updateField(
-  field: keyof typeof initialForm,
-  value: string | string[],
-) {
-  // Convert every text field to uppercase except Content / Document Description.
-  const normalizedValue =
-    field !== 'content' && typeof value === 'string'
-      ? value.toUpperCase()
-      : value
-  setForm(previous => ({
-    ...previous,
-    [field]: normalizedValue,
-  }))
-  setError('')
-}
+    field: keyof typeof initialForm,
+    value: string | string[],
+  ) {
+    // Convert every text field to uppercase except Content / Document Description.
+    const normalizedValue =
+      field !== 'content' && field !== 'status' && typeof value === 'string'
+        ? value.toUpperCase()
+        : value
+    setForm(previous => ({
+      ...previous,
+      [field]: normalizedValue,
+    }))
+    setError('')
+  }
   async function selectDestination(code: string) {
     updateField('destinationFolder', code)
     setDestinationSearch('')
@@ -501,11 +502,11 @@ export default function Receiving() {
             customFields.map(field => [
               field.id,
               customFieldValues[field.id] ??
-                (field.field_type === 'checkbox' ? false : ''),
+              (field.field_type === 'checkbox' ? false : ''),
             ]),
           ),
           created_by: user.id,
-          status: 'received',
+          status: form.status.trim() || 'Received',
           current_office: destinationCode,
         }
         if (showAdditionalFields) {
@@ -705,9 +706,8 @@ export default function Receiving() {
                 >
                   <ChevronDown
                     size={16}
-                    className={`transition-transform ${
-                      destinationDropdownOpen ? 'rotate-180' : ''
-                    }`}
+                    className={`transition-transform ${destinationDropdownOpen ? 'rotate-180' : ''
+                      }`}
                   />
                 </button>
               </div>
@@ -747,11 +747,10 @@ export default function Receiving() {
                             role="option"
                             aria-selected={form.destinationFolder === code}
                             onClick={() => selectDestination(code)}
-                            className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${
-                              form.destinationFolder === code
+                            className={`w-full px-3 py-2 text-left text-sm transition hover:bg-blue-50 ${form.destinationFolder === code
                                 ? 'bg-blue-50 font-semibold text-blue-700'
                                 : 'text-slate-700'
-                            }`}
+                              }`}
                           >
                             {displayName}
                           </button>
@@ -920,25 +919,38 @@ export default function Receiving() {
                 className={inputClass}
               />
             </label>
-              <label className="text-sm font-semibold">
-                Urgency
-                <span className="ml-2 font-normal text-slate-400">
-                  Optional
-                </span>
-                <select
-                  value={form.urgency}
-                  onChange={event =>
-                    setForm(previous => ({ ...previous, urgency: event.target.value }))
-                  }
-                  className={inputClass}
-                >
-                  <option value="">Leave blank if not urgent</option>
-                  <option value="urgent">Urgent</option>
-                </select>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Choose Urgent only if the document needs priority handling. Otherwise, leave this blank.
-                </span>
-              </label>
+            <label className="text-sm font-semibold">
+              Urgency
+              <span className="ml-2 font-normal text-slate-400">
+                Optional
+              </span>
+              <select
+                value={form.urgency}
+                onChange={event =>
+                  setForm(previous => ({ ...previous, urgency: event.target.value }))
+                }
+                className={inputClass}
+              >
+                <option value="">Leave blank if not urgent</option>
+                <option value="urgent">Urgent</option>
+              </select>
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Choose Urgent only if the document needs priority handling. Otherwise, leave this blank.
+              </span>
+            </label>
+            <label className="text-sm font-semibold">
+              Status
+              <input
+                type="text"
+                value={form.status}
+                onChange={event => updateField('status', event.target.value)}
+                placeholder="Received or enter another status"
+                className={inputClass}
+              />
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Defaults to Received. Enter a different status if the document needs special attention.
+              </span>
+            </label>
             {showLddapFields && (
               <div className="md:col-span-2 xl:col-span-3">
                 <AmountInput
@@ -1088,11 +1100,10 @@ export default function Receiving() {
                 {DOCUMENT_CODES.map(code => (
                   <label
                     key={code}
-                    className={`flex cursor-pointer items-center gap-2 rounded-xl border p-3 text-sm font-semibold transition ${
-                      form.selectedCodes.includes(code)
+                    className={`flex cursor-pointer items-center gap-2 rounded-xl border p-3 text-sm font-semibold transition ${form.selectedCodes.includes(code)
                         ? 'border-blue-600 bg-blue-100 text-blue-950'
                         : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
-                    }`}
+                      }`}
                   >
                     <input
                       type="checkbox"

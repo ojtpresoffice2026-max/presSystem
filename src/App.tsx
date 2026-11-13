@@ -340,18 +340,33 @@ function HeaderProfileButton() {
  */
 function DashboardLayout() {
   const { role } = useAuth()
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
 
   async function handleLogout() {
-    const { error } = await supabase.auth.signOut()
+    if (loggingOut) return
 
-    if (error) {
-      window.alert(`Unable to sign out: ${error.message}`)
-      return
+    setLoggingOut(true)
+
+    try {
+      const { error } = await supabase.auth.signOut()
+
+      if (error) {
+        window.alert(`Unable to sign out: ${error.message}`)
+        return
+      }
+
+      sessionStorage.removeItem('presSystem-allowed-route')
+      sessionStorage.removeItem('presSystem-sidebar-intent')
+      sessionStorage.removeItem('loginWelcome')
+      window.location.replace('/login')
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'An unexpected error occurred.'
+      window.alert(`Unable to sign out: ${message}`)
+    } finally {
+      setLoggingOut(false)
     }
-
-    sessionStorage.removeItem('presSystem-allowed-route')
-    sessionStorage.removeItem('presSystem-sidebar-intent')
-    window.location.replace('/login')
   }
 
   const sharedNavigation = [
@@ -421,14 +436,12 @@ function DashboardLayout() {
         {/* Seasonal decorations are confined to the sidebar. */}
         <SeasonalDecorations />
         {/* Logo and application name */}
-        <div className="relative z-10 mb-10 flex shrink-0 items-center gap-3">
-          <div className="relative h-12 w-12 shrink-0 rounded-xl border border-white/20 bg-white p-1">
-            <img
-              src="/logo.jpg"
-              alt="presSystem logo"
-              className="h-full w-full rounded-lg object-contain"
-            />
-          </div>
+        <div className="relative z-10 mb-10 flex shrink-0 items-center gap-4">
+          <img
+            src="/logo.jpg"
+            alt="presSystem logo"
+            className="h-16 w-16 shrink-0 object-contain drop-shadow-[0_4px_10px_rgba(0,0,0,0.25)] transition-transform duration-300 hover:scale-105"
+          />
 
           <div className="min-w-0">
             <h1 className="text-lg font-bold">OTUP - System</h1>
@@ -473,7 +486,7 @@ function DashboardLayout() {
         <div className="relative z-10 mt-auto shrink-0 border-t border-white/15 pt-5">
           <button
             type="button"
-            onClick={() => void handleLogout()}
+            onClick={() => setShowLogoutConfirm(true)}
             className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm text-blue-100 transition-colors hover:bg-red-600"
           >
             <LogOut size={19} />
@@ -515,6 +528,68 @@ function DashboardLayout() {
           <Outlet />
         </div>
       </main>
+
+      {/* Logout confirmation dialog */}
+      {showLogoutConfirm && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !loggingOut) {
+              setShowLogoutConfirm(false)
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="logout-dialog-title"
+            aria-describedby="logout-dialog-description"
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="p-6">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-red-600">
+                <LogOut size={27} />
+              </div>
+
+              <div className="mt-4 text-center">
+                <h2
+                  id="logout-dialog-title"
+                  className="text-xl font-bold text-slate-900"
+                >
+                  Confirm Logout
+                </h2>
+                <p
+                  id="logout-dialog-description"
+                  className="mt-2 text-sm leading-relaxed text-slate-600"
+                >
+                  Are you sure you want to log out of your account? You will
+                  need to sign in again to access the system.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                disabled={loggingOut}
+                onClick={() => setShowLogoutConfirm(false)}
+                className="rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={loggingOut}
+                onClick={() => void handleLogout()}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 focus:outline-none focus:ring-4 focus:ring-red-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <LogOut size={16} />
+                {loggingOut ? 'Signing out...' : 'Yes, Log Out'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }

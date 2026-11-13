@@ -1,5 +1,4 @@
-﻿
-import { useState, type FormEvent } from 'react'
+﻿import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Eye,
@@ -31,6 +30,7 @@ export default function Login() {
     event.preventDefault()
     setError('')
     setLoading(true)
+    sessionStorage.removeItem('loginWelcome')
 
     let authenticatedUserId: string | null = null
 
@@ -122,14 +122,6 @@ export default function Login() {
         )
       }
 
-      const accountName =
-        profile.full_name?.trim() || 'there'
-
-      sessionStorage.setItem(
-        'loginWelcome',
-        `Welcome, ${accountName}! Have a good day.`
-      )
-
       navigate('/dashboard', { replace: true })
     } catch (err) {
       console.error('Login failed:', err)
@@ -186,20 +178,28 @@ export default function Login() {
             className="pointer-events-none absolute -bottom-20 -left-12 h-64 w-64 rounded-full border-[35px] border-red-500/30"
           />
 
-          <div className="relative z-10 flex items-center gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/30 bg-white p-1">
+          <div className="relative z-10 flex items-center gap-4">
+            <div className="relative flex h-20 w-20 shrink-0 items-center justify-center md:h-24 md:w-24">
+              <div
+                aria-hidden="true"
+                className="absolute inset-1 rounded-full bg-white/15 blur-xl"
+              />
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 rounded-2xl border border-white/25 bg-white/5 shadow-[0_8px_30px_rgba(0,0,0,0.18)]"
+              />
               <img
                 src="/logo.jpg"
                 alt="presSystem logo"
-                className="h-full w-full rounded-xl object-contain"
+                className="relative h-full w-full rounded-2xl object-contain p-1 drop-shadow-[0_8px_12px_rgba(0,0,0,0.3)] transition-transform duration-300 hover:scale-110"
               />
             </div>
 
-            <div>
-              <h1 className="text-2xl font-bold">
-                presSystem
+            <div className="min-w-0">
+              <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+                OTUP - System
               </h1>
-              <p className="text-sm text-blue-100">
+              <p className="mt-1 text-sm font-medium tracking-wide text-blue-100">
                 Management Portal
               </p>
             </div>
@@ -353,6 +353,3 @@ export default function Login() {
     </main>
   )
 }
-
-
-

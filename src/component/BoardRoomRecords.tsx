@@ -29,7 +29,8 @@ type WorkflowStatus =
 
 type WorkflowRecord = {
  id: string
- receiving_record_id: string
+ receiving_record_id: string | null
+ unrecorded_paper_id?: string | null
  transaction_person: string
  storage_type: 'folder' | 'box'
  folder_color: string | null
@@ -74,7 +75,7 @@ type ReceivingRecord = {
  remarks?: string | null
  created_at?: string | null
  urgency?: string | boolean | null
- is_urgent?: boolean | null
+ is_unrecorded_paper?: boolean | null
  custom_field_values?: Record<string, unknown> | null
  [key: string]: unknown
 }
@@ -102,6 +103,24 @@ type ReturnCartItem = {
  workflow_id: string
  remarks: string
  urgency: 'urgent' | 'not_urgent'
+}
+
+type UnrecordedCartItem = {
+ id: string
+ database_id?: string
+ paper_title: string
+ subject_content: string
+ reference_number: string
+ origin_office: string
+ returned_person: string
+ destination_folder: string
+ urgency: 'urgent' | 'not_urgent'
+ remarks: string
+ custom_field_values: Record<string, unknown>
+ destination_fields: DestinationFieldDefinition[]
+ destination_fields_loading: boolean
+ storage_group_id: string
+ is_created: boolean
 }
 
 const statusLabels: Record<WorkflowStatus, string> = {
@@ -210,6 +229,18 @@ function getStorageLabel(workflow: WorkflowRecord) {
  : `Box — ${workflow.box_number || 'Not specified'}`
 }
 
+function isUnrecordedPaper(document: ReceivingRecord | null | undefined) {
+ if (!document) return false
+ const metadata = document.custom_field_values ?? {}
+ return document.is_unrecorded_paper === true
+  || metadata._is_unrecorded_paper === true
+  || String(metadata._record_kind ?? '').trim().toLowerCase().replace(/[ _-]+/g, '') === 'unrecordedpaper'
+}
+
+function getReferenceDisplay(document: ReceivingRecord | null | undefined) {
+ return isUnrecordedPaper(document) ? 'UNRECORDED' : document?.reference_number || 'No reference number'
+}
+
 async function copyDocumentCode(
  value: string | null | undefined,
  cursor?: { clientX: number; clientY: number },
@@ -269,9 +300,11 @@ export default function BoardRoomRecords() {
  const [processing, setProcessing] = useState(false)
  const [error, setError] = useState('')
  const [success, setSuccess] = useState('')
+ const [currentAccountName, setCurrentAccountName] = useState('')
  const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
  const [incomingDocumentsOpen, setIncomingDocumentsOpen] = useState(false)
  const [latestUrgentWorkflowId, setLatestUrgentWorkflowId] = useState<string | null>(null)
+
 
  // Play urgent alerts automatically. If browser autoplay is blocked, retry on
  // the first ordinary click/key press instead of requiring a separate button.
@@ -339,8 +372,13 @@ export default function BoardRoomRecords() {
 
  // Selected documents for a single return transaction.
  const [cart, setCart] = useState<CartItem[]>([])
+ const [documentUrgencyChoices, setDocumentUrgencyChoices] = useState<Record<string, 'urgent' | 'not_urgent'>>({})
+ const [unrecordedCart, setUnrecordedCart] = useState<UnrecordedCartItem[]>([])
  const [cartOpen, setCartOpen] = useState(false)
  const [pickerSearch, setPickerSearch] = useState('')
+ const [, setDestinationFolderOptions] = useState<Array<{ id: string; code: string | null; name: string | null }>>([])
+ const [, setDestinationFoldersLoading] = useState(false)
+ const [, setDestinationFoldersError] = useState('')
 
  // Shared return checkout details.
  const [returnPerson, setReturnPerson] = useState('')
@@ -348,11 +386,10 @@ export default function BoardRoomRecords() {
  const [returnDate, setReturnDate] = useState(getManilaDate)
  const [returnTime, setReturnTime] = useState('')
 
- // Storage settings are shared across the return transaction. Urgency is set per paper.
- const [returnStorageType, setReturnStorageType] =
- useState<'folder' | 'box'>('folder')
- const [returnFolderColor, setReturnFolderColor] = useState('')
- const [returnBoxNumber, setReturnBoxNumber] = useState('')
+ // Storage can be assigned per document through reusable storage groups.
+ const [storageGroups, setStorageGroups] = useState<Array<{ id: string; name: string; storageType: 'folder' | 'box'; folderColor: string; boxNumber: string }>>([{ id: 'storage-group-1', name: 'Storage Group 1', storageType: 'folder', folderColor: '', boxNumber: '' }])
+ const [activeStorageGroupId, setActiveStorageGroupId] = useState('storage-group-1')
+ const [documentStorageGroupIds, setDocumentStorageGroupIds] = useState<Record<string, string>>({})
 
   async function loadDestinationFieldDefinitions(record: ReceivingRecord | null) {
     setDestinationFieldDefinitions([])
@@ -447,29 +484,46 @@ export default function BoardRoomRecords() {
  setAccountNames({})
  }
 
- const receivingIds = [
- ...new Set(workflowRows.map(row => row.receiving_record_id)),
- ]
-
+ const receivingIds = [...new Set(workflowRows.map(row => row.receiving_record_id).filter((id): id is string => Boolean(id)))]
+ const unrecordedIds = [...new Set(workflowRows.map(row => row.unrecorded_paper_id).filter((id): id is string => Boolean(id)))]
  let documents: ReceivingRecord[] = []
 
  if (receivingIds.length > 0) {
- const { data, error: documentError } = await supabase
- .from('receiving_records')
- .select('*')
- .in('id', receivingIds)
-
- if (documentError) throw documentError
- documents = (data ?? []) as ReceivingRecord[]
+  const { data, error: documentError } = await supabase
+   .from('receiving_records').select('*').in('id', receivingIds)
+  if (documentError) throw documentError
+  documents = (data ?? []) as ReceivingRecord[]
  }
 
- const documentMap = new Map(
- documents.map(document => [document.id, document]),
- )
+ if (unrecordedIds.length > 0) {
+  const { data, error: unrecordedError } = await supabase
+   .from('unrecorded_papers').select('*').in('id', unrecordedIds)
+  if (unrecordedError) throw unrecordedError
+  const unrecordedDocuments = (data ?? []).map((paper: any) => ({
+   id: paper.id,
+   reference_number: paper.reference_number,
+   record_type: 'Other',
+   subject: paper.subject,
+   content: paper.content,
+   sender: paper.sender,
+   bearer: paper.bearer,
+   origin_office: paper.origin_office,
+   current_office: paper.current_office,
+   destination_folder: paper.destination_folder,
+   date_received: paper.date_received,
+   status: paper.status,
+   remarks: paper.remarks,
+   urgency: paper.urgency,
+   is_unrecorded_paper: true,
+   custom_field_values: { ...(paper.custom_field_values ?? {}), _is_unrecorded_paper: true, _record_kind: 'unrecorded_paper' },
+  })) as ReceivingRecord[]
+  documents = [...documents, ...unrecordedDocuments]
+ }
 
+ const documentMap = new Map(documents.map(document => [document.id, document]))
  const combined: DisplayRecord[] = workflowRows.map(workflow => ({
- workflow,
- document: documentMap.get(workflow.receiving_record_id) ?? null,
+  workflow,
+  document: documentMap.get(workflow.unrecorded_paper_id || workflow.receiving_record_id || '') ?? null,
  }))
 
  setRecords(combined)
@@ -502,6 +556,30 @@ export default function BoardRoomRecords() {
  useEffect(() => {
  void loadRecords()
  }, [loadRecords])
+
+ // Load the complete configured folder list instead of relying on a hardcoded list.
+ useEffect(() => {
+  let active = true
+  const loadDestinationFolders = async () => {
+   setDestinationFoldersLoading(true)
+   setDestinationFoldersError('')
+   try {
+    const { data, error: foldersError } = await supabase
+     .from('office_folders')
+     .select('id, code, name')
+     .order('name', { ascending: true })
+    if (foldersError) throw foldersError
+    if (active) setDestinationFolderOptions((data ?? []) as Array<{ id: string; code: string | null; name: string | null }>)
+   } catch (loadError) {
+    if (active) setDestinationFoldersError(getErrorMessage(loadError))
+    console.error('Unable to load destination folders:', loadError)
+   } finally {
+    if (active) setDestinationFoldersLoading(false)
+   }
+  }
+  void loadDestinationFolders()
+  return () => { active = false }
+ }, [])
 
  // Listen for newly forwarded urgent papers so the Board Room updates without
  // requiring staff to press Refresh.
@@ -583,11 +661,22 @@ export default function BoardRoomRecords() {
  const selected =
  records.find(row => row.workflow.id === selectedId) ?? null
 
- const returnableRecords = useMemo(
- () =>
- records.filter(isReadyToReturn),
- [records],
- )
+ const returnableRecords = useMemo(() => {
+  // A paper may have legacy/duplicate workflow rows. Once ANY transaction for
+  // that same paper has been returned or completed, never offer it for return again.
+  const processedDocumentIds = new Set(
+   records
+    .filter(row => ['returned_to_origin', 'completed'].includes(row.workflow.workflow_status))
+    .map(row => row.workflow.unrecorded_paper_id || row.workflow.receiving_record_id)
+    .filter((id): id is string => Boolean(id)),
+  )
+
+  return records.filter(row => {
+   if (!isReadyToReturn(row)) return false
+   const documentId = row.workflow.unrecorded_paper_id || row.workflow.receiving_record_id
+   return !documentId || !processedDocumentIds.has(documentId)
+  })
+ }, [records])
 
  const cartRecords = useMemo(
  () =>
@@ -597,14 +686,18 @@ export default function BoardRoomRecords() {
  record => record.workflow.id === item.workflowId,
  )
 
- return row ? { ...row, cartRemarks: item.remarks, cartUrgency: item.urgency } : null
+ const storageGroupId = documentStorageGroupIds[item.workflowId] || activeStorageGroupId
+ const storageGroup = storageGroups.find(group => group.id === storageGroupId)
+ return row ? { ...row, cartRemarks: item.remarks, cartUrgency: item.urgency, cartStorageGroupId: storageGroupId, cartStorageGroup: storageGroup } : null
  })
  .filter(
- (row): row is DisplayRecord & { cartRemarks: string; cartUrgency: 'urgent' | 'not_urgent' } =>
+ (row): row is DisplayRecord & { cartRemarks: string; cartUrgency: 'urgent' | 'not_urgent'; cartStorageGroupId: string; cartStorageGroup: { id: string; name: string; storageType: 'folder' | 'box'; folderColor: string; boxNumber: string } | undefined } =>
  row !== null,
  ),
- [cart, returnableRecords],
+ [cart, returnableRecords, documentStorageGroupIds, activeStorageGroupId, storageGroups],
  )
+
+ const totalReturnItems = cartRecords.length + unrecordedCart.length
 
  const filteredReturnableRecords = useMemo(() => {
  const query = pickerSearch.trim().toLowerCase()
@@ -743,8 +836,24 @@ export default function BoardRoomRecords() {
     }
    }
 
+   // Update the visible row locally instead of reloading every workflow,
+   // profile, and receiving record after a single receipt confirmation.
+   const confirmedAt = new Date().toISOString()
+   setRecords(current => current.map(row => row.workflow.id === workflowId
+    ? {
+       ...row,
+       workflow: {
+        ...row.workflow,
+        workflow_status: 'action_completed',
+        president_action_status: 'completed',
+        president_action_completed_at: confirmedAt,
+        president_action_completed_by: authData.user!.id,
+        board_room_received_at: row.workflow.board_room_received_at || confirmedAt,
+        board_room_received_by: row.workflow.board_room_received_by || authData.user!.id,
+       },
+      }
+    : row))
    setSuccess('Receipt confirmed. The document is now Ready to return.')
-   await loadRecords()
   } catch (actionError) {
    setError(getErrorMessage(actionError))
   } finally {
@@ -760,22 +869,71 @@ export default function BoardRoomRecords() {
  setCartOpen(true)
  }
 
+ function hasValidActiveStorageGroup() {
+  const group = storageGroups.find(item => item.id === activeStorageGroupId)
+  if (!group) return false
+  return group.storageType === 'folder'
+   ? Boolean(group.folderColor.trim())
+   : Boolean(group.boxNumber.trim())
+ }
+
  function addToCart(workflowId: string) {
+ if (!hasValidActiveStorageGroup()) {
+  setError('Choose a storage type and complete its folder color or box number before selecting documents.')
+  return
+ }
  setCart(current => {
  if (current.some(item => item.workflowId === workflowId)) {
  return current
  }
 
- return [...current, { workflowId, remarks: '', urgency: 'not_urgent' }]
+ return [...current, { workflowId, remarks: '', urgency: documentUrgencyChoices[workflowId] || 'not_urgent' }]
  })
-
+ setDocumentStorageGroupIds(current => ({ ...current, [workflowId]: activeStorageGroupId }))
  setSuccess('')
  }
 
  function removeFromCart(workflowId: string) {
- setCart(current =>
- current.filter(item => item.workflowId !== workflowId),
- )
+ setCart(current => current.filter(item => item.workflowId !== workflowId))
+ setDocumentStorageGroupIds(current => { const next = { ...current }; delete next[workflowId]; return next })
+ }
+
+ function addStorageGroup() {
+ const id = `storage-group-${crypto.randomUUID()}`
+ setStorageGroups(current => [...current, { id, name: `Storage Group ${current.length + 1}`, storageType: 'folder', folderColor: '', boxNumber: '' }])
+ setActiveStorageGroupId(id)
+ }
+
+ function getStorageGroupKey(group: { storageType: 'folder' | 'box'; folderColor: string; boxNumber: string }) {
+  if (group.storageType === 'folder') {
+   const color = group.folderColor.trim().toLowerCase()
+   return color ? `folder:${color}` : ''
+  }
+  const box = group.boxNumber.trim().toLowerCase().replace(/\s+/g, ' ')
+  return box ? `box:${box}` : ''
+ }
+
+ function updateStorageGroup(groupId: string, patch: Partial<{ storageType: 'folder' | 'box'; folderColor: string; boxNumber: string }>) {
+  const currentGroup = storageGroups.find(group => group.id === groupId)
+  if (!currentGroup) return
+  const updatedGroup = { ...currentGroup, ...patch }
+  const updatedKey = getStorageGroupKey(updatedGroup)
+  const matchingGroup = updatedKey ? storageGroups.find(group => group.id !== groupId && getStorageGroupKey(group) === updatedKey) : undefined
+  if (matchingGroup) {
+   setStorageGroups(current => current.filter(group => group.id !== groupId))
+   setDocumentStorageGroupIds(current => {
+    const next = { ...current }
+    Object.keys(next).forEach(documentId => { if (next[documentId] === groupId) next[documentId] = matchingGroup.id })
+    return next
+   })
+   setActiveStorageGroupId(matchingGroup.id)
+   return
+  }
+  setStorageGroups(current => current.map(group => group.id === groupId ? updatedGroup : group))
+ }
+
+ function assignDocumentStorage(workflowId: string, groupId: string) {
+ setDocumentStorageGroupIds(current => ({ ...current, [workflowId]: groupId }))
  }
 
  function updateCartRemarks(workflowId: string, remarks: string) {
@@ -787,11 +945,142 @@ export default function BoardRoomRecords() {
  }
 
  function updateCartUrgency(workflowId: string, urgency: 'urgent' | 'not_urgent') {
+ setDocumentUrgencyChoices(current => ({ ...current, [workflowId]: urgency }))
  setCart(current =>
  current.map(item =>
  item.workflowId === workflowId ? { ...item, urgency } : item,
  ),
  )
+ }
+
+ function addUnrecordedPaper() {
+  setUnrecordedCart(current => [...current, {
+   id: crypto.randomUUID(),
+   paper_title: '',
+   subject_content: '',
+   reference_number: '',
+   origin_office: '',
+   returned_person: currentAccountName,
+   destination_folder: '',
+   urgency: 'not_urgent',
+   remarks: '',
+   custom_field_values: {},
+   destination_fields: [],
+   destination_fields_loading: false,
+   storage_group_id: activeStorageGroupId,
+   is_created: false,
+  }])
+ }
+
+ 
+ 
+ function updateUnrecordedPaper(id: string, field: keyof Omit<UnrecordedCartItem, 'id'>, value: string) {
+  const normalizedValue = field === 'urgency' || field === 'storage_group_id' ? value : value.toUpperCase()
+  setUnrecordedCart(current => current.map(item => item.id === id ? ({ ...item, [field]: normalizedValue } as UnrecordedCartItem) : item))
+ }
+
+ async function createUnrecordedPaper(id: string) {
+  const paper = unrecordedCart.find(item => item.id === id)
+  if (!paper || paper.is_created) return
+  if (!paper.subject_content.trim()) {
+   setError('Enter the content before creating this unrecorded paper.')
+   return
+  }
+  const storageGroup = storageGroups.find(group => group.id === paper.storage_group_id)
+  if (!storageGroup || (storageGroup.storageType === 'folder' ? !storageGroup.folderColor.trim() : !storageGroup.boxNumber.trim())) {
+   setError('Choose a complete folder or box storage location for this unrecorded paper.')
+   return
+  }
+
+  setProcessing(true)
+  setError('')
+  setSuccess('')
+  try {
+   const { data: authData, error: authError } = await supabase.auth.getUser()
+   if (authError) throw authError
+   if (!authData.user) throw new Error('Your session has expired. Please sign in again.')
+   const { data: profile, error: profileError } = await supabase
+    .from('profiles').select('full_name').eq('id', authData.user.id).maybeSingle()
+   if (profileError) throw profileError
+   const receivingStaff = profile?.full_name?.trim()
+    || String(authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || authData.user.email || 'Unknown account')
+   setCurrentAccountName(receivingStaff)
+   const subjectContent = paper.subject_content.trim().toUpperCase()
+   const now = new Date()
+   const dateReceived = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+   }).format(now)
+   const storageType = storageGroup.storageType
+   const folderColor = storageType === 'folder' ? storageGroup.folderColor.trim() : null
+   const boxNumber = storageType === 'box' ? storageGroup.boxNumber.trim() : null
+   const { data: insertedPaper, error: insertError } = await supabase.from('unrecorded_papers').insert({
+    reference_number: null,
+    subject: subjectContent,
+    content: subjectContent,
+    sender: receivingStaff.trim().toUpperCase() || 'UNRECORDED PAPER',
+    bearer: receivingStaff.trim().toUpperCase() || 'UNRECORDED PAPER',
+    origin_office: null,
+    destination_folder: null,
+    current_office: null,
+    received_at: now.toISOString(),
+    date_received: dateReceived,
+    status: 'returned_to_origin',
+    remarks: null,
+    urgency: paper.urgency === 'urgent' ? 'urgent' : 'not_urgent',
+    created_by: authData.user.id,
+    custom_field_values: {
+     _record_kind: 'UNRECORDED PAPER',
+     _is_unrecorded_paper: true,
+     _created_by_name: receivingStaff.toUpperCase(),
+     _storage_group_name: storageGroup.name,
+     _storage_type: storageType,
+     _folder_color: folderColor,
+     _box_number: boxNumber,
+     _urgency: paper.urgency,
+     _source: 'board_room_return',
+    },
+   }).select('id').single()
+   if (insertError) throw insertError
+   if (!insertedPaper?.id) throw new Error('The saved paper ID could not be retrieved.')
+
+   setUnrecordedCart(current => current.map(item => item.id === id
+    ? { ...item, is_created: true, database_id: insertedPaper.id }
+    : item))
+   setSuccess('Unrecorded paper saved successfully with its urgency and storage location.')
+  } catch (createError) {
+   setError(`Unable to create unrecorded paper: ${getErrorMessage(createError)}`)
+  } finally {
+   setProcessing(false)
+  }
+ }
+
+ async function removeUnrecordedPaper(id: string) {
+  const paper = unrecordedCart.find(item => item.id === id)
+  if (paper?.is_created && paper.database_id) {
+   setProcessing(true)
+   setError('')
+   try {
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    if (authError) throw authError
+    if (!authData.user) throw new Error('Your session has expired. Please sign in again.')
+    const { data: deletedRows, error: deleteError } = await supabase
+     .from('unrecorded_papers')
+     .delete()
+     .eq('id', paper.database_id)
+     .eq('created_by', authData.user.id)
+     .eq('status', 'returned_to_origin')
+     .filter('custom_field_values->>_source', 'eq', 'board_room_return')
+     .select('id')
+    if (deleteError) throw deleteError
+    if (!deletedRows?.length) throw new Error('The paper was not deleted. Confirm the Board Room unrecorded-paper DELETE policy is installed and that the paper is still unprocessed.')
+   } catch (deleteError) {
+    setError(`Unable to remove unrecorded paper: ${getErrorMessage(deleteError)}`)
+    return
+   } finally {
+    setProcessing(false)
+   }
+  }
+  setUnrecordedCart(current => current.filter(item => item.id !== id))
  }
 
  function toggleAllVisibleDocuments() {
@@ -812,20 +1101,56 @@ export default function BoardRoomRecords() {
  return
  }
 
+ if (!hasValidActiveStorageGroup()) {
+  setError('Choose a storage type and complete its folder color or box number before selecting documents.')
+  return
+ }
+
  setCart(current => {
  const existingIds = new Set(current.map(item => item.workflowId))
  const additions = visibleIds
  .filter(id => !existingIds.has(id))
- .map(workflowId => ({ workflowId, remarks: '', urgency: 'not_urgent' as const }))
+ .map(workflowId => ({ workflowId, remarks: '', urgency: documentUrgencyChoices[workflowId] || 'not_urgent' as const }))
 
  return [...current, ...additions]
  })
+ setDocumentStorageGroupIds(current => { const next = { ...current }; visibleIds.forEach(id => { if (!cart.some(item => item.workflowId === id)) next[id] = activeStorageGroupId }); return next })
  }
 
- function closeCheckout() {
- if (processing) return
+ async function closeCheckout() {
+  if (processing) return
+  const createdDraftIds = unrecordedCart
+   .filter(paper => paper.is_created && paper.database_id)
+   .map(paper => paper.database_id as string)
 
- setCartOpen(false)
+  // Cancel the UI immediately; remove only this user's unprocessed Board Room
+  // unrecorded-paper drafts afterward. The DELETE policy must allow this status.
+  setCartOpen(false)
+  setCart([])
+  setUnrecordedCart([])
+  setDocumentStorageGroupIds({})
+  setError('')
+
+  if (createdDraftIds.length === 0) return
+  try {
+   const { data: authData, error: authError } = await supabase.auth.getUser()
+   if (authError) throw authError
+   if (!authData.user) throw new Error('Your session has expired. Sign in again to clean up cancelled papers.')
+   const { data: deletedRows, error: deleteError } = await supabase
+    .from('unrecorded_papers')
+    .delete()
+    .in('id', createdDraftIds)
+    .eq('created_by', authData.user.id)
+    .eq('status', 'returned_to_origin')
+    .filter('custom_field_values->>_source', 'eq', 'board_room_return')
+    .select('id')
+   if (deleteError) throw deleteError
+   if ((deletedRows ?? []).length !== createdDraftIds.length) {
+    throw new Error('Some cancelled papers remain in the database. Confirm the Board Room unrecorded-paper DELETE policy is installed and that the papers are still unprocessed.')
+   }
+  } catch (cleanupError) {
+   setError(`Checkout was cancelled, but cleanup failed: ${getErrorMessage(cleanupError)}`)
+  }
  }
 
  async function submitReturn(event: FormEvent<HTMLFormElement>) {
@@ -836,29 +1161,35 @@ export default function BoardRoomRecords() {
  setError('')
  setSuccess('')
 
- if (cartRecords.length === 0) {
- setError('Select at least one document to return.')
+ if (totalReturnItems === 0) {
+ setError('Select a recorded document or add an unrecorded paper to return.')
  return
  }
 
- if (!returnPerson.trim()) {
- setError('Enter the person returning the documents.')
+ // Existing workflow records retain their established return requirements.
+ // Unrecorded papers can be submitted with every descriptive field left blank.
+ if (cartRecords.length > 0 && !returnPerson.trim()) {
+ setError('Enter the person returning the recorded documents.')
  return
  }
 
- if (!returnDate || !returnTime) {
- setError('Return date and actual return time are required.')
+ if (unrecordedCart.some(paper => !paper.is_created && !paper.subject_content.trim())) {
+  setError('Enter the subject/content for each unrecorded paper.')
+  return
+ }
+
+ if (cartRecords.length > 0 && (!returnDate || !returnTime)) {
+ setError('Return date and actual return time are required for recorded documents.')
  return
  }
 
- if (returnStorageType === 'folder' && !returnFolderColor.trim()) {
- setError('Select a folder color for the returned documents.')
- return
- }
-
- if (returnStorageType === 'box' && !returnBoxNumber.trim()) {
- setError('Enter a box number for the returned documents.')
- return
+ const missingStorage = cartRecords.find(row => {
+  const group = row.cartStorageGroup
+  return !group || (group.storageType === 'folder' ? !group.folderColor.trim() : !group.boxNumber.trim())
+ })
+ if (missingStorage) {
+  setError(`Complete the storage location for ${missingStorage.document?.reference_number || 'each selected document'}.`)
+  return
  }
 
  const items: ReturnCartItem[] = cartRecords.map(row => ({
@@ -867,10 +1198,20 @@ export default function BoardRoomRecords() {
   urgency: row.cartUrgency,
 }))
 
- // Re-check readiness immediately before submitting the return transaction.
- if (cartRecords.some(row => !isReadyToReturn(row))) {
- setError('Only documents confirmed as received by the Board Room can be returned to their originating offices. Reload the page and try again.')
- return
+ // Re-check readiness and transaction history immediately before submitting.
+ const alreadyReturnedDocumentIds = new Set(
+  records
+   .filter(row => ['returned_to_origin', 'completed'].includes(row.workflow.workflow_status))
+   .map(row => row.workflow.unrecorded_paper_id || row.workflow.receiving_record_id)
+   .filter((id): id is string => Boolean(id)),
+ )
+ const alreadyReturnedSelection = cartRecords.some(row => {
+  const documentId = row.workflow.unrecorded_paper_id || row.workflow.receiving_record_id
+  return !isReadyToReturn(row) || Boolean(documentId && alreadyReturnedDocumentIds.has(documentId))
+ })
+ if (alreadyReturnedSelection) {
+  setError('This paper has already been returned or completed in a previous transaction. It cannot be returned again. Refresh the records and select an eligible paper.')
+  return
  }
 
  setProcessing(true)
@@ -906,6 +1247,9 @@ export default function BoardRoomRecords() {
   if (normalizeError) throw normalizeError
  }
 
+ let returnedCount = 0
+
+ if (cartRecords.length > 0) {
  const { data, error: rpcError } = await supabase.rpc(
  'board_room_return_documents',
  {
@@ -914,11 +1258,9 @@ export default function BoardRoomRecords() {
  p_shared_remarks: sharedReturnRemarks.trim() || null,
  p_return_date: returnDate,
  p_return_time: returnTime,
- p_storage_type: returnStorageType,
- p_folder_color:
- returnStorageType === 'folder' ? returnFolderColor.trim() : null,
- p_box_number:
- returnStorageType === 'box' ? returnBoxNumber.trim() : null,
+ p_storage_type: cartRecords[0]?.cartStorageGroup?.storageType || 'folder',
+ p_folder_color: cartRecords[0]?.cartStorageGroup?.storageType === 'folder' ? cartRecords[0].cartStorageGroup.folderColor.trim() : null,
+ p_box_number: cartRecords[0]?.cartStorageGroup?.storageType === 'box' ? cartRecords[0].cartStorageGroup.boxNumber.trim() : null,
  // Keep the RPC's legacy shared value at Not Urgent; per-document urgency
  // is applied immediately after the return transaction succeeds.
  p_urgency: 'not_urgent',
@@ -927,33 +1269,49 @@ export default function BoardRoomRecords() {
 
  if (rpcError) throw rpcError
 
- // Apply each paper's own urgency so a single return transaction can contain
- // both Urgent and Not Urgent documents. The RPC marks the selected papers
- // as returned; this follow-up preserves the per-paper urgency choices.
+ // Preserve each document's individual urgency and storage location after
+ // the single Board Room return RPC has completed the transaction.
  for (const row of cartRecords) {
-  const { error: urgencyError } = await supabase
+  const group = row.cartStorageGroup!
+  const { error: updateError } = await supabase
    .from('document_workflow')
-   .update({ urgency: row.cartUrgency })
+   .update({
+    urgency: row.cartUrgency,
+    storage_type: group.storageType,
+    folder_color: group.storageType === 'folder' ? group.folderColor.trim() : null,
+    box_number: group.storageType === 'box' ? group.boxNumber.trim() : null,
+   })
    .eq('id', row.workflow.id)
    .eq('workflow_status', 'returned_to_origin')
-  if (urgencyError) throw urgencyError
+  if (updateError) throw updateError
  }
 
- const returnedCount = Number(data ?? items.length)
+ returnedCount += Number(data ?? items.length)
+ }
+
+ // Unrecorded papers are created individually using the Create Paper button.
+ // Do not insert them again during the final return transaction.
+ if (unrecordedCart.length > 0) returnedCount += unrecordedCart.length
 
  setCart([])
+ setDocumentStorageGroupIds({})
+ setStorageGroups([{ id: 'storage-group-1', name: 'Storage Group 1', storageType: 'folder', folderColor: '', boxNumber: '' }])
+ setActiveStorageGroupId('storage-group-1')
+ setUnrecordedCart([])
  setCartOpen(false)
  setPickerSearch('')
  setReturnPerson('')
  setSharedReturnRemarks('')
  setReturnDate(getManilaDate())
  setReturnTime('')
- setReturnStorageType('folder')
- setReturnFolderColor('')
- setReturnBoxNumber('')
+ setStorageGroups([{ id: 'storage-group-1', name: 'Storage Group 1', storageType: 'folder', folderColor: '', boxNumber: '' }])
+ setActiveStorageGroupId('storage-group-1')
+ setDocumentStorageGroupIds({})
 
  setSuccess(
- `${returnedCount} document(s) returned to their originating offices successfully.`,
+ unrecordedCart.length > 0
+  ? `${returnedCount} paper(s) returned successfully.`
+  : `${returnedCount} paper(s) returned successfully.`,
  )
 
  await loadRecords()
@@ -1008,7 +1366,7 @@ export default function BoardRoomRecords() {
  <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
  {urgentIncomingRecords.map(({ workflow, document }) => (
  <button type="button" key={workflow.id} onClick={() => { setSelectedId(workflow.id); setUrgentNotificationsOpen(false) }} className="block w-full px-4 py-3 text-left transition-colors hover:bg-red-50">
- <div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</span><span className="shrink-0 rounded-full bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700">URGENT</span></div>
+ <div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{getReferenceDisplay(document)}</span><span className="shrink-0 rounded-full bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700">URGENT</span></div>
  <p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p>
  <p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p>
  </button>
@@ -1030,7 +1388,7 @@ export default function BoardRoomRecords() {
  <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3"><div><h3 className="font-bold text-slate-900">Incoming Documents</h3><p className="text-xs text-slate-500">{incomingRecords.length} forwarded to the Board Room · awaiting receipt</p></div><button type="button" onClick={() => setIncomingDocumentsOpen(false)} aria-label="Close incoming documents" className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100"><X size={16} /></button></div>
  {incomingRecords.length === 0 ? <div className="px-4 py-7 text-center text-sm text-slate-500">No incoming documents are waiting for receipt.</div> : (
  <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">{incomingRecords.map(({ workflow, document }) => (
- <button type="button" key={workflow.id} onClick={() => { setSelectedId(workflow.id); setIncomingDocumentsOpen(false) }} className="block w-full px-4 py-3 text-left transition-colors hover:bg-blue-50"><div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{document?.reference_number || 'No reference number'}</span><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${workflow.urgency === 'urgent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{workflow.urgency === 'urgent' ? 'URGENT' : 'NOT URGENT'}</span></div><p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p><p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p></button>
+ <button type="button" key={workflow.id} onClick={() => { setSelectedId(workflow.id); setIncomingDocumentsOpen(false) }} className="block w-full px-4 py-3 text-left transition-colors hover:bg-blue-50"><div className="flex items-start justify-between gap-2"><span className="break-words text-sm font-semibold text-slate-900">{getReferenceDisplay(document)}</span><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${workflow.urgency === 'urgent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{workflow.urgency === 'urgent' ? 'URGENT' : 'NOT URGENT'}</span></div><p className="mt-1 line-clamp-2 text-xs text-slate-600">{document?.subject || document?.content || 'No subject provided'}</p><p className="mt-1 text-[11px] text-slate-500">Forwarded {formatDateTime(workflow.forwarded_at)}</p></button>
  ))}</div>
  )}
  </div>
@@ -1047,7 +1405,7 @@ export default function BoardRoomRecords() {
  <div className="min-w-0 flex-1">
  <p className="font-bold">Urgent paper forwarded to the Board Room</p>
  <p className="mt-1 break-words">
- {latestUrgentRecord.document?.reference_number || 'No reference number'} — {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
+ {getReferenceDisplay(latestUrgentRecord.document)} — {latestUrgentRecord.document?.subject || latestUrgentRecord.document?.content || 'No subject provided'}
  </p>
  <p className="mt-1 text-xs text-red-700">Please prioritize this paper and confirm receipt.</p>
  </div>
@@ -1183,9 +1541,13 @@ export default function BoardRoomRecords() {
  {(currentPage - 1) * pageSize + index + 1}
  </td>
  <td className="min-w-[170px] px-5 py-4">
+ {isUnrecordedPaper(document) ? (
+ <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-800">UNRECORDED</span>
+ ) : (
  <button type="button" onClick={(event) => { event.stopPropagation(); void copyDocumentCode(document?.reference_number, event) }} title="Click to copy reference number" className="break-words text-left font-semibold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline">
- {document?.reference_number || 'No reference number'}
+ {getReferenceDisplay(document)}
  </button>
+ )}
  </td>
 
  <td className="min-w-[240px] max-w-[360px] px-5 py-4">
@@ -1329,8 +1691,8 @@ export default function BoardRoomRecords() {
  onClick={() => void receiveDocument(workflow.id)}
  className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-green-800 disabled:opacity-50"
  >
- {processing ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
- Confirm Receipt
+ <CheckCircle2 size={14} />
+ {processing ? 'Confirming...' : 'Confirm Receipt'}
  </button>
  )}
 
@@ -1416,8 +1778,9 @@ export default function BoardRoomRecords() {
  title="Click to copy reference number"
  className="mt-1 block text-left text-xl font-bold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline"
  >
- {selected.document?.reference_number || 'No reference number'}
+ {getReferenceDisplay(selected.document)}
  </button>
+ {selected.document?.is_unrecorded_paper === true && <span className="mt-2 inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase text-amber-800">UNRECORDED PAPER</span>}
  <div className="mt-3 flex flex-wrap gap-2">
  <span
  className={`rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[selected.workflow.workflow_status]}`}
@@ -1465,7 +1828,7 @@ export default function BoardRoomRecords() {
    { label: 'Content / Subject', value: selected.document?.content || selected.document?.subject },
    { label: 'Bearer / Sender', value: selected.document?.bearer || selected.document?.sender },
    { label: 'Inputted by', value: selected.document?.receiving_staff },
-   { label: 'Urgency', value: selected.document?.is_urgent === true || (typeof selected.document?.urgency === 'string' && ['urgent', 'high', 'yes', 'true'].includes(selected.document.urgency.trim().toLowerCase())) ? 'Urgent' : '' },
+   { label: 'Urgency', value: (typeof selected.document?.urgency === 'string' && ['urgent', 'high', 'yes', 'true'].includes(selected.document.urgency.trim().toLowerCase())) ? 'Urgent' : '' },
    { label: 'Destination Folder', value: formatDestinationName(selected.document?.destination_folder || selected.document?.current_office) },
    { label: 'Date / Time Received', value: selected.document?.received_at ? formatDateTime(selected.document.received_at) : formatDateOnly(selected.document?.date_received) },
    { label: 'Status', value: selected.document?.status },
@@ -1521,12 +1884,15 @@ export default function BoardRoomRecords() {
  )}
  {/* Return documents form */}
  {cartOpen && (
- <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
+ <div
+  className="fixed inset-0 z-[80] flex items-center justify-center overflow-hidden bg-slate-950/60 p-2 backdrop-blur-sm sm:p-4"
+  onMouseDown={event => { if (event.target === event.currentTarget) closeCheckout() }}
+ >
  <section
  role="dialog"
  aria-modal="true"
  aria-labelledby="return-documents-title"
- className="my-auto w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+ className="flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/70 bg-white shadow-2xl sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)]"
  >
  <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
  <div>
@@ -1539,11 +1905,11 @@ export default function BoardRoomRecords() {
  Return Documents
  </h2>
  <span className="rounded-full bg-blue-700 px-2.5 py-1 text-xs font-bold text-white">
- {cartRecords.length}
+ {totalReturnItems}
  </span>
  </div>
  <p className="mt-1 text-sm text-slate-500">
- Select eligible documents, add remarks to each paper, and complete the return details below.
+Select recorded documents or add an unrecorded paper. Unrecorded papers become normal Receiving Records when returned.
  </p>
  </div>
 
@@ -1558,12 +1924,33 @@ export default function BoardRoomRecords() {
  </button>
  </div>
 
- <form onSubmit={submitReturn} className="space-y-5 p-5 sm:p-6">
+ <form onSubmit={submitReturn} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6 lg:p-7">
+ {/* Per-document storage groups */}
+ <div className="border-t border-slate-200 pt-5">
+  <div className="flex flex-wrap items-center justify-between gap-3">
+   <div><h3 className="text-sm font-bold text-slate-900">Storage Groups</h3><p className="mt-1 text-xs text-slate-500">Create multiple folder or box locations, then assign each recorded document to its correct storage group.</p></div>
+   <button type="button" onClick={addStorageGroup} disabled={processing} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50">+ Add Storage Group</button>
+  </div>
+  <div className="mt-3 flex flex-wrap gap-2">
+   {storageGroups.map((group, index) => <button key={group.id} type="button" onClick={() => setActiveStorageGroupId(group.id)} className={`rounded-lg border px-3 py-2 text-left text-xs ${activeStorageGroupId === group.id ? 'border-blue-600 bg-blue-50 ring-1 ring-blue-200' : 'border-slate-200 bg-white'}`}><span className="block font-bold">{group.name || `Storage Group ${index + 1}`}</span><span className="text-slate-500">{group.storageType === 'folder' ? `Folder: ${group.folderColor || 'Choose color'}` : `Box: ${group.boxNumber || 'Enter number'}`}</span></button>)}
+  </div>
+  {storageGroups.find(group => group.id === activeStorageGroupId) && (() => { const group = storageGroups.find(item => item.id === activeStorageGroupId)!; return <div className="mt-3 grid grid-cols-1 gap-3 rounded-lg border border-blue-100 bg-blue-50/50 p-3 sm:grid-cols-2">
+   <label className="block"><span className="text-xs font-semibold text-slate-600">Storage Type</span><select value={group.storageType} onChange={event => updateStorageGroup(group.id, { storageType: event.target.value as 'folder' | 'box', folderColor: '', boxNumber: '' })} className={inputClass}><option value="folder">Folder (Color)</option><option value="box">Box (Number)</option></select></label>
+   {group.storageType === 'folder' ? <label className="block"><span className="text-xs font-semibold text-slate-600">Folder Color</span><select value={group.folderColor} onChange={event => updateStorageGroup(group.id, { folderColor: event.target.value })} className={inputClass}><option value="">Select folder color...</option>{['Red','Blue','Green','Light Blue','Orange','White'].map(color => <option key={color} value={color}>{color}</option>)}</select></label> : <label className="block"><span className="text-xs font-semibold text-slate-600">Box Number</span><input value={group.boxNumber} onChange={event => updateStorageGroup(group.id, { boxNumber: event.target.value })} placeholder="Enter box number" className={inputClass} /></label>}
+  </div> })()}
+ </div>
+
+
  {/* Search and select documents */}
  <div>
  <label className="mb-2 block text-xs font-semibold text-slate-600">
- Documents to Return *
+ Recorded Documents (Optional if adding unrecorded papers)
  </label>
+ {hasValidActiveStorageGroup() ? (
+  <p className="mb-2 text-xs text-emerald-700">Active storage: {storageGroups.find(group => group.id === activeStorageGroupId)?.storageType === 'folder' ? `Folder — ${storageGroups.find(group => group.id === activeStorageGroupId)?.folderColor}` : `Box — ${storageGroups.find(group => group.id === activeStorageGroupId)?.boxNumber}`}. Newly selected documents will use this storage group. You can assign a different group to each document afterward.</p>
+ ) : (
+  <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">Choose and complete a storage group above before selecting recorded documents.</p>
+ )}
 
  <div className="relative">
  <Search
@@ -1592,7 +1979,7 @@ export default function BoardRoomRecords() {
 
  <button
  type="button"
- disabled={filteredReturnableRecords.length === 0}
+ disabled={filteredReturnableRecords.length === 0 || (!hasValidActiveStorageGroup() && !filteredReturnableRecords.every(row => cart.some(item => item.workflowId === row.workflow.id)))}
  onClick={toggleAllVisibleDocuments}
  className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 disabled:opacity-50"
  >
@@ -1605,7 +1992,7 @@ export default function BoardRoomRecords() {
  </button>
  </div>
 
- <div className="max-h-48 overflow-y-auto p-2">
+ <div className="max-h-64 overflow-y-auto p-2">
  {filteredReturnableRecords.length === 0 ? (
  <div className="p-5 text-center">
  <p className="text-sm font-semibold text-slate-700">
@@ -1629,6 +2016,7 @@ export default function BoardRoomRecords() {
  <input
  type="checkbox"
  checked={isSelected}
+ disabled={!isSelected && !hasValidActiveStorageGroup()}
  onChange={() =>
  isSelected
  ? removeFromCart(workflow.id)
@@ -1640,7 +2028,7 @@ export default function BoardRoomRecords() {
 
  <div className="min-w-0 flex-1">
  <button type="button" onClick={(event) => { event.stopPropagation(); void copyDocumentCode(document?.reference_number, event) }} title="Click to copy reference number" className="text-left text-sm font-semibold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline">
- {document?.reference_number || 'No reference number'}
+ {getReferenceDisplay(document)}
  </button>
  <p className="mt-0.5 break-words text-xs text-slate-600">
  {document?.subject ||
@@ -1648,11 +2036,51 @@ export default function BoardRoomRecords() {
  'No subject provided'}
  </p>
  <p className="mt-1 text-[11px] text-slate-500">
- {statusLabels[workflow.workflow_status]} ·{' '}
- {workflow.urgency === 'urgent'
- ? 'Urgent'
- : 'Not Urgent'}
+ {statusLabels[workflow.workflow_status]}
  </p>
+ <div className="mt-2 flex flex-wrap items-center gap-1.5">
+  <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Urgency</span>
+  <button
+   type="button"
+   aria-pressed={(documentUrgencyChoices[workflow.id] || (cart.find(item => item.workflowId === workflow.id)?.urgency) || 'not_urgent') === 'urgent'}
+   onClick={() => updateCartUrgency(workflow.id, 'urgent')}
+   className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${(documentUrgencyChoices[workflow.id] || cart.find(item => item.workflowId === workflow.id)?.urgency || 'not_urgent') === 'urgent' ? 'border-red-300 bg-red-100 text-red-700' : 'border-slate-200 bg-white text-slate-500 hover:bg-red-50 hover:text-red-700'}`}
+  >Urgent</button>
+  <button
+   type="button"
+   aria-pressed={(documentUrgencyChoices[workflow.id] || cart.find(item => item.workflowId === workflow.id)?.urgency || 'not_urgent') === 'not_urgent'}
+   onClick={() => updateCartUrgency(workflow.id, 'not_urgent')}
+   className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${(documentUrgencyChoices[workflow.id] || cart.find(item => item.workflowId === workflow.id)?.urgency || 'not_urgent') === 'not_urgent' ? 'border-blue-300 bg-blue-100 text-blue-700' : 'border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-700'}`}
+  >Not Urgent</button>
+ </div>
+ {isSelected && (
+  <div className="mt-3 grid grid-cols-1 gap-2 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+   <label className="block">
+    <span className="text-[11px] font-semibold text-slate-600">Storage Group (Required)</span>
+    <select
+     value={documentStorageGroupIds[workflow.id] || activeStorageGroupId}
+     onChange={event => assignDocumentStorage(workflow.id, event.target.value)}
+     className={inputClass}
+    >
+     {storageGroups.map((group, index) => (
+      <option key={group.id} value={group.id}>
+       {group.name || `Storage Group ${index + 1}`} — {group.storageType === 'folder' ? `Folder ${group.folderColor || '(color not set)'}` : `Box ${group.boxNumber || '(number not set)'}`}
+      </option>
+     ))}
+    </select>
+   </label>
+   <label className="block">
+    <span className="text-[11px] font-semibold text-slate-600">Remarks (Optional)</span>
+    <textarea
+     value={cart.find(item => item.workflowId === workflow.id)?.remarks || ''}
+     onChange={event => updateCartRemarks(workflow.id, event.target.value)}
+     rows={2}
+     placeholder="Enter remarks specific to this document..."
+     className={inputClass}
+    />
+   </label>
+  </div>
+ )}
  </div>
 
  <span
@@ -1671,6 +2099,40 @@ export default function BoardRoomRecords() {
  </div>
  </div>
 
+ {/* Add unrecorded paper entries */}
+ <div className="mt-4 rounded-xl border border-dashed border-amber-300 bg-amber-50/50 p-4">
+  <div className="flex flex-wrap items-center justify-between gap-3">
+   <div>
+    <p className="text-sm font-semibold text-slate-900">Unrecorded Papers</p>
+    <p className="mt-0.5 text-xs text-slate-600">Enter the paper content. The signed-in account is recorded automatically; no destination folder is required.</p>
+   </div>
+   <button type="button" onClick={addUnrecordedPaper} disabled={processing} className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50">+ Add Unrecorded Paper</button>
+  </div>
+  {unrecordedCart.some(paper => paper.is_created) && (
+   <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+    {unrecordedCart.filter(paper => paper.is_created).length} unrecorded paper(s) saved and ready to include in this return.
+   </div>
+  )}
+  {unrecordedCart.some(paper => !paper.is_created) && (
+   <div className="mt-3 space-y-3">
+    {unrecordedCart.filter(paper => !paper.is_created).map((paper, index) => (
+     <div key={paper.id} className="rounded-lg border border-amber-200 bg-white p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+       <div><span className={`rounded px-2 py-1 text-[10px] font-bold ${paper.is_created ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{paper.is_created ? 'SAVED' : 'UNRECORDED PAPER'}</span><span className="ml-2 text-xs font-semibold text-slate-600">Paper {index + 1}</span></div>
+       {!paper.is_created && <button type="button" onClick={() => removeUnrecordedPaper(paper.id)} disabled={processing} className="text-xs font-semibold text-red-600 disabled:opacity-50">Remove</button>}
+       {paper.is_created && <span className="text-xs font-semibold text-emerald-700">Saved to Receiving Records</span>}
+      </div>
+      <label className="block"><span className="text-xs font-semibold text-slate-600">Content *</span><textarea value={paper.subject_content} onChange={e => updateUnrecordedPaper(paper.id, 'subject_content', e.target.value)} rows={3} required disabled={paper.is_created} placeholder="Enter the content of the unrecorded paper" className={inputClass} /></label>
+      <div className="mt-3"><span className="text-xs font-semibold text-slate-600">Urgency</span><div className="mt-2 flex gap-5"><label className="inline-flex items-center gap-2 text-sm text-slate-700"><input type="radio" name={`unrecorded-urgency-${paper.id}`} checked={paper.urgency === 'urgent'} disabled={paper.is_created} onChange={() => updateUnrecordedPaper(paper.id, 'urgency', 'urgent')} className="accent-red-600" />Urgent</label><label className="inline-flex items-center gap-2 text-sm text-slate-700"><input type="radio" name={`unrecorded-urgency-${paper.id}`} checked={paper.urgency === 'not_urgent'} disabled={paper.is_created} onChange={() => updateUnrecordedPaper(paper.id, 'urgency', 'not_urgent')} className="accent-blue-700" />Not Urgent</label></div></div>
+      <label className="mt-3 block"><span className="text-xs font-semibold text-slate-600">Storage Group *</span><select value={paper.storage_group_id} disabled={paper.is_created} onChange={e => updateUnrecordedPaper(paper.id, 'storage_group_id', e.target.value)} className={inputClass}>{storageGroups.map((group, groupIndex) => <option key={group.id} value={group.id}>{group.name || `Storage Group ${groupIndex + 1}`} — {group.storageType === 'folder' ? `Folder ${group.folderColor || '(color not set)'}` : `Box ${group.boxNumber || '(number not set)'}`}</option>)}</select></label>
+      {paper.is_created && <p className="mt-2 text-xs text-emerald-700">Urgency and storage assignment have been saved with this paper.</p>}
+      {!paper.is_created && <div className="mt-4 flex justify-end border-t border-amber-100 pt-3"><button type="button" onClick={() => void createUnrecordedPaper(paper.id)} disabled={processing} className="rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50">{processing ? 'Saving...' : 'Save Unrecorded Paper'}</button></div>}
+     </div>
+    ))}
+   </div>
+  )}
+ </div>
+
  {/* Selected documents and individual remarks */}
  <div className="mt-4 rounded-xl border border-whi-200 bg-white-50 p-4">
  <div className="flex items-center justify-between gap-3">
@@ -1679,190 +2141,63 @@ export default function BoardRoomRecords() {
  Selected Documents
  </p>
  <p className="mt-0.5 text-xs text-slate-600">
- Add separate remarks for each paper before returning.
+ Selected paper numbers are listed here. Set urgency, storage, and remarks in Eligible Board Room documents.
  </p>
  </div>
  <span className="flex h-7 min-w-7 items-center justify-center rounded-full bg-blue-700 px-2 text-xs font-bold text-white">
- {cartRecords.length}
+ {totalReturnItems}
  </span>
  </div>
 
  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
  <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
  <p className="text-[11px] font-medium text-blue-700">Selected</p>
- <p className="text-lg font-bold tabular-nums text-blue-900">{cartRecords.length}</p>
+ <p className="text-lg font-bold tabular-nums text-blue-900">{totalReturnItems}</p>
  </div>
  <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2">
  <p className="text-[11px] font-medium text-red-700">Urgent</p>
- <p className="text-lg font-bold tabular-nums text-red-900">{cartRecords.filter(row => row.cartUrgency === 'urgent').length}</p>
+ <p className="text-lg font-bold tabular-nums text-red-900">{cartRecords.filter(row => row.cartUrgency === 'urgent').length + unrecordedCart.filter(paper => paper.urgency === 'urgent').length}</p>
  </div>
  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
  <p className="text-[11px] font-medium text-slate-600">Not Urgent</p>
- <p className="text-lg font-bold tabular-nums text-slate-900">{cartRecords.filter(row => row.cartUrgency === 'not_urgent').length}</p>
+ <p className="text-lg font-bold tabular-nums text-slate-900">{cartRecords.filter(row => row.cartUrgency === 'not_urgent').length + unrecordedCart.filter(paper => paper.urgency === 'not_urgent').length}</p>
  </div>
  </div>
 
- {cartRecords.length === 0 ? (
+ {totalReturnItems === 0 ? (
  <p className="mt-4 text-sm text-slate-500">
- No documents selected yet.
+ No papers selected yet.
  </p>
  ) : (
- <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
- {cartRecords.map(({ workflow, document, cartRemarks, cartUrgency }) => (
+ <div className="mt-3 space-y-3 pr-1">
+ {cartRecords.map(({ workflow, document }) => (
  <div
- key={workflow.id}
- className="rounded-lg border border-blue-100 bg-white p-3"
+  key={workflow.id}
+  className="flex items-center justify-between gap-3 rounded-lg border border-blue-100 bg-white px-3 py-2"
  >
- <div className="flex items-start justify-between gap-3">
- <div className="min-w-0">
- <button type="button" onClick={(event) => { event.stopPropagation(); void copyDocumentCode(document?.reference_number, event) }} title="Click to copy reference number" className="text-left text-sm font-semibold text-slate-900 hover:text-blue-700 focus:outline-none focus:underline">
- {document?.reference_number || 'No reference number'}
- </button>
- <p className="mt-0.5 break-words text-xs text-slate-600">
- {document?.subject ||
- document?.content ||
- 'No subject provided'}
- </p>
- </div>
-
- <button
- type="button"
- onClick={() => removeFromCart(workflow.id)}
- disabled={processing}
- className="shrink-0 text-xs font-semibold text-red-600 disabled:opacity-50"
- >
- Remove
- </button>
- </div>
-
- <label className="mt-3 block">
- <span className="text-xs font-semibold text-slate-600">
- Remarks for this paper (Optional)
- </span>
- <textarea
- value={cartRemarks}
- onChange={event =>
- updateCartRemarks(
- workflow.id,
- event.target.value,
- )
- }
- rows={2}
- placeholder="Enter remarks specific to this document..."
- className={inputClass}
- />
- </label>
-
- <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-  <p className="text-xs font-semibold text-slate-700">Urgency for this paper</p>
-  <div className="mt-2 flex flex-wrap gap-5">
-   <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-    <input type="radio" name={`return-urgency-${workflow.id}`} checked={cartUrgency === 'urgent'} onChange={() => updateCartUrgency(workflow.id, 'urgent')} className="accent-red-600" />
-    <AlertCircle size={15} className="text-red-600" /> Urgent
-   </label>
-   <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-    <input type="radio" name={`return-urgency-${workflow.id}`} checked={cartUrgency === 'not_urgent'} onChange={() => updateCartUrgency(workflow.id, 'not_urgent')} className="accent-blue-700" />
-    Not Urgent
-   </label>
+  <div className="min-w-0">
+   <span className="break-words text-sm font-semibold text-slate-900">
+    {getReferenceDisplay(document)}
+   </span>
   </div>
+  <button
+   type="button"
+   onClick={() => removeFromCart(workflow.id)}
+   disabled={processing}
+   className="shrink-0 text-xs font-semibold text-red-600 disabled:opacity-50"
+  >
+   Remove
+  </button>
  </div>
- </div>
+ ))}
+ {unrecordedCart.map((paper, index) => (
+  <div key={paper.id} className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+   <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-800">UNRECORDED</span>
+   <span className="text-xs text-slate-600">Paper {index + 1}</span>
+  </div>
  ))}
  </div>
  )}
- </div>
- </div>
-
- {/* Shared storage settings */}
- <div className="border-t border-slate-200 pt-5">
- <h3 className="text-sm font-bold text-slate-900">
- Shared Storage
- </h3>
- <p className="mt-1 text-xs text-slate-500">
- Storage details apply to every document in this return. Urgency is selected separately for each paper above.
- </p>
-
- <div className="mt-4 space-y-4">
- <div>
- <span className="text-xs font-semibold text-slate-600">
- Document Storage Location *
- </span>
-
- <div className="mt-2 flex flex-wrap gap-5">
- <label className="inline-flex items-center gap-2 text-sm text-slate-700">
- <input
- type="radio"
- name="returnStorageType"
- value="folder"
- checked={returnStorageType === 'folder'}
- onChange={() => {
- setReturnStorageType('folder')
- setReturnBoxNumber('')
- }}
- />
- Folder (Color)
- </label>
-
- <label className="inline-flex items-center gap-2 text-sm text-slate-700">
- <input
- type="radio"
- name="returnStorageType"
- value="box"
- checked={returnStorageType === 'box'}
- onChange={() => {
- setReturnStorageType('box')
- setReturnFolderColor('')
- }}
- />
- Box (Number)
- </label>
- </div>
- </div>
-
- {returnStorageType === 'folder' ? (
- <label className="block">
- <span className="text-xs font-semibold text-slate-600">
- Folder Color *
- </span>
- <select
- required
- value={returnFolderColor}
- onChange={event =>
- setReturnFolderColor(event.target.value)
- }
- className={inputClass}
- >
- <option value="">Select folder color...</option>
- <option value="Red">Red</option>
- <option value="Blue">Blue</option>
- <option value="Green">Green</option>
- <option value="Yellow">Yellow</option>
- <option value="Orange">Orange</option>
- <option value="White">White</option>
- <option value="Black">Black</option>
- <option value="Pink">Pink</option>
- <option value="Violet">Violet</option>
- <option value="Brown">Brown</option>
- </select>
- </label>
- ) : (
- <label className="block">
- <span className="text-xs font-semibold text-slate-600">
- Box Number *
- </span>
- <input
- required
- value={returnBoxNumber}
- onChange={event =>
- setReturnBoxNumber(event.target.value)
- }
- placeholder="Enter box number"
- className={inputClass}
- />
- </label>
- )}
-
-
  </div>
  </div>
 
@@ -1872,18 +2207,18 @@ export default function BoardRoomRecords() {
  Return Details
  </h3>
  <p className="mt-1 text-xs text-slate-500">
- These details apply to every document in this return.
+ These details apply to recorded documents. Leave them blank when returning only unrecorded papers.
  </p>
 
  <div className="mt-4 space-y-4">
  <label className="block">
  <span className="text-xs font-semibold text-slate-600">
- Person Returning the Documents *
+ Person Returning the Documents (Required for recorded documents)
  </span>
  <input
  required
  value={returnPerson}
- onChange={event => setReturnPerson(event.target.value)}
+ onChange={event => setReturnPerson(event.target.value.toUpperCase())}
  placeholder="Enter the person's full name"
  className={inputClass}
  />
@@ -1896,7 +2231,7 @@ export default function BoardRoomRecords() {
  <textarea
  value={sharedReturnRemarks}
  onChange={event =>
- setSharedReturnRemarks(event.target.value)
+ setSharedReturnRemarks(event.target.value.toUpperCase())
  }
  rows={2}
  placeholder="Enter remarks that apply to all returned documents..."
@@ -1907,7 +2242,7 @@ export default function BoardRoomRecords() {
  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
  <label className="block">
  <span className="text-xs font-semibold text-slate-600">
- Return Date *
+ Return Date (Required for recorded documents)
  </span>
  <input
  required
@@ -1920,7 +2255,7 @@ export default function BoardRoomRecords() {
 
  <label className="block">
  <span className="text-xs font-semibold text-slate-600">
- Actual Return Time *
+ Actual Return Time (Required for recorded documents)
  </span>
  <input
  required
@@ -1947,7 +2282,7 @@ export default function BoardRoomRecords() {
  <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
  <div>
  <p className="text-sm font-semibold text-slate-700">
- {cartRecords.length} document(s) selected
+ {totalReturnItems} paper(s) selected
  </p>
  <p className="mt-1 text-xs text-slate-500">
  Each paper keeps its own urgency and remarks; one transaction can mix Urgent and Not Urgent documents.
@@ -1966,7 +2301,7 @@ export default function BoardRoomRecords() {
 
  <button
  type="submit"
- disabled={processing || cartRecords.length === 0}
+ disabled={processing || totalReturnItems === 0}
  className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
  >
  {processing ? (
@@ -1976,7 +2311,7 @@ export default function BoardRoomRecords() {
  )}
  {processing
  ? 'Returning...'
- : `Return ${cartRecords.length} Document(s)`}
+ : `Return ${totalReturnItems} Paper(s)`}
  </button>
  </div>
  </div>
@@ -1984,6 +2319,7 @@ export default function BoardRoomRecords() {
  </section>
  </div>
  )}
+
  </div>
  )
 }

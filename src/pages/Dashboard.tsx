@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+
 type RecordSummary = {
   id: string
   reference_number: string
@@ -19,6 +20,7 @@ type RecordSummary = {
   subject: string
   status: string
 }
+
 type DashboardCard = {
   title: string
   subtitle: string
@@ -27,6 +29,7 @@ type DashboardCard = {
   icon: typeof Files
   color: 'blue' | 'amber' | 'green' | 'red'
 }
+
 export default function Dashboard() {
   const { role } = useAuth()
   const [welcomeMessage, setWelcomeMessage] = useState('')
@@ -34,14 +37,44 @@ export default function Dashboard() {
   const [totalUsers, setTotalUsers] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  // Read the welcome message saved during login.
+
+  // Always load the name belonging to the currently authenticated account.
+
   useEffect(() => {
-    const message = sessionStorage.getItem('loginWelcome')
-    if (message) {
-      setWelcomeMessage(message)
+    let active = true
+    async function loadCurrentAccountName() {
+      try {
+        const {
+          data: { user },
+          error: authError,
+        } = await supabase.auth.getUser()
+        if (authError) throw authError
+        if (!user) {
+          if (active) setWelcomeMessage('')
+          return
+        }
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (profileError) throw profileError
+        if (active) {
+          setWelcomeMessage(profile?.full_name?.trim() || 'there')
+        }
+      } catch (error) {
+        console.error('Unable to load current account name:', error)
+        if (active) setWelcomeMessage('')
+      }
+    }
+    void loadCurrentAccountName()
+    return () => {
+      active = false
     }
   }, [])
+
   // Load dashboard statistics.
+
   useEffect(() => {
     let active = true
     async function loadDashboard() {
@@ -101,6 +134,7 @@ export default function Dashboard() {
       active = false
     }
   }, [role])
+
   const stats = [
     {
       title: 'Total Records',
@@ -117,6 +151,7 @@ export default function Dashboard() {
       accent: 'group-hover:bg-red-600 group-hover:text-white',
     },
   ]
+
   const cards: DashboardCard[] = [
     {
       title: 'Receiving',
@@ -155,6 +190,7 @@ export default function Dashboard() {
       color: 'red',
     },
   ]
+
   const cardStyles = {
     blue: {
       icon: 'bg-blue-50 text-blue-700 group-hover:bg-blue-600 group-hover:text-white',
@@ -177,15 +213,13 @@ export default function Dashboard() {
       line: 'bg-red-600',
     },
   }
-  // Extract the account name from the saved login message.
+
+  // welcomeMessage now contains the current profile's full name.
   const accountName = welcomeMessage
-    ? welcomeMessage
-        .replace(/^Welcome,\s*/i, '')
-        .replace(/\s*!?\s*Have a good day\.?$/i, '')
-        .trim()
-    : ''
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-5 overflow-hidden">
+
       {/* Dashboard heading */}
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3">
         <div>
@@ -204,18 +238,18 @@ export default function Dashboard() {
           {role === 'admin' ? 'Administrator' : 'Staff'} Portal
         </div>
       </header>
+
       {/* Welcome banner */}
+
       <section className="group relative shrink-0 overflow-hidden rounded-2xl bg-gradient-to-r from-[#172554] via-[#1e40af] to-[#2563eb] p-5 text-white shadow-lg transition-all duration-300 hover:shadow-xl md:p-7">
         <div className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full border-[24px] border-white/[0.06] transition-transform duration-700 ease-out group-hover:scale-125" />
         <div className="pointer-events-none absolute -bottom-16 right-1/4 h-40 w-40 rounded-full bg-blue-300/10 blur-2xl transition-transform duration-700 group-hover:scale-150" />
         <div className="relative flex items-center gap-4 md:gap-6">
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white p-3 shadow-md transition-transform duration-300 group-hover:rotate-2 group-hover:scale-105 md:h-20 md:w-20">
-            <img
-              src="/logo.jpg"
-              alt="presSystem logo"
-              className="h-full w-full object-contain"
-            />
-          </div>
+          <img
+            src="/logo.jpg"
+            alt="presSystem logo"
+            className="h-24 w-24 shrink-0 object-contain drop-shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition-transform duration-300 group-hover:scale-105 md:h-28 md:w-28"
+          />
           <div className="min-w-0 flex-1">
             <p className="mb-1.5 flex items-center gap-2 text-[10px] font-semibold tracking-[0.2em] text-blue-200 md:text-xs">
               <Sparkles size={14} />
@@ -245,8 +279,10 @@ export default function Dashboard() {
           </div>
         </div>
       </section>
+
       {/* Main dashboard content */}
-      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-5 overflow-y-auto overscroll-contain pb-1 xl:grid-cols-[minmax(0,1.4fr)\_minmax(300px,0.9fr)]">
+
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-5 overflow-y-auto overscroll-contain pb-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.9fr)]">
         {/* Operational modules */}
         <section className="flex min-w-0 flex-col">
           <div className="mb-3 shrink-0">

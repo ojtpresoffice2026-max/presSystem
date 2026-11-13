@@ -22,7 +22,7 @@ import { supabase } from '../lib/supabase'
 
 type ReceivingRecord = {
   id: string
-  reference_number: string
+  reference_number: string | null
   system_code?: string | null
   record_type?: string | null
   subject?: string | null
@@ -34,6 +34,7 @@ type ReceivingRecord = {
   destination_folder?: string | null
   date_received?: string | null
   custom_field_values?: Record<string, unknown> | null
+  is_unrecorded_paper?: boolean | null
   urgency?: string | null
   status?: string | null
   remarks?: string | null
@@ -44,12 +45,14 @@ type DestinationFieldDefinition = {
   folder_id: string
   field_name: string
   field_type?: string | null
+  options?: string[] | null
   sort_order?: number | null
 }
 
 type WorkflowRecord = {
   id: string
-  receiving_record_id: string
+  receiving_record_id: string | null
+  unrecorded_paper_id?: string | null
   transaction_person: string
   storage_type: 'folder' | 'box'
   folder_color: string | null
@@ -102,12 +105,9 @@ const folderColors = [
   'Red',
   'Blue',
   'Green',
-  'Yellow',
+  'Light Blue',
   'White',
-  'Black',
   'Orange',
-  'Pink',
-  'Other',
 ]
 
 function displayStatus(status: string) {
@@ -200,6 +200,17 @@ function matchesDocument(document: ReceivingRecord, search: string) {
   ].some(value => String(value ?? '').toLowerCase().includes(term))
 }
 
+function isUnrecordedBoardRoomPaper(document?: ReceivingRecord | null) {
+  if (!document) return false
+  const values = document.custom_field_values ?? {}
+  return (
+    document.is_unrecorded_paper === true ||
+    values._is_unrecorded_paper === true ||
+    values._manually_entered_for_board_room === true ||
+    String(values._record_kind ?? '').trim().toLowerCase() === 'unrecorded_paper'
+  )
+}
+
 function displayOfficeName(value?: string | null) {
   if (!value) return '—'
   return value
@@ -270,15 +281,49 @@ export default function ForwardingRecords() {
   const [showForm, setShowForm] = useState(false)
   const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
   const [returnedNotificationsOpen, setReturnedNotificationsOpen] = useState(false)
+  // Optimistically remove an urgent paper from the pending badge once its
+  // assignment to Releasing Staff has been saved successfully.
+  const [urgentNotificationsHandledIds, setUrgentNotificationsHandledIds] =
+    useState<Set<string>>(() => new Set())
 
   const [documentPickerOpen, setDocumentPickerOpen] = useState(false)
   const [documentSearch, setDocumentSearch] = useState('')
+  const [selectedDocumentSearch, setSelectedDocumentSearch] = useState('')
+  const [selectedDocumentsPage, setSelectedDocumentsPage] = useState(1)
+  const selectedDocumentsPageSize = 10
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([])
+  const [manualUnrecordedPapers, setManualUnrecordedPapers] = useState<Array<{
+    id: string
+    referenceNumber: string
+    subject: string
+    urgency: 'urgent' | 'not_urgent'
+    sender: string
+    originOffice: string
+    destinationFolder: string
+    destinationFields: DestinationFieldDefinition[]
+    customFieldValues: Record<string, string | boolean>
+    createdRecordId?: string
+    creating?: boolean
+  }>>([])
+  const [showManualPaperForm, setShowManualPaperForm] = useState(false)
+  const [, setManualFolderOptions] = useState<Array<{ id: string; code: string; name: string }>>([])
+  const [currentAccountName, setCurrentAccountName] = useState('')
 
   const [transactionPerson, setTransactionPerson] = useState('')
-  const [storageType, setStorageType] = useState<'folder' | 'box'>('folder')
-  const [folderColor, setFolderColor] = useState('')
-  const [boxNumber, setBoxNumber] = useState('')
+  const [documentStorageAssignments, setDocumentStorageAssignments] = useState<Record<string, {
+    storageType: 'folder' | 'box'
+    folderColor: string
+    boxNumber: string
+  }>>({})
+  const [storageGroups, setStorageGroups] = useState<Array<{
+    id: string
+    name: string
+    storageType: 'folder' | 'box'
+    folderColor: string
+    boxNumber: string
+  }>>([{ id: 'storage-group-1', name: 'Storage Group 1', storageType: 'folder', folderColor: '', boxNumber: '' }])
+  const [activeStorageGroupId, setActiveStorageGroupId] = useState('storage-group-1')
+  const [documentStorageGroupIds, setDocumentStorageGroupIds] = useState<Record<string, string>>({})
   const [documentUrgencies, setDocumentUrgencies] = useState<Record<string, 'urgent' | 'not_urgent'>>({})
   const [forwardingTime, setForwardingTime] = useState('')
 
@@ -294,8 +339,6 @@ export default function ForwardingRecords() {
     null,
   )
 
-  const [receiptConfirmation, setReceiptConfirmation] =
-    useState<WorkflowRecord | null>(null)
   const [viewingWorkflow, setViewingWorkflow] =
     useState<WorkflowWithDocument | null>(null)
   const [viewDestinationFields, setViewDestinationFields] =
@@ -412,7 +455,7 @@ export default function ForwardingRecords() {
     setError('')
 
     try {
-      const [documentsResult, workflowsResult] = await Promise.all([
+      const [documentsResult, workflowsResult, unrecordedResult] = await Promise.all([
         supabase
           .from('receiving_records')
           .select('*')
@@ -422,13 +465,33 @@ export default function ForwardingRecords() {
           .from('document_workflow')
           .select('*')
           .order('forwarded_at', { ascending: false }),
+        supabase.from('unrecorded_papers').select('*').order('created_at', { ascending: false }),
       ])
 
       if (documentsResult.error) throw documentsResult.error
       if (workflowsResult.error) throw workflowsResult.error
+      if (unrecordedResult.error) throw unrecordedResult.error
 
-      const receivedDocuments =
-        (documentsResult.data ?? []) as ReceivingRecord[]
+      const recordedDocuments = (documentsResult.data ?? []) as ReceivingRecord[]
+      const separateUnrecordedDocuments = (unrecordedResult.data ?? []).map((paper: any) => ({
+        id: paper.id,
+        reference_number: paper.reference_number,
+        record_type: 'Other',
+        subject: paper.subject,
+        content: paper.content,
+        sender: paper.sender,
+        bearer: paper.bearer,
+        origin_office: paper.origin_office,
+        current_office: paper.current_office,
+        destination_folder: paper.destination_folder,
+        date_received: paper.date_received,
+        status: paper.status,
+        remarks: paper.remarks,
+        urgency: paper.urgency,
+        is_unrecorded_paper: true,
+        custom_field_values: { ...(paper.custom_field_values ?? {}), _is_unrecorded_paper: true, _record_kind: 'unrecorded_paper' },
+      })) as ReceivingRecord[]
+      const receivedDocuments = [...recordedDocuments, ...separateUnrecordedDocuments]
 
       const workflowRecords =
         (workflowsResult.data ?? []) as WorkflowRecord[]
@@ -512,10 +575,19 @@ export default function ForwardingRecords() {
       setDocuments(receivedDocuments)
       setProfiles(profileMap)
 
+      const { data: activeManualFolders, error: manualFoldersError } = await supabase
+        .from('office_folders')
+        .select('id, code, name')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+
+      if (manualFoldersError) throw manualFoldersError
+      setManualFolderOptions((activeManualFolders ?? []) as Array<{ id: string; code: string; name: string }>)
+
       setWorkflows(
         workflowRecords.map(workflow => ({
           workflow,
-          document: documentById.get(workflow.receiving_record_id),
+          document: documentById.get(workflow.unrecorded_paper_id || workflow.receiving_record_id || ''),
           recordedByName:
             profileMap[workflow.forwarded_by] || workflow.forwarded_by,
         })),
@@ -547,6 +619,11 @@ export default function ForwardingRecords() {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'unrecorded_papers' },
+        () => { void loadData() },
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'document_workflow' },
         () => { void loadData() },
       )
@@ -557,41 +634,15 @@ export default function ForwardingRecords() {
     }
   }, [loadData])
 
-  // Only a real Board Room forwarding or an actual releasing-staff assignment
-  // consumes a received document. An unassigned direct-release row is a
-  // cancellable draft and remains eligible for Board Room forwarding.
+  // A document may enter a forwarding transaction only once. Any existing
+  // workflow row (Board Room or Releasing, regardless of its current status)
+  // means the paper has already been transacted and must not be selectable again.
   const completedOrReleasedDocumentIds = useMemo(() => {
     const ids = new Set<string>()
 
     for (const item of workflows) {
-      const workflow = item.workflow
-      const route = String(workflow.workflow_route ?? 'board_room').toLowerCase()
-      // Legacy direct-release rows may contain a forwarded timestamp even
-      // though no staff member was ever assigned. If they have no assignee
-      // and no staff receipt, treat them as cancelled/unassigned drafts.
-      const isUnassignedDirectReleaseDraft =
-        route === 'direct_release' &&
-        !workflow.release_assigned_to &&
-        !workflow.release_received_at
-
-      if (!isUnassignedDirectReleaseDraft) {
-        ids.add(workflow.receiving_record_id)
-      }
-
-      const nextStatus = String(workflow.next_action_system_status ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/[\s-]+/g, '_')
-      const documentStatus = String(item.document?.status ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/[\s-]+/g, '_')
-      const paperReleased =
-        Boolean(workflow.next_action_release_at) ||
-        ['released', 'paper_released', 'release_completed', 'completed'].includes(nextStatus) ||
-        ['paper_released', 'released', 'completed'].includes(documentStatus)
-
-      if (paperReleased) ids.add(workflow.receiving_record_id)
+      const documentId = item.workflow.unrecorded_paper_id || item.workflow.receiving_record_id
+      if (documentId) ids.add(documentId)
     }
 
     for (const document of documents) {
@@ -607,13 +658,35 @@ export default function ForwardingRecords() {
     return ids
   }, [workflows, documents])
 
-  // Documents that have not entered an active forwarding/releasing workflow.
-  // Unassigned direct-release drafts are intentionally kept available.
+  // Only papers with no prior transaction are available for forwarding.
+  // Unrecorded papers created by the Board Room return process are already
+  // completed return records; they must never re-enter the Forwarding picker.
+  // New manual unrecorded papers created inside this Forwarding form have
+  // status 'available' and remain eligible for their first transaction.
   const availableDocuments = useMemo(
-    () =>
-      documents.filter(
-        document => !completedOrReleasedDocumentIds.has(document.id),
-      ),
+    () => documents.filter(document => {
+      if (completedOrReleasedDocumentIds.has(document.id)) return false
+
+      const metadata = document.custom_field_values ?? {}
+      const status = String(document.status ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+      const isUnrecorded =
+        document.is_unrecorded_paper === true || metadata._is_unrecorded_paper === true ||
+        String(metadata._record_kind ?? '').trim().toLowerCase().replace(/[ _-]+/g, '') === 'unrecordedpaper'
+
+      // Unrecorded papers created in this form start as `available`. Once
+      // forwarded, their status changes to `forwarded` and they are never
+      // offered in the picker again.
+      if (isUnrecorded && status !== 'available') return false
+
+      const source = String(metadata._source ?? '').trim().toLowerCase()
+      // A paper returned by the Board Room is not eligible for another
+      // forwarding transaction, regardless of whether it is recorded or
+      // unrecorded. Check the return marker for every paper type.
+      const isBoardRoomReturnPaper =
+        source === 'board_room_return' || status === 'returned_to_origin'
+
+      return !isBoardRoomReturnPaper
+    }),
     [documents, completedOrReleasedDocumentIds],
   )
 
@@ -623,9 +696,10 @@ export default function ForwardingRecords() {
     () =>
       availableDocuments.filter(
         document =>
-          String(document.urgency ?? '').trim().toLowerCase() === 'urgent',
+          String(document.urgency ?? '').trim().toLowerCase() === 'urgent' &&
+          !urgentNotificationsHandledIds.has(document.id),
       ),
-    [availableDocuments],
+    [availableDocuments, urgentNotificationsHandledIds],
   )
 
   // Separate notification for urgent papers returned by the Board Room.
@@ -671,6 +745,34 @@ export default function ForwardingRecords() {
       ),
     [workflows],
   )
+
+  // Count only unrecorded papers that were actually returned by the Board Room.
+  // A newly created paper in the Forwarding panel is merely `available`; it is
+  // not a return and must never increase the Returned badge/count.
+  const returnedAwaitingReceiptUnrecordedDocuments = useMemo(
+    () =>
+      documents.filter(document => {
+        const metadata = document.custom_field_values ?? {}
+        const isUnrecordedBoardRoomReturn =
+          document.is_unrecorded_paper === true ||
+          metadata._is_unrecorded_paper === true ||
+          String(metadata._record_kind ?? '').trim().toLowerCase().replace(/[ _-]+/g, '') === 'unrecordedpaper'
+        const source = String(metadata._source ?? '').trim().toLowerCase()
+        const status = String(document.status ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+        const wasActuallyReturned = source === 'board_room_return' || status === 'returned_to_origin'
+
+        return (
+          isUnrecordedBoardRoomReturn &&
+          wasActuallyReturned &&
+          !hasForwardingStaffConfirmedBoardRoomReturn(document)
+        )
+      }),
+    [documents],
+  )
+
+  const returnedAwaitingReceiptCount =
+    returnedAwaitingReceiptWorkflows.length +
+    returnedAwaitingReceiptUnrecordedDocuments.length
 
   const playUrgentNotificationSound = useCallback(async () => {
     try {
@@ -794,14 +896,18 @@ export default function ForwardingRecords() {
     return workflows.filter(item => {
       const { workflow, document } = item
 
-      // Do not render legacy unassigned direct-release drafts as separate
-      // workflow rows. Their receiving records are shown above as untouched
-      // papers with only View and Release to Staff actions.
-      const isUnassignedDirectReleaseDraft =
-        String(workflow.workflow_route ?? '').toLowerCase() === 'direct_release' &&
-        !workflow.release_assigned_to &&
-        !workflow.release_received_at
-      if (isUnassignedDirectReleaseDraft) return false
+      // This page keeps the complete Board Room transaction history and also
+      // retains transactions that have subsequently been assigned to Releasing
+      // Staff. Older records may have their route changed to `direct_release`
+      // when a staff member is assigned, so include those when an assignment
+      // exists. Hide only unassigned direct-release drafts.
+      const route = String(workflow.workflow_route ?? 'board_room').trim().toLowerCase()
+      const hasReleasingStaffAssignment = Boolean(
+        workflow.release_assigned_to ||
+        workflow.release_forwarded_at ||
+        workflow.release_received_at
+      )
+      if (route !== 'board_room' && !hasReleasingStaffAssignment) return false
 
       if (
         statusFilter !== 'ALL' &&
@@ -834,9 +940,31 @@ export default function ForwardingRecords() {
   }, [workflows, statusFilter, search])
 
   const filteredUntouchedDocuments = useMemo(() => {
-    // Untouched Received papers remain actionable regardless of Board Room status filters.
-    return availableDocuments.filter(document => matchesDocument(document, search))
-  }, [availableDocuments, search])
+    // Show only unrecorded papers that were actually returned by the Board Room
+    // and are awaiting confirmation by the originating office. A paper created
+    // in the Forwarding panel is NOT a return: it belongs to the first forwarding
+    // transaction and must not show a Confirm Receipt action here.
+    return documents.filter(document => {
+      const metadata = document.custom_field_values ?? {}
+      const isUnrecorded =
+        document.is_unrecorded_paper === true ||
+        metadata._is_unrecorded_paper === true ||
+        String(metadata._record_kind ?? '').trim().toLowerCase().replace(/[ _-]+/g, '') === 'unrecordedpaper'
+      const source = String(metadata._source ?? '').trim().toLowerCase()
+      const status = String(document.status ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+      const isBoardRoomReturn =
+        source === 'board_room_return' || status === 'returned_to_origin'
+
+      // If a workflow row already represents this returned paper, render the
+      // workflow row only. This prevents the same physical paper appearing
+      // twice (once from unrecorded_papers and once from document_workflow).
+      const alreadyShownInWorkflow = workflows.some(({ workflow }) =>
+        (workflow.unrecorded_paper_id || workflow.receiving_record_id) === document.id
+      )
+
+      return isUnrecorded && isBoardRoomReturn && !alreadyShownInWorkflow && matchesDocument(document, search)
+    })
+  }, [documents, search, workflows])
 
   const totalTableRows = filteredUntouchedDocuments.length + filteredWorkflows.length
   const totalPages = Math.max(1, Math.ceil(totalTableRows / pageSize))
@@ -859,6 +987,42 @@ export default function ForwardingRecords() {
     [documents, selectedDocumentIds],
   )
 
+  const filteredSelectedDocuments = useMemo(() => {
+    const term = selectedDocumentSearch.trim().toLowerCase()
+    if (!term) return selectedDocuments
+
+    return selectedDocuments.filter(document => {
+      const assignment = documentStorageAssignments[document.id]
+      const group = storageGroups.find(item => item.id === documentStorageGroupIds[document.id])
+      const storageText = assignment
+        ? `${group?.name ?? ''} ${assignment.storageType === 'folder' ? `folder ${assignment.folderColor}` : `box ${assignment.boxNumber}`}`
+        : 'not assigned'
+
+      return [
+        document.reference_number,
+        document.subject,
+        document.content,
+        document.sender,
+        storageText,
+        documentUrgencies[document.id] ?? 'not urgent',
+      ].some(value => String(value ?? '').toLowerCase().includes(term))
+    })
+  }, [selectedDocuments, selectedDocumentSearch, documentStorageAssignments, storageGroups, documentStorageGroupIds, documentUrgencies])
+
+  const selectedDocumentsTotalPages = Math.max(
+    1,
+    Math.ceil(filteredSelectedDocuments.length / selectedDocumentsPageSize),
+  )
+  const safeSelectedDocumentsPage = Math.min(selectedDocumentsPage, selectedDocumentsTotalPages)
+  const visibleSelectedDocuments = filteredSelectedDocuments.slice(
+    (safeSelectedDocumentsPage - 1) * selectedDocumentsPageSize,
+    safeSelectedDocumentsPage * selectedDocumentsPageSize,
+  )
+
+  useEffect(() => {
+    setSelectedDocumentsPage(1)
+  }, [selectedDocumentSearch, selectedDocumentIds.length])
+
   const allFilteredSelected =
     filteredPickerDocuments.length > 0 &&
     filteredPickerDocuments.every(document =>
@@ -874,14 +1038,123 @@ export default function ForwardingRecords() {
         delete next[id]
         return next
       })
+      setDocumentStorageAssignments(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      setDocumentStorageGroupIds(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
       return
     }
 
+    const activeGroup = storageGroups.find(group => group.id === activeStorageGroupId)
+    if (!activeGroup) {
+      setError('Add or select a storage group before selecting documents.')
+      return
+    }
     setSelectedDocumentIds(current => current.includes(id) ? current : [...current, id])
-    setDocumentUrgencies(current => ({
+    setDocumentStorageGroupIds(current => ({ ...current, [id]: activeGroup.id }))
+    setDocumentStorageAssignments(current => ({
       ...current,
-      [id]: current[id] ?? 'not_urgent',
+      [id]: {
+        storageType: activeGroup.storageType,
+        folderColor: activeGroup.folderColor,
+        boxNumber: activeGroup.boxNumber,
+      },
     }))
+    setDocumentUrgencies(current => ({ ...current, [id]: current[id] ?? 'not_urgent' }))
+  }
+
+  function getStorageGroupKey(group: {
+    storageType: 'folder' | 'box'
+    folderColor: string
+    boxNumber: string
+  }) {
+    if (group.storageType === 'folder') {
+      const color = group.folderColor.trim().toLowerCase()
+      return color ? `folder:${color}` : ''
+    }
+
+    const box = group.boxNumber.trim().toLowerCase().replace(/\\s+/g, ' ')
+    return box ? `box:${box}` : ''
+  }
+
+  function addStorageGroup() {
+    const id = `storage-group-${crypto.randomUUID()}`
+    const nextGroup = {
+      id,
+      name: `Storage Group ${storageGroups.length + 1}`,
+      storageType: 'folder' as const,
+      folderColor: '',
+      boxNumber: '',
+    }
+    setStorageGroups(current => [...current, nextGroup])
+    setActiveStorageGroupId(id)
+  }
+
+  function updateStorageGroup(groupId: string, patch: Partial<{
+    storageType: 'folder' | 'box'
+    folderColor: string
+    boxNumber: string
+  }>) {
+    const currentGroup = storageGroups.find(group => group.id === groupId)
+    if (!currentGroup) return
+
+    const updatedGroup = { ...currentGroup, ...patch }
+    const updatedKey = getStorageGroupKey(updatedGroup)
+    const matchingGroup = updatedKey
+      ? storageGroups.find(group =>
+          group.id !== groupId && getStorageGroupKey(group) === updatedKey,
+        )
+      : undefined
+
+    if (matchingGroup) {
+      // Reuse an existing group when the same physical storage location is
+      // selected. Move documents from the duplicate group into the existing one.
+      setStorageGroups(current => current.filter(group => group.id !== groupId))
+      setDocumentStorageGroupIds(current => {
+        const next = { ...current }
+        for (const [documentId, assignedGroupId] of Object.entries(next)) {
+          if (assignedGroupId === groupId) next[documentId] = matchingGroup.id
+        }
+        return next
+      })
+      setDocumentStorageAssignments(current => {
+        const next = { ...current }
+        for (const [documentId, assignedGroupId] of Object.entries(documentStorageGroupIds)) {
+          if (assignedGroupId === groupId) {
+            next[documentId] = {
+              storageType: matchingGroup.storageType,
+              folderColor: matchingGroup.folderColor,
+              boxNumber: matchingGroup.boxNumber,
+            }
+          }
+        }
+        return next
+      })
+      setActiveStorageGroupId(matchingGroup.id)
+      return
+    }
+
+    setStorageGroups(current => current.map(group =>
+      group.id === groupId ? updatedGroup : group,
+    ))
+    setDocumentStorageAssignments(current => {
+      const next = { ...current }
+      for (const [documentId, assignedGroupId] of Object.entries(documentStorageGroupIds)) {
+        if (assignedGroupId !== groupId) continue
+        next[documentId] = {
+          storageType: updatedGroup.storageType,
+          folderColor: updatedGroup.folderColor,
+          boxNumber: updatedGroup.boxNumber,
+        }
+      }
+      return next
+    })
   }
 
   function setSelectedDocumentUrgency(id: string, value: 'urgent' | 'not_urgent') {
@@ -890,7 +1163,6 @@ export default function ForwardingRecords() {
 
   function toggleAllFilteredDocuments() {
     const filteredIds = filteredPickerDocuments.map(document => document.id)
-
     if (allFilteredSelected) {
       setSelectedDocumentIds(current => current.filter(id => !filteredIds.includes(id)))
       setDocumentUrgencies(current => {
@@ -898,15 +1170,40 @@ export default function ForwardingRecords() {
         filteredIds.forEach(id => delete next[id])
         return next
       })
+      setDocumentStorageAssignments(current => {
+        const next = { ...current }
+        filteredIds.forEach(id => delete next[id])
+        return next
+      })
+      setDocumentStorageGroupIds(current => {
+        const next = { ...current }
+        filteredIds.forEach(id => delete next[id])
+        return next
+      })
       return
     }
-
-    setSelectedDocumentIds(current => [...new Set([...current, ...filteredIds])])
+    const activeGroup = storageGroups.find(group => group.id === activeStorageGroupId)
+    if (!activeGroup) {
+      setError('Add or select a storage group before selecting documents.')
+      return
+    }
+    const newlySelectedIds = filteredIds.filter(id => !selectedDocumentIds.includes(id))
+    setSelectedDocumentIds(current => [...new Set([...current, ...newlySelectedIds])])
+    setDocumentStorageGroupIds(current => {
+      const next = { ...current }
+      newlySelectedIds.forEach(id => { next[id] = activeGroup.id })
+      return next
+    })
+    setDocumentStorageAssignments(current => {
+      const next = { ...current }
+      newlySelectedIds.forEach(id => {
+        next[id] = { storageType: activeGroup.storageType, folderColor: activeGroup.folderColor, boxNumber: activeGroup.boxNumber }
+      })
+      return next
+    })
     setDocumentUrgencies(current => {
       const next = { ...current }
-      filteredPickerDocuments.forEach(document => {
-        next[document.id] = next[document.id] ?? 'not_urgent'
-      })
+      filteredPickerDocuments.forEach(document => { next[document.id] = next[document.id] ?? 'not_urgent' })
       return next
     })
   }
@@ -915,12 +1212,192 @@ export default function ForwardingRecords() {
     setDocumentPickerOpen(false)
     setDocumentSearch('')
     setSelectedDocumentIds([])
+    setDocumentStorageGroupIds({})
+    setStorageGroups([{ id: 'storage-group-1', name: 'Storage Group 1', storageType: 'folder', folderColor: '', boxNumber: '' }])
+    setActiveStorageGroupId('storage-group-1')
+    setManualUnrecordedPapers([])
+    setShowManualPaperForm(false)
+    setManualFolderOptions([])
+    setCurrentAccountName('')
     setTransactionPerson('')
-    setStorageType('folder')
-    setFolderColor('')
-    setBoxNumber('')
+    setDocumentStorageAssignments({})
     setDocumentUrgencies({})
     setForwardingTime('')
+  }
+
+  
+  function updateManualPaper(
+    paperId: string,
+    patch: Partial<{
+      referenceNumber: string
+      subject: string
+      urgency: 'urgent' | 'not_urgent'
+      sender: string
+      originOffice: string
+      customFieldValues: Record<string, string | boolean>
+    }>,
+  ) {
+    setManualUnrecordedPapers(current => current.map(paper =>
+      paper.id === paperId ? { ...paper, ...patch } : paper
+    ))
+  }
+
+  async function createManualUnrecordedPaper(paperId: string) {
+    const paper = manualUnrecordedPapers.find(item => item.id === paperId)
+    if (!paper) return
+    if (paper.createdRecordId) return
+    if (!paper.subject.trim()) {
+      setError('Enter the Content before creating the unrecorded paper.')
+      return
+    }
+
+    setError('')
+    setSuccess('')
+    setManualUnrecordedPapers(current => current.map(item =>
+      item.id === paperId ? { ...item, creating: true } : item
+    ))
+
+    try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError) throw authError
+      if (!user) throw new Error('Your session has expired. Please sign in again.')
+
+      const { data: accountProfile, error: profileError } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', user.id)
+        .maybeSingle()
+      if (profileError) throw profileError
+
+      const accountName = String(accountProfile?.full_name ?? '').trim()
+      if (!accountName) throw new Error('Your account does not have a full name in the profile.')
+
+      const receivedDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date())
+
+      const { data: createdRecord, error: insertError } = await supabase
+        .from('unrecorded_papers')
+        .insert({
+          reference_number: null,
+          subject: paper.subject.trim() || 'UNRECORDED PAPER',
+          content: paper.subject.trim() || null,
+          urgency: paper.urgency,
+          // receiving_records.sender is NOT NULL in the current database schema.
+          // Keep the field optional in the form, but use the logged-in account
+          // as the database fallback when no sender was entered.
+          sender: paper.sender.trim() || accountName,
+          bearer: accountName,
+          origin_office: null,
+          current_office: null,
+          destination_folder: null,
+          date_received: receivedDate,
+          received_at: new Date().toISOString(),
+          created_by: user.id,
+          status: 'available',
+          custom_field_values: {
+            ...paper.customFieldValues,
+            _urgency: paper.urgency,
+            _manually_entered_for_board_room: true,
+            _is_unrecorded_paper: true,
+            _record_kind: 'unrecorded_paper',
+            _manual_entry_by: user.id,
+            _manual_entry_by_name: accountName,
+          },
+        })
+        .select('id')
+        .single()
+
+      if (insertError) throw insertError
+      if (!createdRecord?.id) throw new Error('The unrecorded paper was not created.')
+
+      setCurrentAccountName(accountName)
+      setManualUnrecordedPapers(current => current.map(item =>
+        item.id === paperId
+          ? {
+              ...item,
+              creating: false,
+              createdRecordId: createdRecord.id,
+            }
+          : item
+      ))
+
+      // Automatically add the newly created unrecorded paper to the same
+      // Selected Documents list as the records chosen from Receiving.
+      setSelectedDocumentIds(current =>
+        current.includes(createdRecord.id) ? current : [...current, createdRecord.id],
+      )
+      setDocumentUrgencies(current => ({
+        ...current,
+        [createdRecord.id]: paper.urgency,
+      }))
+      const activeGroup = storageGroups.find(group => group.id === activeStorageGroupId)
+      if (activeGroup) {
+        setDocumentStorageGroupIds(current => ({ ...current, [createdRecord.id]: activeGroup.id }))
+        setDocumentStorageAssignments(current => ({
+          ...current,
+          [createdRecord.id]: { storageType: activeGroup.storageType, folderColor: activeGroup.folderColor, boxNumber: activeGroup.boxNumber },
+        }))
+      }
+
+      setShowManualPaperForm(false)
+      await loadData()
+    } catch (err) {
+      const errorMessage =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message?: unknown }).message || '')
+          : err instanceof Error
+            ? err.message
+            : String(err || '')
+      setError(errorMessage || 'Unable to create the unrecorded paper.')
+      setManualUnrecordedPapers(current => current.map(item =>
+        item.id === paperId ? { ...item, creating: false } : item
+      ))
+    }
+  }
+
+  async function cancelForwardingForm() {
+    // Close the forwarding form first. Cleanup must never trap the user inside
+    // the form if a draft cannot be deleted because of permissions or status.
+    const draftIds = [...new Set(
+      manualUnrecordedPapers
+        .map(paper => paper.createdRecordId)
+        .filter((id): id is string => Boolean(id)),
+    )]
+
+    setShowForm(false)
+    setShowManualPaperForm(false)
+    resetForm()
+
+    let cleanupMessage = ''
+    if (draftIds.length > 0) {
+      const { data: deletedRows, error: deleteError } = await supabase
+        .from('unrecorded_papers')
+        .delete()
+        .in('id', draftIds)
+        .eq('status', 'available')
+        .select('id')
+
+      if (deleteError) {
+        cleanupMessage = `The forwarding form was closed, but the newly created paper(s) could not be deleted: ${deleteError.message}`
+      } else if ((deletedRows ?? []).length !== draftIds.length) {
+        cleanupMessage = 'The forwarding form was closed, but one or more newly created papers were not deleted because their status changed or database permissions prevented deletion. Please refresh and review them.'
+      }
+    }
+
+    await loadData()
+    if (cleanupMessage) {
+      setError(cleanupMessage)
+      setSuccess('')
+    } else {
+      setError('')
+      setSuccess(draftIds.length > 0
+        ? 'Forwarding cancelled. Newly created unrecorded paper(s) were also cancelled.'
+        : 'Forwarding cancelled.')
+    }
   }
 
   async function handleForward(event: FormEvent<HTMLFormElement>) {
@@ -928,8 +1405,8 @@ export default function ForwardingRecords() {
     setError('')
     setSuccess('')
 
-    if (selectedDocumentIds.length === 0) {
-      setError('Select at least one document to forward.')
+    if (selectedDocumentIds.length === 0 && manualUnrecordedPapers.length === 0) {
+      setError('Select at least one document or add an unrecorded paper.')
       return
     }
 
@@ -938,13 +1415,24 @@ export default function ForwardingRecords() {
       return
     }
 
-    if (storageType === 'folder' && !folderColor.trim()) {
-      setError('Select a folder color.')
-      return
-    }
-
-    if (storageType === 'box' && !boxNumber.trim()) {
-      setError('Enter the box number.')
+    const missingStorageAssignment = selectedDocumentIds.find(id => {
+      const assignment = documentStorageAssignments[id] ?? {
+        storageType: 'folder' as const,
+        folderColor: '',
+        boxNumber: '',
+      }
+      return assignment.storageType === 'folder'
+        ? !assignment.folderColor.trim()
+        : !assignment.boxNumber.trim()
+    })
+    if (missingStorageAssignment) {
+      const document = documents.find(item => item.id === missingStorageAssignment)
+      const assignment = documentStorageAssignments[missingStorageAssignment]
+      setError(
+        assignment?.storageType === 'box'
+          ? `Enter the Box Number for ${document?.reference_number || 'the selected document'}.`
+          : `Select a Folder Color for ${document?.reference_number || 'the selected document'}.`,
+      )
       return
     }
 
@@ -966,6 +1454,9 @@ export default function ForwardingRecords() {
 
     setSaving(true)
 
+    let claimedUnrecordedIds: string[] = []
+    let workflowInserted = false
+
     try {
       const {
         data: { user },
@@ -978,90 +1469,178 @@ export default function ForwardingRecords() {
         throw new Error('Your session has expired. Please sign in again.')
       }
 
-      const payload = selectedDocumentIds.map(receivingRecordId => ({
-        receiving_record_id: receivingRecordId,
+      let forwardingDocumentIds = [...selectedDocumentIds]
+
+      if (manualUnrecordedPapers.length > 0) {
+        const uncreatedPaper = manualUnrecordedPapers.find(paper => !paper.createdRecordId)
+        if (uncreatedPaper) {
+          throw new Error('Create every unrecorded paper before forwarding.')
+        }
+        // Created papers are already in Selected Documents; de-duplicate IDs
+        // so each paper receives exactly one Board Room workflow transaction.
+        forwardingDocumentIds = [
+          ...new Set([
+            ...forwardingDocumentIds,
+            ...manualUnrecordedPapers.map(paper => paper.createdRecordId as string),
+          ]),
+        ]
+      }
+
+      const { data: separatePaperRows, error: separatePaperLookupError } = await supabase
+        .from('unrecorded_papers')
+        .select('id')
+        .in('id', forwardingDocumentIds)
+      if (separatePaperLookupError) throw separatePaperLookupError
+      const separatePaperIds = new Set((separatePaperRows ?? []).map((row: { id: string }) => row.id))
+
+      // Re-check against the database at submission time. This blocks duplicate
+      // forwarding even if the picker was left open while another user transacted the paper.
+      const recordedIds = forwardingDocumentIds.filter(id => !separatePaperIds.has(id))
+      const unrecordedIds = forwardingDocumentIds.filter(id => separatePaperIds.has(id))
+
+      // A Board Room return is already a completed transaction even when it
+      // has no document_workflow row. Never allow it back into Forwarding.
+      if (unrecordedIds.length > 0) {
+        const { data: unrecordedPaperStates, error: unrecordedStateError } = await supabase
+          .from('unrecorded_papers')
+          .select('id, status, custom_field_values')
+          .in('id', unrecordedIds)
+        if (unrecordedStateError) throw unrecordedStateError
+        const unavailablePaper = (unrecordedPaperStates ?? []).some((paper: any) => {
+          const metadata = paper.custom_field_values ?? {}
+          const source = String(metadata._source ?? '').trim().toLowerCase()
+          const status = String(paper.status ?? '').trim().toLowerCase().replace(/[\\s-]+/g, '_')
+          return source === 'board_room_return' || status !== 'available'
+        })
+        if (unavailablePaper || (unrecordedPaperStates ?? []).length !== unrecordedIds.length) {
+          await loadData()
+          throw new Error('This unrecorded paper has already been forwarded or processed. It cannot be forwarded again.')
+        }
+      }
+
+      // Board Room returns must be blocked for ALL papers, not only rows in
+      // unrecorded_papers. Re-check recorded receiving records in the database
+      // so stale picker state cannot bypass the rule.
+      if (recordedIds.length > 0) {
+        const { data: recordedPaperStates, error: recordedStateError } = await supabase
+          .from('receiving_records')
+          .select('id, status, custom_field_values')
+          .in('id', recordedIds)
+        if (recordedStateError) throw recordedStateError
+
+        const returnedRecordedPaper = (recordedPaperStates ?? []).some((paper: any) => {
+          const metadata = paper.custom_field_values ?? {}
+          const source = String(metadata._source ?? '').trim().toLowerCase()
+          const status = String(paper.status ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+          return source === 'board_room_return' || status === 'returned_to_origin'
+        })
+        if (returnedRecordedPaper || (recordedPaperStates ?? []).length !== recordedIds.length) {
+          await loadData()
+          throw new Error('This paper has already been returned by the Board Room. It cannot be forwarded again.')
+        }
+      }
+
+      const duplicateChecks = await Promise.all([
+        ...(recordedIds.length ? [supabase.from('document_workflow').select('id, receiving_record_id').in('receiving_record_id', recordedIds)] : []),
+        ...(unrecordedIds.length ? [supabase.from('document_workflow').select('id, unrecorded_paper_id').in('unrecorded_paper_id', unrecordedIds)] : []),
+      ])
+      const duplicateCheckError = duplicateChecks.find(result => result.error)?.error
+      if (duplicateCheckError) throw duplicateCheckError
+      if (duplicateChecks.some(result => (result.data ?? []).length > 0)) {
+        await loadData()
+        throw new Error('This paper is already in a forwarding transaction. It cannot be forwarded again.')
+      }
+      // Atomically claim unrecorded papers BEFORE creating the workflow row.
+      // A concurrent forwarding attempt can only update rows still marked available.
+      if (unrecordedIds.length > 0) {
+        const { data: claimedPapers, error: claimError } = await supabase
+          .from('unrecorded_papers')
+          .update({ status: 'forwarded' })
+          .in('id', unrecordedIds)
+          .eq('status', 'available')
+          .select('id')
+
+        if (claimError) throw claimError
+
+        claimedUnrecordedIds = (claimedPapers ?? []).map((paper: { id: string }) => paper.id)
+        if (claimedUnrecordedIds.length !== unrecordedIds.length) {
+          if (claimedUnrecordedIds.length > 0) {
+            await supabase
+              .from('unrecorded_papers')
+              .update({ status: 'available' })
+              .in('id', claimedUnrecordedIds)
+              .eq('status', 'forwarded')
+          }
+          claimedUnrecordedIds = []
+          await loadData()
+          throw new Error('This unrecorded paper has already been forwarded or processed. Refresh and review your selection.')
+        }
+      }
+
+      const payload = forwardingDocumentIds.map(receivingRecordId => {
+        const assignment = documentStorageAssignments[receivingRecordId] ?? {
+          storageType: 'folder' as const,
+          folderColor: '',
+          boxNumber: '',
+        }
+        return {
+        receiving_record_id: separatePaperIds.has(receivingRecordId) ? null : receivingRecordId,
+        unrecorded_paper_id: separatePaperIds.has(receivingRecordId) ? receivingRecordId : null,
         transaction_person: transactionPerson.trim(),
-        storage_type: storageType,
+        storage_type: assignment.storageType,
         folder_color:
-          storageType === 'folder' ? folderColor.trim() : null,
-        box_number: storageType === 'box' ? boxNumber.trim() : null,
+          assignment.storageType === 'folder' ? assignment.folderColor.trim() : null,
+        box_number: assignment.storageType === 'box' ? assignment.boxNumber.trim() : null,
         urgency: documentUrgencies[receivingRecordId] ?? 'not_urgent',
         forwarding_time: forwardingTime,
         forwarded_by: user.id,
         workflow_route: 'board_room',
         workflow_status: 'forwarded',
-      }))
+      }
+      })
 
-      // Older versions created an unassigned direct-release row as soon as
-      // the user opened the assignment form. If that form was cancelled, reuse
-      // that row and convert it to the Board Room route instead of inserting a
-      // duplicate receiving_record_id.
-      const { data: oldDraftRows, error: draftLookupError } = await supabase
-        .from('document_workflow')
-        .select('id, receiving_record_id')
-        .in('receiving_record_id', selectedDocumentIds)
-        .eq('workflow_route', 'direct_release')
-        .is('release_assigned_to', null)
-        .is('release_received_at', null)
-
-      if (draftLookupError) throw draftLookupError
-
-      const oldDraftByDocument = new Map(
-        (oldDraftRows ?? []).map(row => [row.receiving_record_id, row.id]),
-      )
-      const rowsToInsert = payload.filter(row => !oldDraftByDocument.has(row.receiving_record_id))
       const now = new Date()
       const forwardingDate = now.toISOString().slice(0, 10)
       const forwardingTimestamp = now.toISOString()
+      const rowsToInsert = payload.map(row => ({
+        ...row,
+        forwarding_date: forwardingDate,
+        forwarded_at: forwardingTimestamp,
+      }))
 
-      for (const row of payload) {
-        const existingId = oldDraftByDocument.get(row.receiving_record_id)
-        if (!existingId) continue
+      const { data: insertedRows, error: insertError } = await supabase
+        .from('document_workflow')
+        .insert(rowsToInsert)
+        .select('id')
 
-        const { error: convertError } = await supabase
-          .from('document_workflow')
-          .update({
-            ...row,
-            forwarding_date: forwardingDate,
-            forwarded_at: forwardingTimestamp,
-            release_assigned_to: null,
-            release_instruction: null,
-            release_forwarded_at: null,
-            release_forwarded_by: null,
-          })
-          .eq('id', existingId)
-          .is('release_assigned_to', null)
-
-        if (convertError) throw convertError
-      }
-
-      let insertedCount = 0
-      if (rowsToInsert.length > 0) {
-        const { data, error: insertError } = await supabase
-          .from('document_workflow')
-          .insert(rowsToInsert)
-          .select('id, receiving_record_id')
-
-        if (insertError) {
-          if (insertError.code === '23505') {
-            throw new Error(
-              'One or more documents have already been forwarded. Refresh and try again.',
-            )
-          }
-          throw insertError
+      if (insertError) {
+        if (insertError.code === '23505') {
+          throw new Error('One or more papers are already in a forwarding transaction. Refresh and review your selection.')
         }
-        insertedCount = data?.length ?? 0
+        throw insertError
       }
+      const insertedCount = insertedRows?.length ?? 0
+      workflowInserted = true
 
-      const forwardedCount = insertedCount + oldDraftByDocument.size
+      const forwardedCount = insertedCount
       setSuccess(
-        `${forwardedCount} of ${selectedDocumentIds.length} document(s) forwarded successfully.`,
+        `${forwardedCount} document(s) forwarded successfully.`,
       )
 
       setShowForm(false)
       resetForm()
       await loadData()
     } catch (err) {
+      // If the workflow insert failed after we claimed unrecorded papers,
+      // restore only those claims made by this attempt.
+      if (!workflowInserted && claimedUnrecordedIds.length > 0) {
+        const { error: rollbackError } = await supabase
+          .from('unrecorded_papers')
+          .update({ status: 'available' })
+          .in('id', claimedUnrecordedIds)
+          .eq('status', 'forwarded')
+        if (rollbackError) console.error('Unable to restore unrecorded-paper status:', rollbackError)
+      }
       setError(
         err instanceof Error
           ? err.message
@@ -1076,7 +1655,7 @@ export default function ForwardingRecords() {
     if (workflow.workflow_status !== 'returned_to_origin') return
 
     const document = documents.find(
-      item => item.id === workflow.receiving_record_id,
+      item => item.id === (workflow.unrecorded_paper_id || workflow.receiving_record_id),
     )
 
     const reference = document?.reference_number || 'this document'
@@ -1123,12 +1702,11 @@ export default function ForwardingRecords() {
         )
       }
 
-      setReceiptConfirmation(null)
-
       setSuccess(
         `Physical receipt confirmed for ${reference}. Next, select “Forward to Releasing Staff” and choose the staff member.`,
       )
 
+      // Refresh the records after the inline confirmation action completes.
       await loadData()
     } catch (err: unknown) {
       // Supabase/PostgREST errors are often plain objects, not Error instances.
@@ -1159,6 +1737,67 @@ export default function ForwardingRecords() {
     }
   }
 
+  // The staff member assigned by the Board Room must acknowledge physical
+  // receipt from this Forwarding panel. Keep this separate from the
+  // originating-office confirmation handled by handleConfirmReceipt.
+  
+  function hasForwardingStaffConfirmedBoardRoomReturn(document: ReceivingRecord) {
+    const values = document.custom_field_values ?? {}
+    return values._forwarding_receipt_confirmed === true &&
+      Boolean(values._forwarding_receipt_confirmed_at) &&
+      Boolean(values._forwarding_receipt_confirmed_by)
+  }
+
+  async function handleConfirmUnrecordedBoardRoomReceipt(document: ReceivingRecord) {
+    if (!document.is_unrecorded_paper || hasForwardingStaffConfirmedBoardRoomReturn(document)) return
+
+    setConfirmingReceiptId(document.id)
+    setError('')
+    setSuccess('')
+
+    try {
+      const { data: authResult, error: authError } = await supabase.auth.getUser()
+      if (authError) throw authError
+      if (!authResult.user) throw new Error('Your session has expired. Please sign in again.')
+
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('full_name, is_active')
+        .eq('id', authResult.user.id)
+        .maybeSingle()
+      if (profileError) throw profileError
+      if (profile?.is_active === false) throw new Error('Your account is inactive and cannot confirm receipt.')
+
+      const confirmedAt = new Date().toISOString()
+      const currentValues = document.custom_field_values ?? {}
+      const updatedValues = {
+        ...currentValues,
+        _forwarding_receipt_confirmed: true,
+        _forwarding_receipt_confirmed_at: confirmedAt,
+        _forwarding_receipt_confirmed_by: authResult.user.id,
+        _forwarding_receipt_confirmed_by_name: profile?.full_name?.trim() || authResult.user.email || 'Forwarding Staff',
+      }
+
+      const { data: updated, error: updateError } = await supabase
+        .from('unrecorded_papers')
+        .update({ custom_field_values: updatedValues })
+        .eq('id', document.id)
+        .select('id')
+        .maybeSingle()
+      if (updateError) throw updateError
+      if (!updated) throw new Error('The paper could not be confirmed. Refresh the page and try again.')
+
+      setSuccess(`Receipt confirmed for ${document.reference_number || 'the unrecorded paper'}. It is now ready to be released to staff.`)
+      await loadData()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to confirm Board Room receipt.'
+      console.error('Unable to confirm unrecorded Board Room receipt:', err)
+      setError(message)
+    } finally {
+      setConfirmingReceiptId(null)
+    }
+  }
+
   async function handleStartDirectRelease(
     document: ReceivingRecord,
     returnedWorkflow?: WorkflowRecord,
@@ -1167,13 +1806,28 @@ export default function ForwardingRecords() {
     setSuccess('')
 
     // A returned paper becomes eligible for Releasing only after the
-    // originating office confirms physical receipt. Reuse that same workflow
-    // row so the Board Room return history is preserved and no duplicate
-    // receiving_record_id is inserted.
+    // originating office confirms physical receipt. For workflow-backed
+    // returns, origin_office_received_at is authoritative. For a separate
+    // unrecorded_papers row, the confirmation metadata on that row is used.
+    const isConfirmedUnrecordedReturn =
+      Boolean(document.is_unrecorded_paper) &&
+      hasForwardingStaffConfirmedBoardRoomReturn(document)
+
     const isConfirmedReturn =
-      Boolean(returnedWorkflow?.origin_office_received_at) &&
-      returnedWorkflow?.workflow_status === 'completed' &&
-      !returnedWorkflow.release_assigned_to
+      (Boolean(returnedWorkflow?.origin_office_received_at) &&
+        returnedWorkflow?.workflow_status === 'completed' &&
+        !returnedWorkflow.release_assigned_to) ||
+      isConfirmedUnrecordedReturn
+
+    // Do not reject a workflow-backed returned paper just because its linked
+    // receiving_records copy does not carry the separate-table confirmation.
+    if (
+      document.is_unrecorded_paper &&
+      !isConfirmedReturn
+    ) {
+      setError('Confirm receipt of this paper from the Board Room before releasing it to staff.')
+      return
+    }
 
     if (
       !isConfirmedReturn &&
@@ -1186,7 +1840,7 @@ export default function ForwardingRecords() {
     // Prefer the confirmed returned workflow. Otherwise reuse an old
     // unassigned direct-release draft or create a local-only draft.
     const existingDraft = returnedWorkflow ?? workflows.find(({ workflow }) =>
-      workflow.receiving_record_id === document.id &&
+      (workflow.unrecorded_paper_id || workflow.receiving_record_id) === document.id &&
       workflow.workflow_route === 'direct_release' &&
       !workflow.release_assigned_to &&
       !workflow.release_received_at
@@ -1196,7 +1850,8 @@ export default function ForwardingRecords() {
     const forwardingTimeValue = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
     const draft: WorkflowRecord = existingDraft ?? {
       id: `draft-release:${document.id}`,
-      receiving_record_id: document.id,
+      receiving_record_id: document.is_unrecorded_paper ? null : document.id,
+      unrecorded_paper_id: document.is_unrecorded_paper ? document.id : null,
       transaction_person: document.sender || document.bearer || 'Direct release',
       storage_type: 'folder',
       folder_color: 'Other',
@@ -1299,6 +1954,7 @@ export default function ForwardingRecords() {
           .from('document_workflow')
           .insert({
             receiving_record_id: releaseAssignment.receiving_record_id,
+            unrecorded_paper_id: releaseAssignment.unrecorded_paper_id ?? null,
             transaction_person: releaseAssignment.transaction_person,
             storage_type: releaseAssignment.storage_type,
             folder_color: releaseAssignment.folder_color,
@@ -1342,9 +1998,17 @@ export default function ForwardingRecords() {
         }
       }
 
-      const document = documents.find(
-        item => item.id === releaseAssignment.receiving_record_id,
-      )
+      const assignedDocumentId =
+        releaseAssignment.unrecorded_paper_id || releaseAssignment.receiving_record_id
+      if (assignedDocumentId) {
+        setUrgentNotificationsHandledIds(current => {
+          const next = new Set(current)
+          next.add(assignedDocumentId)
+          return next
+        })
+      }
+
+      const document = documents.find(item => item.id === assignedDocumentId)
 
       setSuccess(
         `${document?.reference_number || 'Document'} forwarded to ${releaseStaff} — ${instruction}.`,
@@ -1401,9 +2065,14 @@ export default function ForwardingRecords() {
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className={`font-semibold ${isSelected ? 'text-blue-950 dark:text-slate-100' : 'text-blue-800 dark:text-sky-300'}`}>
+            <p className="font-semibold text-blue-800 dark:text-sky-300">
               {document.reference_number || 'No reference number'}
             </p>
+            {isUnrecordedBoardRoomPaper(document) && (
+              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                Unrecorded
+              </span>
+            )}
             <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
               selectedUrgency === 'urgent'
                 ? 'bg-red-100 text-red-700 dark:bg-red-950/70 dark:text-red-300'
@@ -1413,35 +2082,47 @@ export default function ForwardingRecords() {
             </span>
           </div>
           <div
-            style={{
-              backgroundColor: isDarkTheme
-                ? (isSelected ? '#0f172a' : '#0f172acc')
-                : (isSelected ? '#ffffff' : '#f8fafc'),
-            }}
-            className={`mt-3 flex flex-wrap gap-3 rounded-lg border px-3 py-2 ${isSelected ? 'border-blue-200 dark:border-slate-600' : 'border-slate-200 dark:border-slate-600'}`}
+            className="mt-3 space-y-3 rounded-lg border border-slate-200 bg-white/80 p-3 dark:border-slate-600 dark:bg-slate-950/70"
+            onClick={event => event.stopPropagation()}
           >
-            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-100" onClick={event => event.stopPropagation()}>
-              <input
-                type="radio"
-                name={`picker-urgency-${document.id}`}
-                checked={selectedUrgency === 'urgent'}
-                onChange={() => setSelectedDocumentUrgency(document.id, 'urgent')}
-                onClick={event => event.stopPropagation()}
-                className="accent-red-600"
-              />
-              <AlertTriangle size={13} className="text-red-600" /> Urgent
-            </label>
-            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-100" onClick={event => event.stopPropagation()}>
-              <input
-                type="radio"
-                name={`picker-urgency-${document.id}`}
-                checked={selectedUrgency === 'not_urgent'}
-                onChange={() => setSelectedDocumentUrgency(document.id, 'not_urgent')}
-                onClick={event => event.stopPropagation()}
-                className="accent-blue-700"
-              />
-              Not Urgent
-            </label>
+            <div>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                Urgency
+              </p>
+              <div className="flex flex-wrap gap-4">
+                <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-100">
+                  <input
+                    type="radio"
+                    name={`picker-urgency-${document.id}`}
+                    checked={selectedUrgency === 'urgent'}
+                    onChange={() => setSelectedDocumentUrgency(document.id, 'urgent')}
+                    className="accent-red-600"
+                  />
+                  <AlertTriangle size={13} className="text-red-600" /> Urgent
+                </label>
+                <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-100">
+                  <input
+                    type="radio"
+                    name={`picker-urgency-${document.id}`}
+                    checked={selectedUrgency === 'not_urgent'}
+                    onChange={() => setSelectedDocumentUrgency(document.id, 'not_urgent')}
+                    className="accent-blue-700"
+                  />
+                  Not Urgent
+                </label>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-200 pt-3 dark:border-slate-700">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">Assigned Storage Group</p>
+              <p className="mt-1 text-xs font-semibold text-indigo-700 dark:text-indigo-300">
+                {(() => {
+                  const group = storageGroups.find(item => item.id === documentStorageGroupIds[document.id])
+                  if (!group) return isSelected ? 'No storage group assigned' : `Will be assigned to ${storageGroups.find(item => item.id === activeStorageGroupId)?.name || 'active group'} when selected`
+                  return group.storageType === 'folder' ? `${group.name} — Folder: ${group.folderColor || 'Choose color'}` : `${group.name} — Box: ${group.boxNumber || 'Enter number'}`
+                })()}
+              </p>
+            </div>
           </div>
           <p className={`mt-3 break-words text-sm font-medium ${isSelected ? 'text-slate-900 dark:text-slate-100' : 'text-slate-800 dark:text-slate-100'}`}>
             {document.content || document.subject || 'No subject'}
@@ -1522,8 +2203,8 @@ export default function ForwardingRecords() {
                     {urgentReceivedDocuments.map(document => (
                       <div key={`new-${document.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-red-50/60">
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number}>
-                            PresOffice No.: {document.reference_number || '—'}
+                          <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number ?? ''}>
+                            PresOffice No.: {isUnrecordedBoardRoomPaper(document) ? 'UNRECORDED' : document.reference_number || '—'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document.system_code || ''}>
                             System Code: {document.system_code || '—'}
@@ -1544,7 +2225,7 @@ export default function ForwardingRecords() {
                       <div key={`returned-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-amber-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
-                            PresOffice No.: {document?.reference_number || '—'}
+                            PresOffice No.: {isUnrecordedBoardRoomPaper(document) ? 'UNRECORDED' : document?.reference_number || '—'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document?.system_code || ''}>
                             System Code: {document?.system_code || '—'}
@@ -1573,16 +2254,16 @@ export default function ForwardingRecords() {
             <button
               type="button"
               onClick={() => setReturnedNotificationsOpen(open => !open)}
-              aria-label={`Returned documents awaiting receipt: ${returnedAwaitingReceiptWorkflows.length}`}
+              aria-label={`Returned documents awaiting receipt: ${returnedAwaitingReceiptCount}`}
               aria-expanded={returnedNotificationsOpen}
               title="Returned documents awaiting receipt"
               className="relative inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-3 text-blue-800 shadow-sm transition hover:bg-blue-100 hover:text-blue-900 dark:border-blue-700 dark:bg-blue-950/50 dark:text-blue-200 dark:hover:bg-blue-900/60"
             >
               <Undo2 size={18} />
               <span className="whitespace-nowrap text-xs font-semibold">Returned</span>
-              {returnedAwaitingReceiptWorkflows.length > 0 && (
+              {returnedAwaitingReceiptCount > 0 && (
                 <span className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-slate-900">
-                  {returnedAwaitingReceiptWorkflows.length > 99 ? '99+' : returnedAwaitingReceiptWorkflows.length}
+                  {returnedAwaitingReceiptCount > 99 ? '99+' : returnedAwaitingReceiptCount}
                 </span>
               )}
             </button>
@@ -1593,7 +2274,7 @@ export default function ForwardingRecords() {
                   <div>
                     <h3 className="font-bold text-slate-900">Returned Documents</h3>
                     <p className="text-xs text-slate-500">
-                      {returnedAwaitingReceiptWorkflows.length} awaiting origin-office receipt
+                      {returnedAwaitingReceiptCount} awaiting origin-office receipt
                     </p>
                   </div>
                   <button
@@ -1606,7 +2287,7 @@ export default function ForwardingRecords() {
                   </button>
                 </div>
 
-                {returnedAwaitingReceiptWorkflows.length === 0 ? (
+                {returnedAwaitingReceiptCount === 0 ? (
                   <div className="px-4 py-8 text-center">
                     <CheckCircle2 className="mx-auto text-green-600" size={25} />
                     <p className="mt-2 text-sm font-semibold text-slate-800">No returned documents awaiting receipt</p>
@@ -1618,7 +2299,7 @@ export default function ForwardingRecords() {
                       <div key={`returned-pending-${workflow.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-blue-50/60">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900" title={document?.reference_number || ''}>
-                            PresOffice No.: {document?.reference_number || '—'}
+                            PresOffice No.: {isUnrecordedBoardRoomPaper(document) ? 'UNRECORDED' : document?.reference_number || '—'}
                           </p>
                           <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document?.system_code || ''}>
                             System Code: {document?.system_code || '—'}
@@ -1647,6 +2328,24 @@ export default function ForwardingRecords() {
                         </button>
                       </div>
                     ))}
+                    {returnedAwaitingReceiptUnrecordedDocuments.map(document => (
+                      <div key={`returned-unrecorded-${document.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-blue-50/60">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-900" title={document.reference_number || ''}>
+                            PresOffice No.: {isUnrecordedBoardRoomPaper(document) ? 'UNRECORDED' : document.reference_number || '—'}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs text-slate-600">
+                            System Code: {document.system_code || '—'}
+                          </p>
+                          <p className="mt-1 truncate text-xs text-slate-600">
+                            {document.content || document.subject || 'Unrecorded paper returned by Board Room'}
+                          </p>
+                          <p className="mt-1 text-[10px] font-semibold text-blue-700">
+                            Unrecorded Board Room return · Awaiting receipt confirmation
+                          </p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -1660,7 +2359,7 @@ export default function ForwardingRecords() {
               setSuccess('')
               setShowForm(true)
             }}
-            disabled={availableDocuments.length === 0 || loading}
+            disabled={loading}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus size={17} />
@@ -1701,7 +2400,7 @@ export default function ForwardingRecords() {
               <p className="mt-0.5 text-xs text-slate-500">
                 {loading
                   ? 'Loading records...'
-                  : `${filteredWorkflows.length + availableDocuments.length} total papers · ${availableDocuments.length} awaiting first action`}
+                  : `${totalTableRows} total records · ${filteredWorkflows.length} Board Room transactions · ${filteredUntouchedDocuments.length} unrecorded returns`}
               </p>
             </div>
           </div>
@@ -1819,9 +2518,9 @@ export default function ForwardingRecords() {
                     colSpan={10}
                     className="px-4 py-14 text-center text-sm text-slate-500"
                   >
-                    {workflows.length === 0 && availableDocuments.length === 0
-                      ? 'No received papers or forwarding records found.'
-                      : 'No matching forwarding records found.'}
+                    {workflows.length === 0 && filteredUntouchedDocuments.length === 0
+                      ? 'No Board Room transactions or unrecorded Board Room returns found.'
+                      : 'No matching Board Room transactions or unrecorded returns found.'}
                   </td>
                 </tr>
               ) : (
@@ -1830,7 +2529,16 @@ export default function ForwardingRecords() {
                   .map((document, index) => (
                     <tr key={`untouched-${document.id}`} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60">
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-500">{pageStart + index + 1}</td>
-                      <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800 dark:text-slate-100">{document.reference_number || '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                        <div className="flex items-center gap-2">
+                          <span>{document.reference_number || '—'}</span>
+                          {isUnrecordedBoardRoomPaper(document) && (
+                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                              Unrecorded
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="max-w-[240px] px-4 py-3.5 text-xs text-slate-700 dark:text-slate-200" title={document.content || document.subject || ''}>
                         <span className="block truncate">{document.content || document.subject || document.system_code || '—'}</span>
                         <span className="mt-1 block text-[10px] text-slate-500 dark:text-slate-400">{document.system_code || ''}</span>
@@ -1838,11 +2546,11 @@ export default function ForwardingRecords() {
                       <td className="min-w-[190px] px-4 py-3.5 text-xs text-slate-600 dark:text-slate-300">
                         <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Origin / Sender</p>
                         <p className="mt-0.5 font-medium text-slate-800 dark:text-slate-100">{document.origin_office || document.sender || document.bearer || '—'}</p>
-                        <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Received · No action yet</p>
+                        <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">{'Returned by Board Room'}</p>
                       </td>
                       <td className="px-4 py-3.5"><UrgencyBadge urgency={document.urgency} /></td>
                       <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400">—</td>
-                      <td className="px-4 py-3.5"><span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">Received · No action</span></td>
+                      <td className="px-4 py-3.5"><span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${document.is_unrecorded_paper && !hasForwardingStaffConfirmedBoardRoomReturn(document) ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{document.is_unrecorded_paper ? (hasForwardingStaffConfirmedBoardRoomReturn(document) ? 'Returned to origin · Receipt confirmed' : 'Returned to origin') : 'Received · No action'}</span></td>
                       <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400">—</td>
                       <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400">
                         <div className="space-y-1">
@@ -1859,14 +2567,35 @@ export default function ForwardingRecords() {
                           >
                             <Eye size={14} /> View
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleStartDirectRelease(document)}
-                            disabled={savingReleaseAssignment || loading}
-                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <Send size={14} /> Release to Staff
-                          </button>
+                          {document.is_unrecorded_paper && !hasForwardingStaffConfirmedBoardRoomReturn(document) ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleConfirmUnrecordedBoardRoomReceipt(document)}
+                              disabled={confirmingReceiptId === document.id || loading}
+                              className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {confirmingReceiptId === document.id ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                              {confirmingReceiptId === document.id ? 'Confirming...' : 'Confirm Receipt'}
+                            </button>
+                          ) : document.is_unrecorded_paper ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleStartDirectRelease(document)}
+                              disabled={savingReleaseAssignment || loading}
+                              className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Send size={14} /> Release to Staff
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void handleStartDirectRelease(document)}
+                              disabled={savingReleaseAssignment || loading}
+                              className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Send size={14} /> Release to Staff
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1881,7 +2610,14 @@ export default function ForwardingRecords() {
                         {filteredUntouchedDocuments.length + workflowPageStart + index + 1}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-800">
-                        {document?.reference_number || '—'}
+                        <div className="flex items-center gap-2">
+                          <span>{document?.reference_number || '—'}</span>
+                          {isUnrecordedBoardRoomPaper(document) && (
+                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                              Unrecorded
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td
@@ -2030,8 +2766,15 @@ export default function ForwardingRecords() {
                               <p className="font-semibold">{workflow.release_assigned_to}</p>
                               {workflow.release_forwarded_at && (
                                 <p className="text-[10px] text-slate-400">
-                                  {new Date(workflow.release_forwarded_at).toLocaleString('en-PH')}
+                                  Forwarded: {new Date(workflow.release_forwarded_at).toLocaleString('en-PH')}
                                 </p>
+                              )}
+                              {workflow.release_received_at ? (
+                                <p className="inline-flex items-center gap-1 text-[10px] font-semibold text-green-700 dark:text-green-400">
+                                  <CheckCircle2 size={12} /> Received: {formatDateTime(workflow.release_received_at)}
+                                </p>
+                              ) : (
+                                <p className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Awaiting staff confirmation</p>
                               )}
                             </>
                           ) : (
@@ -2055,23 +2798,40 @@ export default function ForwardingRecords() {
                             <Eye size={14} />
                             View
                           </button>
-                          {workflow.workflow_status === 'returned_to_origin' ? (
+                          {workflow.release_assigned_to ? (
+                          workflow.release_received_at ? (
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-green-700">
+                              <CheckCircle2 size={14} />
+                              Receipt Confirmed
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-amber-700">
+                              <Clock size={13} />
+                              Assigned · Awaiting Staff
+                            </span>
+                          )
+                        ) : workflow.workflow_status === 'returned_to_origin' ? (
                           <button
                             type="button"
-                            onClick={() => {
-                              setError('')
-                              setSuccess('')
-                              setReceiptConfirmation(workflow)
-                            }}
+                            onClick={() => void handleConfirmReceipt(workflow)}
                             disabled={confirmingReceiptId === workflow.id}
-                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-busy={confirmingReceiptId === workflow.id}
+                            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            <CheckCircle2 size={14} />
-                            Confirm Receipt
+                            {confirmingReceiptId === workflow.id ? (
+                              <>
+                                <LoaderCircle size={14} className="animate-spin" />
+                                Confirming...
+                              </>
+                            ) : (
+                              <>
+                                <CheckCircle2 size={14} />
+                                Confirm Receipt
+                              </>
+                            )}
                           </button>
                         ) : workflow.origin_office_received_at &&
-                          workflow.workflow_status === 'completed' &&
-                          !workflow.release_assigned_to ? (
+                          workflow.workflow_status === 'completed' ? (
                           <button
                             type="button"
                             onClick={() => {
@@ -2083,11 +2843,6 @@ export default function ForwardingRecords() {
                             <Send size={14} />
                             Release to Staff
                           </button>
-                        ) : workflow.release_assigned_to ? (
-                          <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-green-700">
-                            <CheckCircle2 size={14} />
-                            Assigned
-                          </span>
                         ) : (
                           <span className="text-xs text-slate-400">—</span>
                         )}
@@ -2234,142 +2989,6 @@ export default function ForwardingRecords() {
         </div>
       )}
 
-      {/* Confirm physical receipt of a returned document. */}
-      {receiptConfirmation && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4">
-          <section
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="receipt-confirmation-title"
-            aria-describedby="receipt-confirmation-description"
-            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
-          >
-            <div className="flex items-start gap-4 border-b border-slate-100 p-6">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
-                <CheckCircle2 size={25} />
-              </div>
-
-              <div className="min-w-0">
-                <h3
-                  id="receipt-confirmation-title"
-                  className="text-lg font-bold text-slate-900 dark:text-slate-100"
-                >
-                  Confirm Document Receipt
-                </h3>
-
-                <p
-                  id="receipt-confirmation-description"
-                  className="mt-2 text-sm leading-6 text-slate-600"
-                >
-                  Confirm that this document has physically arrived at its
-                  originating office. Only confirm after the office has
-                  actually received the document.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-3 bg-slate-50 px-6 py-4">
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-sm text-slate-500">PR/Office No.</span>
-                <span className="text-sm font-semibold text-slate-900">
-                  {documents.find(
-                    item =>
-                      item.id === receiptConfirmation.receiving_record_id,
-                  )?.reference_number || '—'}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-sm text-slate-500">Origin Office</span>
-                <span className="text-right text-sm font-semibold text-slate-900">
-                  {(() => {
-                    const document = documents.find(
-                      item =>
-                        item.id === receiptConfirmation.receiving_record_id,
-                    )
-
-                    return (
-                      document?.origin_office ||
-                      document?.current_office ||
-                      document?.destination_folder ||
-                      'Not specified'
-                    )
-                  })()}
-                </span>
-              </div>
-
-              <div>
-                <p className="text-sm font-medium text-slate-500">
-                  Board Room Remarks
-                </p>
-                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">
-                  {receiptConfirmation.returned_to_origin_remarks?.trim() ||
-                    'No remarks provided.'}
-                </p>
-              </div>
-
-              {receiptConfirmation.returned_to_origin_person && (
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-sm text-slate-500">Picked Up By</span>
-                  <span className="text-right text-sm font-semibold text-slate-900">
-                    {receiptConfirmation.returned_to_origin_person}
-                  </span>
-                </div>
-              )}
-
-              {receiptConfirmation.returned_to_origin_at && (
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-sm text-slate-500">Returned On</span>
-                  <span className="text-right text-sm font-semibold text-slate-900">
-                    {formatDate(
-                      receiptConfirmation.returned_to_origin_at.slice(0, 10),
-                    )}
-                  </span>
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                <UrgencyBadge urgency={receiptConfirmation.urgency} />
-                <StorageBadge workflow={receiptConfirmation} />
-              </div>
-
-              <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                <AlertTriangle size={17} className="shrink-0" />
-                This action marks the workflow as completed.
-              </div>
-            </div>
-
-            <div className="flex flex-col-reverse gap-3 p-6 sm:flex-row sm:justify-end">
-              <button
-                type="button"
-                disabled={confirmingReceiptId !== null}
-                onClick={() => setReceiptConfirmation(null)}
-                className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                disabled={confirmingReceiptId === receiptConfirmation.id}
-                onClick={() => void handleConfirmReceipt(receiptConfirmation)}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {confirmingReceiptId === receiptConfirmation.id ? (
-                  <LoaderCircle size={16} className="animate-spin" />
-                ) : (
-                  <CheckCircle2 size={16} />
-                )}
-
-                {confirmingReceiptId === receiptConfirmation.id
-                  ? 'Confirming...'
-                  : 'Confirm Receipt'}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
       {/* Assign a returned document to releasing staff. */}
       {releaseAssignment && (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/50 p-4">
@@ -2404,15 +3023,15 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                 <p className="text-xs font-semibold text-slate-500">PR/Office No.</p>
                 <p className="mt-1 text-sm font-bold text-slate-900">
                   {documents.find(
-                    item => item.id === releaseAssignment.receiving_record_id,
+                    item => item.id === (releaseAssignment.unrecorded_paper_id || releaseAssignment.receiving_record_id),
                   )?.reference_number || '—'}
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
                   {documents.find(
-                    item => item.id === releaseAssignment.receiving_record_id,
+                    item => item.id === (releaseAssignment.unrecorded_paper_id || releaseAssignment.receiving_record_id),
                   )?.content ||
                     documents.find(
-                      item => item.id === releaseAssignment.receiving_record_id,
+                      item => item.id === (releaseAssignment.unrecorded_paper_id || releaseAssignment.receiving_record_id),
                     )?.subject ||
                     'No subject'}
                 </p>
@@ -2582,7 +3201,7 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
             role="dialog"
             aria-modal="true"
             aria-labelledby="forwarding-form-title"
-            className="my-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-xl"
+            className="my-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
           >
             <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
               <div>
@@ -2613,7 +3232,122 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
               </button>
             </div>
 
-            <form onSubmit={handleForward} className="space-y-5 p-6">
+            <form onSubmit={handleForward} className="grid min-h-0 grid-cols-1 gap-5 overflow-y-auto p-6 xl:grid-cols-2">
+              <div className="grid grid-cols-1 items-start gap-5 xl:col-span-2 xl:grid-cols-2">
+              <section className="rounded-xl border border-amber-300 bg-amber-50/70 p-3 dark:border-amber-700 dark:bg-amber-950/20">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Unrecorded Papers</h3>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                      Add an unrecorded paper. It is stored separately from Receiving Records. Enter only its Content.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowManualPaperForm(true)
+                      setManualUnrecordedPapers(current => [...current, {
+                        id: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        referenceNumber: '',
+                        subject: '',
+                        urgency: 'not_urgent',
+                        sender: '',
+                        originOffice: '',
+                        destinationFolder: '',
+                        destinationFields: [],
+                        customFieldValues: {},
+                      }])
+                      if (!currentAccountName) {
+                        void supabase.auth.getUser().then(async ({ data }) => {
+                          if (!data.user) return
+                          const { data: profile } = await supabase
+                            .from('profiles')
+                            .select('full_name')
+                            .eq('id', data.user.id)
+                            .maybeSingle()
+                          setCurrentAccountName(String(profile?.full_name ?? '').trim())
+                        })
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700"
+                  >
+                    <Plus size={14} /> Add Unrecorded Paper
+                  </button>
+                </div>
+
+                {showManualPaperForm && manualUnrecordedPapers.some(paper => !paper.createdRecordId) && (
+                  <div className="mt-3 space-y-3">
+                    {manualUnrecordedPapers.filter(paper => !paper.createdRecordId).map((paper, index) => (
+                      <div key={paper.id} className="rounded-lg border border-amber-200 bg-white p-3 dark:border-amber-800 dark:bg-slate-900">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Unrecorded Paper {index + 1}</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (paper.createdRecordId) {
+                                setSelectedDocumentIds(current =>
+                                  current.filter(id => id !== paper.createdRecordId),
+                                )
+                                setDocumentUrgencies(current => {
+                                  const next = { ...current }
+                                  delete next[paper.createdRecordId as string]
+                                  return next
+                                })
+                              }
+                              setManualUnrecordedPapers(current =>
+                                current.filter(item => item.id !== paper.id),
+                              )
+                            }}
+                            className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                            aria-label={`Remove unrecorded paper ${index + 1}`}
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                        <div>
+                          <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Content *</label>
+                          <textarea
+                            rows={4}
+                            required
+                            value={paper.subject}
+                            onChange={event => updateManualPaper(paper.id, { subject: event.target.value })}
+                            placeholder="Enter the unrecorded paper content"
+                            className={inputClass}
+                          />
+                        </div>
+                        <div className="mt-3">
+                          <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Urgency *</label>
+                          <select
+                            value={paper.urgency}
+                            onChange={event => updateManualPaper(paper.id, { urgency: event.target.value as 'urgent' | 'not_urgent' })}
+                            className={inputClass}
+                          >
+                            <option value="not_urgent">Not Urgent</option>
+                            <option value="urgent">Urgent</option>
+                          </select>
+                        </div>
+                        <div className="mt-3 flex items-center justify-between gap-3 border-t border-amber-100 pt-3 dark:border-amber-900">
+                          {paper.createdRecordId ? (
+                            <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">This paper is saved separately and ready to forward.</p>
+                          ) : (
+                            <p className="text-xs text-slate-500">Enter the content, then create this paper.</p>
+                          )}
+                          <button
+                            type="button"
+                            disabled={Boolean(paper.creating || paper.createdRecordId)}
+                            onClick={() => void createManualUnrecordedPaper(paper.id)}
+                            className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {paper.creating ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                            {paper.creating ? 'Creating...' : paper.createdRecordId ? 'Created' : 'Create Paper'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
               <div>
                 <label className="text-xs font-semibold text-slate-600">
                   Documents to Forward *
@@ -2649,44 +3383,114 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                     </span>
                   </div>
 
+                  <div className="mt-3">
+                    <label className="sr-only" htmlFor="selected-documents-search">Search selected documents</label>
+                    <div className="relative">
+                      <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        id="selected-documents-search"
+                        type="search"
+                        value={selectedDocumentSearch}
+                        onChange={event => setSelectedDocumentSearch(event.target.value)}
+                        placeholder="Search PresOffice No., subject, urgency, or storage..."
+                        className="w-full rounded-lg border border-blue-200 bg-white py-2 pl-9 pr-3 text-xs text-slate-800 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                      />
+                    </div>
+                  </div>
+
                   {selectedDocuments.length === 0 ? (
                     <p className="mt-4 text-sm text-slate-500">
                       No documents selected yet.
                     </p>
+                  ) : filteredSelectedDocuments.length === 0 ? (
+                    <p className="mt-3 rounded-lg border border-blue-200 bg-white px-3 py-5 text-center text-xs text-slate-500">
+                      No selected documents match your search.
+                    </p>
                   ) : (
-                    <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
-                      {selectedDocuments.map(document => (
-                        <div
-                          key={document.id}
-                          className="flex items-start justify-between gap-3 rounded-lg border border-blue-100 bg-white p-3"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-slate-900">
-                              {document.reference_number}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                              {document.content ||
-                                document.subject ||
-                                'No subject'}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {document.origin_office ||
-                                document.current_office ||
-                                'Office not specified'}
-                            </p>
-                          </div>
+                    <div className="mt-3 overflow-hidden rounded-lg border border-blue-200 bg-white">
+                      <div className="max-h-[360px] overflow-auto">
+                        <table className="w-full min-w-[440px] border-collapse text-left text-xs">
+                          <thead className="sticky top-0 z-10 bg-blue-100 text-[10px] uppercase tracking-wide text-blue-900 shadow-sm">
+                            <tr>
+                              <th className="px-3 py-2.5 font-bold">PresOffice No.</th>
+                              <th className="px-3 py-2.5 font-bold">Urgency</th>
+                              <th className="px-3 py-2.5 font-bold">Storage</th>
+                              <th className="w-10 px-2 py-2.5 text-center font-bold"> </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {visibleSelectedDocuments.map(document => {
+                              const assignment = documentStorageAssignments[document.id]
+                              const urgency = documentUrgencies[document.id] ?? 'not_urgent'
+                              const assignedGroup = storageGroups.find(group => group.id === documentStorageGroupIds[document.id])
+                              const storageLabel = !assignment
+                                ? 'Not assigned'
+                                : `${assignedGroup?.name ? `${assignedGroup.name} — ` : ''}${assignment.storageType === 'folder' ? `Folder: ${assignment.folderColor || 'Select color'}` : `Box: ${assignment.boxNumber || 'Enter number'}`}`
+
+                              return (
+                                <tr key={document.id} className="hover:bg-blue-50/70">
+                                  <td className="whitespace-nowrap px-3 py-3 font-semibold text-slate-900">
+                                    <div className="flex items-center gap-2">
+                                      <span>{document.reference_number}</span>
+                                      {isUnrecordedBoardRoomPaper(document) && (
+                                        <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800">
+                                          Unrecorded
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="whitespace-nowrap px-3 py-3">
+                                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold ${
+                                      urgency === 'urgent'
+                                        ? 'bg-red-100 text-red-700'
+                                        : 'bg-slate-100 text-slate-700'
+                                    }`}>
+                                      {urgency === 'urgent' ? 'Urgent' : 'Not Urgent'}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-3 font-medium text-blue-800">
+                                    {storageLabel}
+                                  </td>
+                                  <td className="px-2 py-3 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleDocumentSelection(document.id)}
+                                      aria-label={`Remove ${document.reference_number}`}
+                                      className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                                    >
+                                      <X size={15} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-blue-100 bg-white px-3 py-2 text-[11px] text-slate-500">
+                        <span>
+                          Showing {(safeSelectedDocumentsPage - 1) * selectedDocumentsPageSize + 1}–{Math.min(safeSelectedDocumentsPage * selectedDocumentsPageSize, filteredSelectedDocuments.length)} of {filteredSelectedDocuments.length} documents · 10 per page
+                        </span>
+                        <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() =>
-                              toggleDocumentSelection(document.id)
-                            }
-                            aria-label={`Remove ${document.reference_number}`}
-                            className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                            disabled={safeSelectedDocumentsPage <= 1}
+                            onClick={() => setSelectedDocumentsPage(page => Math.max(1, page - 1))}
+                            className="rounded border border-slate-200 px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            <X size={16} />
+                            Previous
+                          </button>
+                          <span className="tabular-nums">Page {safeSelectedDocumentsPage} of {selectedDocumentsTotalPages}</span>
+                          <button
+                            type="button"
+                            disabled={safeSelectedDocumentsPage >= selectedDocumentsTotalPages}
+                            onClick={() => setSelectedDocumentsPage(page => Math.min(selectedDocumentsTotalPages, page + 1))}
+                            className="rounded border border-slate-200 px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Next
                           </button>
                         </div>
-                      ))}
+                      </div>
                     </div>
                   )}
 
@@ -2703,7 +3507,9 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                 </div>
               </div>
 
-              <div>
+              </div>
+
+              <div className="xl:col-span-2">
                 <label
                   htmlFor="transaction-person"
                   className="text-xs font-semibold text-slate-600"
@@ -2720,141 +3526,8 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                 />
               </div>
 
-              <fieldset>
-                <legend className="text-xs font-semibold text-slate-600">
-                  Document Storage Location *
-                </legend>
 
-                <div className="mt-2 flex flex-wrap gap-4">
-                  <label className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="radio"
-                      name="storage-type"
-                      checked={storageType === 'folder'}
-                      onChange={() => setStorageType('folder')}
-                      className="accent-blue-700"
-                    />
-                    Folder (Color)
-                  </label>
-                  <label className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="radio"
-                      name="storage-type"
-                      checked={storageType === 'box'}
-                      onChange={() => setStorageType('box')}
-                      className="accent-blue-700"
-                    />
-                    Box (Number)
-                  </label>
-                </div>
-
-                {storageType === 'folder' ? (
-                  <div className="mt-3">
-                    <label
-                      htmlFor="folder-color"
-                      className="text-xs font-semibold text-slate-600"
-                    >
-                      Folder Color *
-                    </label>
-                    <select
-                      id="folder-color"
-                      required
-                      value={folderColor}
-                      onChange={event => setFolderColor(event.target.value)}
-                      className={inputClass}
-                    >
-                      <option value="">Select folder color...</option>
-                      {folderColors.map(color => (
-                        <option key={color} value={color}>
-                          {color}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ) : (
-                  <div className="mt-3">
-                    <label
-                      htmlFor="box-number"
-                      className="text-xs font-semibold text-slate-600"
-                    >
-                      Box Number *
-                    </label>
-                    <input
-                      id="box-number"
-                      required
-                      value={boxNumber}
-                      onChange={event => setBoxNumber(event.target.value)}
-                      placeholder="Enter box number"
-                      className={inputClass}
-                    />
-                  </div>
-                )}
-              </fieldset>
-
-              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      Urgency for Each Document
-                    </h4>
-                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                      Set urgency separately so urgent and not-urgent documents can be forwarded in one transaction.
-                    </p>
-                  </div>
-                  <span className="text-xs text-slate-500 dark:text-slate-400">
-                    {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'urgent').length} urgent · {selectedDocuments.filter(document => (documentUrgencies[document.id] ?? 'not_urgent') === 'not_urgent').length} not urgent
-                  </span>
-                </div>
-
-                {selectedDocuments.length === 0 ? (
-                  <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-                    Select documents first to set their urgency.
-                  </p>
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    {selectedDocuments.map(document => {
-                      const selectedUrgency = documentUrgencies[document.id] ?? 'not_urgent'
-                      return (
-                        <div key={document.id} className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700 dark:bg-slate-800">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
-                              {document.reference_number || 'No reference number'}
-                            </p>
-                            <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300">
-                              {document.content || document.subject || 'No subject'}
-                            </p>
-                          </div>
-                          <div className="flex shrink-0 flex-wrap gap-3">
-                            <label className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-slate-700 dark:text-slate-200">
-                              <input
-                                type="radio"
-                                name={`urgency-${document.id}`}
-                                checked={selectedUrgency === 'urgent'}
-                                onChange={() => setSelectedDocumentUrgency(document.id, 'urgent')}
-                                className="accent-red-600"
-                              />
-                              <AlertTriangle size={14} className="text-red-600" />
-                              Urgent
-                            </label>
-                            <label className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-slate-700 dark:text-slate-200">
-                              <input
-                                type="radio"
-                                name={`urgency-${document.id}`}
-                                checked={selectedUrgency === 'not_urgent'}
-                                onChange={() => setSelectedDocumentUrgency(document.id, 'not_urgent')}
-                                className="accent-blue-700"
-                              />
-                              Not Urgent
-                            </label>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:col-span-2">
                 <div>
                   <label className="text-xs font-semibold text-slate-600">
                     Forwarding Date
@@ -2895,7 +3568,7 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 xl:col-span-2">
                 <p className="text-xs font-semibold text-slate-600">
                   Recorded By
                 </p>
@@ -2905,18 +3578,14 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                 </p>
               </div>
 
-              <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:justify-between">
+              <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:justify-between xl:col-span-2">
                 <p className="self-center text-sm font-semibold text-slate-600">
                   {selectedDocumentIds.length} document(s) selected
                 </p>
                 <div className="flex flex-col-reverse gap-3 sm:flex-row">
                   <button
                     type="button"
-                    disabled={saving}
-                    onClick={() => {
-                      setShowForm(false)
-                      resetForm()
-                    }}
+                    onClick={() => void cancelForwardingForm()}
                     className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                   >
                     Cancel
@@ -2982,6 +3651,60 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                     />
                   </div>
 
+                  <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-900 dark:bg-indigo-950/40">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-bold text-indigo-950 dark:text-indigo-200">Storage Groups</p>
+                        <p className="text-xs text-indigo-700 dark:text-indigo-300">Choose a storage group first. Matching storage locations automatically share one group.</p>
+                      </div>
+                      <button type="button" onClick={addStorageGroup} className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-700 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-800">
+                        <Plus size={14} /> Add Storage Group
+                      </button>
+                    </div>
+                    <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                      {storageGroups.map((group, index) => {
+                        const assignedCount = Object.values(documentStorageGroupIds).filter(id => id === group.id).length
+                        const isActive = activeStorageGroupId === group.id
+                        return (
+                          <button key={group.id} type="button" onClick={() => setActiveStorageGroupId(group.id)} className={`min-w-[170px] rounded-lg border p-3 text-left transition ${isActive ? 'border-indigo-600 bg-white ring-2 ring-indigo-200 dark:border-indigo-400 dark:bg-slate-900 dark:ring-indigo-900' : 'border-indigo-200 bg-indigo-100/70 hover:bg-white dark:border-slate-700 dark:bg-slate-900/70'}`}>
+                            <span className="block text-xs font-bold text-slate-900 dark:text-slate-100">{group.name || `Storage Group ${index + 1}`}</span>
+                            <span className="mt-1 block text-[11px] text-slate-600 dark:text-slate-300">{group.storageType === 'folder' ? `Folder: ${group.folderColor || 'Choose color'}` : `Box: ${group.boxNumber || 'Enter number'}`}</span>
+                            <span className="mt-1 block text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">{assignedCount} document(s)</span>
+                            {isActive && <span className="mt-1 inline-block text-[10px] font-bold uppercase text-indigo-700 dark:text-indigo-300">Active</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {storageGroups.find(group => group.id === activeStorageGroupId) && (() => {
+                      const group = storageGroups.find(item => item.id === activeStorageGroupId)!
+                      return (
+                        <div className="mt-3 grid gap-3 rounded-lg border border-indigo-200 bg-white p-3 sm:grid-cols-2 dark:border-slate-700 dark:bg-slate-900">
+                          <div>
+                            <label className="text-xs font-semibold text-slate-700 dark:text-slate-200">Storage Type</label>
+                            <div className="mt-2 flex gap-4">
+                              <label className="flex items-center gap-1.5 text-xs font-medium"><input type="radio" checked={group.storageType === 'folder'} onChange={() => updateStorageGroup(group.id, { storageType: 'folder' })} /> Folder</label>
+                              <label className="flex items-center gap-1.5 text-xs font-medium"><input type="radio" checked={group.storageType === 'box'} onChange={() => updateStorageGroup(group.id, { storageType: 'box' })} /> Box</label>
+                            </div>
+                          </div>
+                          {group.storageType === 'folder' ? (
+                            <div>
+                              <label className="text-xs font-semibold text-slate-700 dark:text-slate-200">Folder Color *</label>
+                              <select value={group.folderColor} onChange={event => updateStorageGroup(group.id, { folderColor: event.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950">
+                                <option value="">Select folder color...</option>
+                                {folderColors.map(color => <option key={color} value={color}>{color} Folder</option>)}
+                              </select>
+                            </div>
+                          ) : (
+                            <div>
+                              <label className="text-xs font-semibold text-slate-700 dark:text-slate-200">Box Number *</label>
+                              <input value={group.boxNumber} onChange={event => updateStorageGroup(group.id, { boxNumber: event.target.value })} placeholder="Enter box number" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950" />
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </div>
+
                   <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/50">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
@@ -3039,7 +3762,7 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => { setSelectedDocumentIds([]); setDocumentUrgencies({}) }}
+                      onClick={() => { setSelectedDocumentIds([]); setDocumentUrgencies({}); setDocumentStorageAssignments({}); setDocumentStorageGroupIds({}) }}
                       disabled={selectedDocumentIds.length === 0}
                       className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                     >
@@ -3062,3 +3785,4 @@ Choose an active Releasing Staff member. Nothing is saved until you click Forwar
     </div>
   )
 }
+ 

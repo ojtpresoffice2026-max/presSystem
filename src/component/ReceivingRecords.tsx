@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -13,6 +13,7 @@ import {
   Ban,
   ChevronDown,
   MessageSquareReply,
+  Check,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import AuditHistory from './AuditHistory'
@@ -36,6 +37,7 @@ type ReceivingRecord = {
   remarks: string | null
   created_at: string | null
   created_by: string | null
+  is_unrecorded_paper?: boolean | null
   urgency?: string | boolean | null
   is_urgent?: boolean | null
   office_designation: string | null
@@ -238,6 +240,7 @@ function isValidHttpUrl(value: string): boolean {
 
 export default function ReceivingRecords() {
   const navigate = useNavigate()
+  const editModalRef = useRef<HTMLElement | null>(null)
 
   const [records, setRecords] = useState<ReceivingRecord[]>([])
 
@@ -263,6 +266,15 @@ export default function ReceivingRecords() {
   const [selected, setSelected] = useState<ReceivingRecord | null>(null)
   const [draft, setDraft] = useState<EditableRecord | null>(null)
   const [editMode, setEditMode] = useState(false)
+
+  // Always show the first editable fields when entering edit mode.
+  useEffect(() => {
+    if (editMode) {
+      requestAnimationFrame(() => {
+        editModalRef.current?.scrollTo({ top: 0, behavior: 'auto' })
+      })
+    }
+  }, [editMode, selected?.id])
   const [editFolderDropdownOpen, setEditFolderDropdownOpen] = useState(false)
   const [editFolderSearch, setEditFolderSearch] = useState('')
 
@@ -280,6 +292,21 @@ export default function ReceivingRecords() {
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [insertBelowOpen, setInsertBelowOpen] = useState(false)
+  const [insertBelowSaving, setInsertBelowSaving] = useState(false)
+  const [insertBelowError, setInsertBelowError] = useState('')
+  const [insertBelowSuccessNotice, setInsertBelowSuccessNotice] = useState('')
+  const [insertBelowDraft, setInsertBelowDraft] = useState<{
+    system_code: string
+    content: string
+    bearer: string
+    custom_field_values: Record<string, unknown>
+  }>({
+    system_code: '',
+    content: '',
+    bearer: '',
+    custom_field_values: {},
+  })
   const [replyOpen, setReplyOpen] = useState(false)
   const [replySaving, setReplySaving] = useState(false)
   const [replyError, setReplyError] = useState('')
@@ -526,7 +553,7 @@ export default function ReceivingRecords() {
     return {
       reference_number: record.reference_number ?? '',
       system_code: record.system_code ?? '',
-      content: record.content || record.subject || '',
+      content: record.content?.trim() || record.subject?.trim() || record.description?.trim() || '',
       bearer: record.bearer || record.sender || '',
       receiving_staff: record.receiving_staff ?? '',
       destination_folder:
@@ -1051,6 +1078,194 @@ export default function ReceivingRecords() {
     }
   }
 
+  function getInsertedPapersForRecord(record: ReceivingRecord): ReceivingRecord[] {
+    return records
+      .filter(candidate => {
+        const metadata = candidate.custom_field_values && typeof candidate.custom_field_values === 'object'
+          ? candidate.custom_field_values as Record<string, unknown>
+          : {}
+        return metadata._record_kind === 'inserted_paper' &&
+          metadata._inserted_parent_record_id === record.id
+      })
+      .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+  }
+
+  function renderInsertedPaperRows(parent: ReceivingRecord, depth = 1): React.ReactNode {
+    return getInsertedPapersForRecord(parent).map((inserted, insertedIndex) => (
+      <Fragment key={inserted.id}>
+        <tr className="bg-indigo-50/50 hover:bg-indigo-50">
+          <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-400">
+            <span style={{ paddingLeft: `${depth * 16}px` }}>↳ {insertedIndex + 1}</span>
+          </td>
+          <td className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-700">
+            <span className="mr-2 text-indigo-500">↳</span>-
+            <span className="ml-2 inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-bold uppercase text-indigo-800">INSERTED PAPER</span>
+          </td>
+          <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-600">{inserted.system_code || '—'}</td>
+          <td className="max-w-[220px] px-4 py-3.5 text-xs text-slate-700">
+            <span className="block truncate" title={inserted.content || inserted.subject || ''}>{inserted.content || inserted.subject || '—'}</span>
+          </td>
+          <td className="px-4 py-3 text-xs text-slate-600">Bearer: {inserted.bearer || inserted.sender || '—'}</td>
+          <td className="px-4 py-3.5 text-xs text-slate-700">
+            <span className="block font-semibold uppercase">{inserted.receiving_staff || 'ACCOUNT NAME UNAVAILABLE'}</span>
+            <span className="mt-1 block whitespace-nowrap text-[10px] text-slate-500">{formatDateTime(inserted.created_at || inserted.received_at)}</span>
+          </td>
+          <td className="px-4 py-3.5 text-xs text-slate-600">{valueOrDash(inserted.urgency ?? (inserted.is_urgent ? 'Urgent' : ''))}</td>
+          <td className="px-4 py-3.5 text-xs text-slate-600">{formatDestinationFolder(inserted.destination_folder || inserted.current_office)}</td>
+          <td className="px-4 py-3.5">
+            <span className="inline-flex items-center whitespace-nowrap rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[10px] font-semibold capitalize text-blue-700">{displayStatus(inserted.status)}</span>
+          </td>
+          <td className="px-4 py-3.5">
+            <button type="button" onClick={() => openRecord(inserted)} className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-blue-50 hover:text-blue-700">
+              <Eye size={13} /> View
+            </button>
+          </td>
+        </tr>
+        {renderInsertedPaperRows(inserted, depth + 1)}
+      </Fragment>
+    ))
+  }
+
+  function updateInsertedCustomField(fieldId: string, value: unknown) {
+    setInsertBelowDraft(current => ({
+      ...current,
+      custom_field_values: {
+        ...current.custom_field_values,
+        [fieldId]: value,
+      },
+    }))
+  }
+
+  function renderInsertedDestinationFields() {
+    if (destinationFieldsLoading) {
+      return <p className="text-xs text-slate-500">Loading fields configured for this destination folder…</p>
+    }
+    if (destinationFieldDefinitions.length === 0) {
+      return <p className="text-xs text-slate-500">No additional fields are configured for this destination folder.</p>
+    }
+
+    return destinationFieldDefinitions.map(field => {
+      const value = insertBelowDraft.custom_field_values[field.id] ??
+        insertBelowDraft.custom_field_values[field.field_name] ?? ''
+      const fieldType = String(field.field_type || 'text').toLowerCase()
+      if (fieldType === 'checkbox' || fieldType === 'boolean') {
+        return (
+          <label key={field.id} className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-3 text-xs font-semibold uppercase text-slate-700">
+            <input type="checkbox" checked={value === true || value === 'true' || value === 'yes'} onChange={event => updateInsertedCustomField(field.id, event.target.checked)} className="h-4 w-4" />
+            {field.field_name}
+          </label>
+        )
+      }
+      if (fieldType === 'textarea' || fieldType === 'long_text') {
+        return (
+          <label key={field.id} className="block text-xs font-semibold uppercase text-slate-600">
+            {field.field_name}
+            <textarea rows={3} value={String(value ?? '')} onChange={event => updateInsertedCustomField(field.id, event.target.value.toUpperCase())} className={`${inputClass} mt-1 uppercase`} />
+          </label>
+        )
+      }
+      const inputType = ['number', 'date', 'email', 'url', 'tel'].includes(fieldType) ? fieldType : 'text'
+      return (
+        <label key={field.id} className="block text-xs font-semibold uppercase text-slate-600">
+          {field.field_name}
+          <input type={inputType} value={String(value ?? '')} onChange={event => updateInsertedCustomField(field.id, inputType === 'text' || inputType === 'email' ? event.target.value.toUpperCase() : event.target.value)} className={`${inputClass} mt-1 ${inputType === 'text' || inputType === 'email' ? 'uppercase' : ''}`} />
+        </label>
+      )
+    })
+  }
+
+  async function createInsertedPaper() {
+    if (!selected) return
+    const destination = (selected.destination_folder || selected.current_office || '').trim()
+    if (!insertBelowDraft.content.trim() || !destination) {
+      setInsertBelowError('Enter the inserted paper Content. The original paper must have a destination folder.')
+      return
+    }
+
+    setInsertBelowSaving(true)
+    setInsertBelowError('')
+    try {
+      const { data: authData, error: authError } = await supabase.auth.getUser()
+      if (authError) throw authError
+      if (!authData.user) throw new Error('Your account session could not be verified. Please sign in again.')
+
+      // Profile lookup is best-effort: a missing profile must not block paper insertion.
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', authData.user.id)
+        .maybeSingle()
+
+      const accountName = String(
+        profile?.full_name ||
+        authData.user.user_metadata?.full_name ||
+        authData.user.user_metadata?.name ||
+        authData.user.email ||
+        'UNKNOWN ACCOUNT'
+      ).toUpperCase()
+
+      const now = new Date()
+      const localDateReceived = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(now)
+
+      const { data: created, error: insertError } = await supabase
+        .from('receiving_records')
+        .insert({
+          reference_number: '-',
+          system_code: insertBelowDraft.system_code.trim().toUpperCase() || null,
+          record_type: 'Inserted Paper',
+          content: insertBelowDraft.content.trim(),
+          subject: insertBelowDraft.content.trim(),
+          bearer: insertBelowDraft.bearer.trim().toUpperCase() || null,
+          // receiving_records.sender is NOT NULL in the current database schema.
+          // Fall back to the authenticated account name when no sender is entered.
+          sender: insertBelowDraft.bearer.trim().toUpperCase() || accountName,
+          receiving_staff: accountName,
+          destination_folder: destination.toUpperCase(),
+          current_office: destination.toUpperCase(),
+          date_received: localDateReceived,
+          received_at: now.toISOString(),
+          status: 'received',
+          remarks: `Inserted below ${selected.reference_number}`,
+          origin_office: selected.origin_office || selected.destination_folder || selected.current_office || null,
+          created_by: authData.user.id,
+          custom_field_values: {
+            ...insertBelowDraft.custom_field_values,
+            _record_kind: 'inserted_paper',
+            _inserted_parent_record_id: selected.id,
+            _inserted_parent_reference: selected.reference_number,
+          },
+        })
+        .select('*')
+        .single()
+
+      if (insertError) throw insertError
+      setRecords(current => [...current, created as ReceivingRecord])
+      setInsertBelowOpen(false)
+      setInsertBelowDraft({ system_code: '', content: '', bearer: '', custom_field_values: {} })
+      setSuccess('Inserted paper added below the original paper.')
+      setInsertBelowSuccessNotice('INSERTED PAPER CREATED SUCCESSFULLY. IT HAS BEEN ADDED BELOW THE SELECTED DOCUMENT.')
+
+    } catch (err) {
+      const error = err as {
+        message?: string
+        details?: string
+        hint?: string
+        code?: string
+      }
+      const parts = [
+        error?.message,
+        error?.details,
+        error?.hint ? `Hint: ${error.hint}` : '',
+        error?.code ? `Code: ${error.code}` : '',
+      ].filter(Boolean)
+      setInsertBelowError(parts.length ? parts.join(' | ') : `Unable to insert the paper. Details: ${String(err)}`)
+    } finally {
+      setInsertBelowSaving(false)
+    }
+  }
+
   function handleSort(field: SortField) {
     if (sortField === field) {
       setSortDirection(current =>
@@ -1106,6 +1321,10 @@ export default function ReceivingRecords() {
     const term = normalize(appliedSearch)
 
     const filtered = records.filter(record => {
+      const metadata = record.custom_field_values && typeof record.custom_field_values === 'object'
+        ? record.custom_field_values as Record<string, unknown>
+        : {}
+      if (metadata._record_kind === 'inserted_paper') return false
       const destination = (
         record.destination_folder ||
         record.current_office ||
@@ -1327,6 +1546,29 @@ export default function ReceivingRecords() {
           style={{ left: copyToast.x, top: copyToast.y }}
         >
           {copyToast.text}
+        </div>
+      )}
+      {insertBelowSuccessNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed right-5 top-5 z-[250] flex max-w-[min(440px,calc(100vw-32px))] items-start gap-3 rounded-xl border border-green-200 bg-white px-4 py-3 shadow-2xl"
+        >
+          <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-green-100 text-green-700">
+            <Check size={16} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-green-800">INSERT BELOW SUCCESSFUL</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{insertBelowSuccessNotice}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setInsertBelowSuccessNotice('')}
+            aria-label="Dismiss success notice"
+            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          >
+            <X size={15} />
+          </button>
         </div>
       )}
       {/* Page heading */}
@@ -1693,6 +1935,7 @@ export default function ReceivingRecords() {
                 </tr>
               ) : (
                 paginatedRecords.map((record, index) => (
+                  <Fragment key={record.id}>
                   <tr
                     key={record.id}
                     className="transition-colors hover:bg-slate-50"
@@ -1709,6 +1952,11 @@ export default function ReceivingRecords() {
                       >
                         {formatReferenceNumber(record.reference_number)}
                       </button>
+                      {(record.is_unrecorded_paper === true || record.custom_field_values?._record_kind === 'unrecorded_paper') && (
+                        <span className="ml-1 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-800">
+                          UNRECORDED PAPER
+                        </span>
+                      )}
                       {record.custom_field_values?._record_kind === 'reply' && (
                         <span className="ml-1 inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-800">
                           REPLY
@@ -1764,7 +2012,7 @@ export default function ReceivingRecords() {
                     </td>
 
                     <td className="px-4 py-3.5 text-xs text-slate-600">
-                      {formatReferenceNumber(
+                      {formatDestinationFolder(
                         record.destination_folder || record.current_office,
                       )}
                     </td>
@@ -1787,6 +2035,8 @@ export default function ReceivingRecords() {
                       </button>
                     </td>
                   </tr>
+                  {renderInsertedPaperRows(record)}
+                  </Fragment>
                 ))
               )}
             </tbody>
@@ -1832,6 +2082,7 @@ export default function ReceivingRecords() {
           onClick={closeModal}
         >
           <section
+            ref={editModalRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="receiving-detail-title"
@@ -1922,6 +2173,7 @@ export default function ReceivingRecords() {
                       onChange={event =>
                         updateDraft('content', event.target.value)
                       }
+                      placeholder="Enter the document subject or content"
                       className={inputClass}
                     />
                   </label>
@@ -2103,19 +2355,18 @@ export default function ReceivingRecords() {
 
                   <label className="text-xs font-semibold text-slate-600">
                     Status
-                    <select
+                    <input
+                      type="text"
                       value={draft.status}
                       onChange={event =>
                         updateDraft('status', event.target.value)
                       }
+                      placeholder="Enter status (e.g. Received, For Verification)"
                       className={inputClass}
-                    >
-                      <option value="received">Received</option>
-                      <option value="forwarded">Forwarded</option>
-                      <option value="in_progress">In Progress</option>
-                      <option value="returned">Returned</option>
-                      <option value="completed">Completed</option>
-                    </select>
+                    />
+                    <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                      You can keep the existing status or enter a custom status.
+                    </span>
                   </label>
 
                   <label className="text-xs font-semibold text-slate-600 sm:col-span-2">
@@ -2513,6 +2764,20 @@ export default function ReceivingRecords() {
                   <>
                     <button
                       type="button"
+                      onClick={() => {
+                        setInsertBelowDraft({ system_code: '', content: '', bearer: '', custom_field_values: {} })
+                        setInsertBelowError('')
+                        void loadDestinationFieldDefinitions(selected)
+                        setInsertBelowOpen(true)
+                      }}
+                      className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-semibold text-indigo-800 hover:bg-indigo-100"
+                    >
+                      <Plus size={15} />
+                      Insert Below
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => openReplyForm(selected)}
                       className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
                     >
@@ -2539,6 +2804,46 @@ export default function ReceivingRecords() {
                   </>
                 )}
               </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {insertBelowOpen && selected && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" onClick={() => !insertBelowSaving && setInsertBelowOpen(false)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="insert-below-title" className="w-full max-w-xl rounded-xl bg-white shadow-2xl" onClick={event => event.stopPropagation()}>
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <p className="text-xs font-medium text-slate-500">Linked to {selected.reference_number}</p>
+                <h3 id="insert-below-title" className="mt-1 text-xl font-bold text-slate-900">Insert Paper Below</h3>
+                <p className="mt-1 text-xs text-slate-500">This paper will appear directly below the original record.</p>
+              </div>
+              <button type="button" onClick={() => setInsertBelowOpen(false)} disabled={insertBelowSaving} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="max-h-[65vh] space-y-4 overflow-y-auto p-6">
+              <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-800 uppercase">
+                PresOffice Number: <strong>-</strong> (assigned automatically)
+              </div>
+              {insertBelowError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{insertBelowError}</div>}
+              <label className="block text-sm font-medium text-slate-700">System Code *
+                <input value={insertBelowDraft.system_code} onChange={event => setInsertBelowDraft(current => ({ ...current, system_code: event.target.value.toUpperCase() }))} className={`${inputClass} mt-1 uppercase`} placeholder="Enter System Code (optional)" />
+              </label>
+              <label className="block text-sm font-medium text-slate-700">Content / Subject *
+                <textarea rows={4} value={insertBelowDraft.content} onChange={event => setInsertBelowDraft(current => ({ ...current, content: event.target.value.toUpperCase() }))} className={`${inputClass} mt-1 uppercase`} placeholder="Enter the inserted paper's content or subject" />
+              </label>
+              <label className="block text-sm font-medium text-slate-700">Bearer / Sender
+                <input value={insertBelowDraft.bearer} onChange={event => setInsertBelowDraft(current => ({ ...current, bearer: event.target.value.toUpperCase() }))} className={`${inputClass} mt-1 uppercase`} placeholder="Optional sender name" />
+              </label>
+              <div className="border-t border-slate-200 pt-4">
+                <h4 className="mb-3 text-sm font-bold uppercase text-slate-800">Designated Folder Fields</h4>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {renderInsertedDestinationFields()}
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-200 px-6 py-4">
+              <button type="button" onClick={() => setInsertBelowOpen(false)} disabled={insertBelowSaving} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={() => void createInsertedPaper()} disabled={insertBelowSaving} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-800 disabled:opacity-50">{insertBelowSaving ? 'Inserting...' : 'Insert Paper'}</button>
             </div>
           </section>
         </div>

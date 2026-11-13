@@ -39,6 +39,7 @@ type ReleasingRecord = {
   next_action_date_forwarded: string | null
   next_action_recorded_by: string | null
   next_action_recorded_by_name: string | null
+  action_history: Array<{ id: string; status: string; timestamp: string; edited_by_name: string }>
   document_details: Record<string, unknown>
   workflow_details: Record<string, unknown>
 }
@@ -324,6 +325,38 @@ export default function ReleasingRecords() {
         (documents ?? []).map(document => [document.id, document]),
       )
 
+      // Load every saved Next Action event so the table can show the full
+      // Forwarded / Filed history instead of only the latest workflow value.
+      const workflowIds = workflowRows.map(row => row.id)
+      const { data: actionLogRows, error: actionLogsError } = await supabase
+        .from('document_workflow_next_action_logs')
+        .select('id, document_workflow_id, edited_by_name, edited_at, change_type, new_values')
+        .in('document_workflow_id', workflowIds)
+        .order('edited_at', { ascending: true })
+
+      if (actionLogsError) {
+        // Keep the releasing table usable even if audit-log read access is unavailable.
+        console.warn('Unable to load Next Action history for the releasing table:', actionLogsError.message)
+      }
+
+      const actionHistoryByWorkflowId = new Map<string, Array<{ id: string; status: string; timestamp: string; edited_by_name: string }>>()
+      for (const log of actionLogRows ?? []) {
+        const values = (log.new_values && typeof log.new_values === 'object'
+          ? log.new_values
+          : {}) as Record<string, unknown>
+        const status = String(values.system_status ?? values.action_type ?? '').trim()
+        const timestamp = String(values.release_at ?? log.edited_at ?? '')
+        if (!status || !timestamp) continue
+        const history = actionHistoryByWorkflowId.get(log.document_workflow_id) ?? []
+        history.push({
+          id: log.id,
+          status,
+          timestamp,
+          edited_by_name: log.edited_by_name || 'Name unavailable',
+        })
+        actionHistoryByWorkflowId.set(log.document_workflow_id, history)
+      }
+
       const mappedRecords: ReleasingRecord[] = workflowRows.map(workflow => {
         const document = documentsById.get(workflow.receiving_record_id)
         return {
@@ -360,6 +393,16 @@ export default function ReleasingRecords() {
           next_action_date_forwarded: workflow.next_action_date_forwarded || null,
           next_action_recorded_by: workflow.next_action_recorded_by || null,
           next_action_recorded_by_name: workflow.next_action_recorded_by_name || null,
+          action_history: actionHistoryByWorkflowId.get(workflow.id) ?? (
+            workflow.next_action_system_status && workflow.next_action_release_at
+              ? [{
+                  id: `current-${workflow.id}`,
+                  status: workflow.next_action_system_status,
+                  timestamp: workflow.next_action_release_at,
+                  edited_by_name: workflow.next_action_recorded_by_name || 'Name unavailable',
+                }]
+              : []
+          ),
           document_details: (document ?? {}) as Record<string, unknown>,
           workflow_details: workflow as Record<string, unknown>,
         }
@@ -770,6 +813,15 @@ export default function ReleasingRecords() {
         next_action_date_forwarded: isForwardAction ? newValues.date_forwarded : null,
         next_action_recorded_by: user.id,
         next_action_recorded_by_name: editorName,
+        action_history: [
+          ...record.action_history,
+          {
+            id: `local-${now}`,
+            status: isForwardAction ? 'Forwarded' : 'For File',
+            timestamp: releaseAt,
+            edited_by_name: editorName,
+          },
+        ],
         workflow_status: isForwardAction ? workflowStatus : 'action_completed',
         status: isForwardAction ? workflowStatus : 'action_completed',
       }
@@ -959,6 +1011,25 @@ export default function ReleasingRecords() {
           second: '2-digit',
           hour12: true,
         })
+  }
+
+  function formatRelativeTime(value: string | null) {
+    if (!value) return '—'
+    const timestamp = new Date(value).getTime()
+    if (Number.isNaN(timestamp)) return '—'
+
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+    if (seconds < 60) return 'Just now'
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+    const days = Math.floor(hours / 24)
+    if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`
+    const months = Math.floor(days / 30)
+    if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`
+    const years = Math.floor(days / 365)
+    return `${years} year${years === 1 ? '' : 's'} ago`
   }
 
   function formatReleaseTime(value: string | null) {
@@ -1465,8 +1536,28 @@ export default function ReleasingRecords() {
                       </div>
                     </td>
 
-                    <td className="min-w-[210px] px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
-                      <span className={`font-semibold ${record.next_action_system_status === 'For File' ? 'text-amber-700 dark:text-amber-300' : isForwardedAction(record) ? 'text-emerald-700 dark:text-emerald-300' : ''}`}>{record.next_action_system_status === 'For File' ? 'Filed' : record.next_action_system_status || 'Not Forwarded'}</span>
+                    <td className="min-w-[230px] px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
+                      {record.action_history.length > 0 ? (
+                        <div className="space-y-2">
+                          {record.action_history.map((entry, historyIndex) => {
+                            const isFiled = entry.status.trim().toLowerCase().replaceAll('_', ' ') === 'for file'
+                            const label = isFiled ? 'Filed' : entry.status
+                            const isLatest = historyIndex === record.action_history.length - 1
+                            return (
+                              <div key={entry.id} className="border-l-2 border-slate-200 pl-2.5 dark:border-slate-700">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className={`font-semibold ${isFiled ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-700 dark:text-emerald-300'}`}>{label}</span>
+                                  {isLatest && <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Latest</span>}
+                                </div>
+                                <span className="mt-0.5 block text-[10px] text-slate-600 dark:text-slate-400">{formatDateTime(entry.timestamp)}</span>
+                                <span className="block text-[10px] text-slate-500 dark:text-slate-400">{formatRelativeTime(entry.timestamp)} · {entry.edited_by_name}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">Not recorded</span>
+                      )}
                     </td>
 
                     <td className="px-4 py-3.5">

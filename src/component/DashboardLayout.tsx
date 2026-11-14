@@ -78,7 +78,7 @@ export default function DashboardLayout() {
           {/* Seasonal decoration is placed inside the logo frame */}
           <div className="relative h-12 w-12 shrink-0 rounded-xl border border-white/20 bg-white p-1">
             <img
-              src="/logo.jpg"
+              src="/logo.png"
               alt="presSystem logo"
               className="h-full w-full rounded-lg object-contain"
             />

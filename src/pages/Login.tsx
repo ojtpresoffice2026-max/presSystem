@@ -189,7 +189,7 @@ export default function Login() {
                 className="absolute inset-0 rounded-2xl border border-white/25 bg-white/5 shadow-[0_8px_30px_rgba(0,0,0,0.18)]"
               />
               <img
-                src="/logo.jpg"
+                src="/logo.png"
                 alt="presSystem logo"
                 className="relative h-full w-full rounded-2xl object-contain p-1 drop-shadow-[0_8px_12px_rgba(0,0,0,0.3)] transition-transform duration-300 hover:scale-110"
               />

@@ -246,7 +246,7 @@ export default function Dashboard() {
         <div className="pointer-events-none absolute -bottom-16 right-1/4 h-40 w-40 rounded-full bg-blue-300/10 blur-2xl transition-transform duration-700 group-hover:scale-150" />
         <div className="relative flex items-center gap-4 md:gap-6">
           <img
-            src="/logo.jpg"
+            src="/logo.png"
             alt="presSystem logo"
             className="h-24 w-24 shrink-0 object-contain drop-shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition-transform duration-300 group-hover:scale-105 md:h-28 md:w-28"
           />

@@ -438,7 +438,7 @@ function DashboardLayout() {
         {/* Logo and application name */}
         <div className="relative z-10 mb-10 flex shrink-0 items-center gap-4">
           <img
-            src="/logo.jpg"
+            src="/logo.png"
             alt="presSystem logo"
             className="h-16 w-16 shrink-0 object-contain drop-shadow-[0_4px_10px_rgba(0,0,0,0.25)] transition-transform duration-300 hover:scale-105"
           />

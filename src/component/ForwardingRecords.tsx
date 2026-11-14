@@ -114,6 +114,64 @@ function displayStatus(status: string) {
   return status.replaceAll('_', ' ')
 }
 
+function normalizeWorkflowStatus(value?: string | null) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replaceAll('-', '_')
+    .replaceAll(' ', '_')
+}
+
+// Urgency can be stored in the dedicated column or in custom-field metadata
+// by older Receiving forms. Check all supported locations instead of letting
+// a default value such as `not_urgent` mask a genuine urgent value.
+function hasUrgentPriority(...values: Array<unknown>) {
+  const urgentValues = new Set(['urgent', 'high', 'critical', 'very_urgent'])
+  return values.some(value => urgentValues.has(normalizeWorkflowStatus(String(value ?? ''))))
+}
+
+function isCreatedInsideForwardingPage(document: ReceivingRecord) {
+  const metadata = document.custom_field_values ?? {}
+
+  // These papers are created by the Forwarding page itself. Their urgency is
+  // a forwarding-form choice, not an incoming urgent paper from Receiving or
+  // a paper received from the Board Room. Exclude them at every status,
+  // including after they have been forwarded and are no longer `available`.
+  return (
+    metadata._manually_entered_for_board_room === true ||
+    metadata._manual_entry_by !== undefined ||
+    metadata._manual_entry_by_name !== undefined
+  )
+}
+
+// Completed papers must not remain in the urgent notification list.
+// Check both the paper status and (when present) its forwarding workflow status.
+function isCompletedUrgentNotification(
+  document: ReceivingRecord,
+  workflow?: WorkflowRecord,
+) {
+  const completedStatuses = new Set([
+    'completed',
+    'action_completed',
+    'released',
+    'paper_released',
+    'release_completed',
+    'done',
+    'cancelled',
+    'rejected',
+  ])
+
+  // Completion may be stored on the workflow, its next-action field, or
+  // the incoming paper itself depending on which part of the process updated it.
+  const statuses = [
+    document.status,
+    workflow?.workflow_status,
+    workflow?.next_action_system_status,
+  ].map(normalizeWorkflowStatus)
+
+  return statuses.some(status => completedStatuses.has(status))
+}
+
 function formatDate(value?: string | null) {
   if (!value) return '—'
 
@@ -281,11 +339,6 @@ export default function ForwardingRecords() {
   const [showForm, setShowForm] = useState(false)
   const [urgentNotificationsOpen, setUrgentNotificationsOpen] = useState(false)
   const [returnedNotificationsOpen, setReturnedNotificationsOpen] = useState(false)
-  // Optimistically remove an urgent paper from the pending badge once its
-  // assignment to Releasing Staff has been saved successfully.
-  const [urgentNotificationsHandledIds, setUrgentNotificationsHandledIds] =
-    useState<Set<string>>(() => new Set())
-
   const [documentPickerOpen, setDocumentPickerOpen] = useState(false)
   const [documentSearch, setDocumentSearch] = useState('')
   const [selectedDocumentSearch, setSelectedDocumentSearch] = useState('')
@@ -587,7 +640,11 @@ export default function ForwardingRecords() {
       setWorkflows(
         workflowRecords.map(workflow => ({
           workflow,
-          document: documentById.get(workflow.unrecorded_paper_id || workflow.receiving_record_id || ''),
+          document:
+            // Try both foreign keys independently. A stale unrecorded_paper_id
+            // must not prevent resolving a valid receiving_record_id.
+            documentById.get(workflow.unrecorded_paper_id || '') ||
+            documentById.get(workflow.receiving_record_id || ''),
           recordedByName:
             profileMap[workflow.forwarded_by] || workflow.forwarded_by,
         })),
@@ -690,42 +747,86 @@ export default function ForwardingRecords() {
     [documents, completedOrReleasedDocumentIds],
   )
 
-  // Urgent records originate from Receiving. Only show records that have not
-  // entered the forwarding workflow yet, so the alert points to actionable items.
+  // Notify about the PAPER received from Receiving / Board Room, not about
+  // the forwarding transaction itself. In particular, workflow.urgency is
+  // intentionally ignored because it describes the transaction and can be
+  // urgent even when the incoming paper was not marked urgent.
+  // A workflow notification is valid only when its linked paper is loaded and
+  // that paper's own urgency (column or legacy metadata) is urgent.
+  const urgentReturnedWorkflows = useMemo(() => {
+    const seenDocumentIds = new Set<string>()
+
+    return workflows.filter(({ workflow, document }) => {
+      if (!document) return false
+      if (isCreatedInsideForwardingPage(document)) return false
+
+      // This list is ONLY for papers that the Board Room actually returned
+      // to the originating office. A normal `forwarded`, `in_progress`,
+      // `completed`, or `direct_release` workflow is not a new incoming paper.
+      // In particular, workflow.urgency must never create an incoming alert.
+      const workflowStatus = normalizeWorkflowStatus(workflow.workflow_status)
+      if (workflowStatus !== 'returned_to_origin') return false
+      if (workflow.origin_office_received_at) return false
+
+      const linkedIds = [workflow.unrecorded_paper_id, workflow.receiving_record_id]
+        .filter((id): id is string => Boolean(id))
+      if (linkedIds.length === 0) return false
+      if (linkedIds.some(id => seenDocumentIds.has(id))) return false
+      linkedIds.forEach(id => seenDocumentIds.add(id))
+
+      const metadata = document.custom_field_values ?? {}
+      const paperIsUrgent = hasUrgentPriority(
+        document.urgency,
+        metadata._urgency,
+      )
+
+      return paperIsUrgent && !isCompletedUrgentNotification(document, workflow)
+    })
+  }, [workflows])
+
+  const documentsWithWorkflowIds = useMemo(() => {
+    const ids = new Set<string>()
+
+    for (const { workflow } of workflows) {
+      if (workflow.unrecorded_paper_id) ids.add(workflow.unrecorded_paper_id)
+      if (workflow.receiving_record_id) ids.add(workflow.receiving_record_id)
+    }
+
+    return ids
+  }, [workflows])
+
+  // Incoming urgent papers without a workflow are notified here. This includes
+  // legitimate unrecorded incoming papers, but excludes only the temporary
+  // `available` unrecorded drafts manually created inside the Forwarding form.
+  // Papers already represented by a workflow are counted in that workflow list.
   const urgentReceivedDocuments = useMemo(
-    () =>
-      availableDocuments.filter(
-        document =>
-          String(document.urgency ?? '').trim().toLowerCase() === 'urgent' &&
-          !urgentNotificationsHandledIds.has(document.id),
-      ),
-    [availableDocuments, urgentNotificationsHandledIds],
-  )
+    () => documents.filter(document => {
+      if (documentsWithWorkflowIds.has(document.id)) return false
+      if (isCreatedInsideForwardingPage(document)) return false
 
-  // Separate notification for urgent papers returned by the Board Room.
-  // Use workflow urgency first because forwarding/return urgency is saved on
-  // document_workflow and may differ from receiving_records. Fall back to the
-  // document urgency for older workflow rows.
-  const urgentReturnedWorkflows = useMemo(
-    () =>
-      workflows.filter(({ workflow, document }) => {
-        const workflowStatus = String(workflow.workflow_status ?? '')
-          .trim()
-          .toLowerCase()
-          .replace(/[\\s-]+/g, '_')
-        const urgencyValue = String(
-          workflow.urgency ?? document?.urgency ?? '',
-        )
-          .trim()
-          .toLowerCase()
-          .replace(/[\\s-]+/g, '_')
+      const metadata = document.custom_field_values ?? {}
+      const isUnrecordedPaper = isUnrecordedBoardRoomPaper(document)
+      const source = String(metadata._source ?? '').trim().toLowerCase()
+      const status = normalizeWorkflowStatus(document.status)
 
-        return (
-          workflowStatus === 'returned_to_origin' &&
-          ['urgent', 'high', 'critical', 'very_urgent'].includes(urgencyValue)
-        )
-      }),
-    [workflows],
+      // Unrecorded papers are not Receiving Office intake records. Only allow
+      // one here when it is explicitly marked as a Board Room return awaiting
+      // receipt and has no linked workflow row.
+      if (
+        isUnrecordedPaper &&
+        !(source === 'board_room_return' && status === 'returned_to_origin')
+      ) {
+        return false
+      }
+
+      const isUrgent = hasUrgentPriority(
+        document.urgency,
+        metadata._urgency,
+      )
+
+      return isUrgent && !isCompletedUrgentNotification(document)
+    }),
+    [documents, documentsWithWorkflowIds],
   )
 
   const urgentNotificationCount =
@@ -1947,6 +2048,10 @@ export default function ForwardingRecords() {
       }
 
       const releaseTimestamp = new Date().toISOString()
+      const assignedDocumentId =
+        releaseAssignment.unrecorded_paper_id ||
+        releaseAssignment.receiving_record_id ||
+        ''
       const isLocalDraft = releaseAssignment.id.startsWith('draft-release:')
 
       if (isLocalDraft) {
@@ -1996,16 +2101,6 @@ export default function ForwardingRecords() {
             'The document was already assigned or its status changed. Refresh and try again.',
           )
         }
-      }
-
-      const assignedDocumentId =
-        releaseAssignment.unrecorded_paper_id || releaseAssignment.receiving_record_id
-      if (assignedDocumentId) {
-        setUrgentNotificationsHandledIds(current => {
-          const next = new Set(current)
-          next.add(assignedDocumentId)
-          return next
-        })
       }
 
       const document = documents.find(item => item.id === assignedDocumentId)
@@ -2179,7 +2274,7 @@ export default function ForwardingRecords() {
                   <div>
                     <h3 className="font-bold text-slate-900">Urgent Notifications</h3>
                     <p className="text-xs text-slate-500">
-                      {urgentReceivedDocuments.length} new · {urgentReturnedWorkflows.length} returned by Board Room
+                      {urgentNotificationCount} urgent incoming paper(s) · Receiving and Board Room
                     </p>
                   </div>
                   <button
@@ -2209,7 +2304,7 @@ export default function ForwardingRecords() {
                           <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document.system_code || ''}>
                             System Code: {document.system_code || '—'}
                           </p>
-                          <p className="mt-1 text-[10px] text-red-700">Urgent · Awaiting forwarding</p>
+                          <p className="mt-1 text-[10px] text-red-700">{documentsWithWorkflowIds.has(document.id) ? 'Urgent · In workflow' : 'Urgent · Awaiting forwarding'}</p>
                         </div>
                         <button
                           type="button"
@@ -2230,7 +2325,15 @@ export default function ForwardingRecords() {
                           <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-300" title={document?.system_code || ''}>
                             System Code: {document?.system_code || '—'}
                           </p>
-                          <p className="mt-1 text-[10px] font-semibold text-amber-700">Urgent · Returned by Board Room</p>
+                          <p className="mt-1 text-[10px] font-semibold text-amber-700">
+                            {workflow.workflow_status === 'returned_to_origin'
+                              ? 'Urgent · Returned by Board Room · Awaiting receipt'
+                              : workflow.release_assigned_to
+                                ? `Urgent · Assigned to ${workflow.release_assigned_to}`
+                                : workflow.origin_office_received_at
+                                  ? 'Urgent · Receipt confirmed · Awaiting forwarding'
+                                  : 'Urgent · In workflow'}
+                          </p>
                         </div>
                         <button
                           type="button"

@@ -159,13 +159,28 @@ export default function Login() {
   }
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center bg-slate-100 p-4 transition-colors duration-300">
-      <SeasonalDecorations />
+    <main className="relative isolate flex min-h-screen items-center justify-center overflow-hidden bg-slate-100 p-4 transition-colors duration-300">
+      {/* Full-screen OTUP logo watermark */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+      >
+        <img
+          src="/logo.png"
+          alt=""
+          className="absolute left-1/2 top-1/2 h-[190vh] w-[190vw] max-w-none -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.24] blur-[9px] dark:opacity-[0.18]"
+        />
+        <div className="absolute inset-0 bg-slate-100/35 dark:bg-slate-950/45" />
+      </div>
+
+      <div className="relative z-20">
+        <SeasonalDecorations />
+      </div>
       <div className="fixed right-5 top-5 z-50">
         <ThemeToggle />
       </div>
 
-      <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl transition-colors duration-300 md:grid-cols-2">
+      <div className="relative z-10 grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl transition-colors duration-300 md:grid-cols-2">
         {/* LEFT PANEL */}
         <section className="relative flex min-h-64 flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-950 via-blue-800 to-blue-600 p-8 text-white md:p-12">
           <div

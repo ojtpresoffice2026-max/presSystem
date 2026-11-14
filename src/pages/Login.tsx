@@ -160,7 +160,29 @@ export default function Login() {
 
   return (
     <main className="relative isolate flex min-h-screen items-center justify-center overflow-hidden bg-slate-100 p-4 transition-colors duration-300">
-      {/* Full-screen OTUP logo watermark */}
+      {/* Animated full-screen OTUP logo watermark */}
+      <style>{`
+        @keyframes otup-logo-drift {
+          0%, 100% {
+            transform: rotate(-7deg) scale(1.04);
+          }
+          50% {
+            transform: rotate(7deg) scale(1.13);
+          }
+        }
+
+        @keyframes otup-logo-glow {
+          0%, 100% { opacity: 0.20; }
+          50% { opacity: 0.32; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .otup-animated-logo,
+          .otup-logo-glow {
+            animation: none !important;
+          }
+        }
+      `}</style>
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
@@ -168,12 +190,24 @@ export default function Login() {
         <img
           src="/logo.png"
           alt=""
-          className="absolute left-1/2 top-1/2 h-[190vh] w-[190vw] max-w-none -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.24] blur-[9px] dark:opacity-[0.18]"
+          className="otup-animated-logo absolute left-1/2 top-1/2 h-[190vh] w-[190vw] max-w-none -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.24] blur-[9px] dark:opacity-[0.18]"
+          style={{
+            transformOrigin: 'center center',
+            animation: 'otup-logo-drift 25s ease-in-out infinite',
+          }}
         />
-        <div className="absolute inset-0 bg-slate-100/35 dark:bg-slate-950/45" />
+        <div className="otup-logo-glow absolute inset-0 bg-slate-100/35 dark:bg-slate-950/45" />
+        <div
+          className="absolute inset-0 opacity-30"
+          style={{
+            background:
+              'radial-gradient(circle at 50% 48%, transparent 24%, rgba(99,102,241,0.16) 68%, transparent 100%)',
+          }}
+        />
       </div>
 
-      <div className="relative z-20">
+      {/* Keep seasonal decorations in the foreground, above the logo and login card. */}
+      <div className="pointer-events-none fixed inset-0 z-30">
         <SeasonalDecorations />
       </div>
       <div className="fixed right-5 top-5 z-50">
